@@ -1,0 +1,706 @@
+{
+  "info": {
+    "_postman_id": "3f9c1a2e-0b7a-4d1e-9c3a-6b2f8d4a1c07",
+    "name": "NeoAssets Scraping API",
+    "description": "Public scraping API of NeoAssets.\n\nSetup:\n1. Import also the environment `neoassets-scraping.postman_environment.json` and select it.\n2. Set `clientId` and `clientSecret` with your developer app credentials.\n3. Set `systemId` (from GET /scrape/systems, e.g. `snes`) and `searchName` (e.g. `mario`).\n4. To test as a registered user, set `userApiKey` with a personal API key (Profile page). Leave it empty for guest mode.\n5. Run the requests in order. `Games - by name` stores `romHash`/`romHashParam` so the by-hash requests work.\n\n`GET /scrape/games` requires `system_id`, `family` or `group` plus a ROM hash or a name, and returns a SINGLE game (`game`, null when nothing matched) with `matched_by` (`hash`|`name`) and the game's `scrapes` counter.\n\nRate limit tests: the two `Rate Limit - *` requests loop themselves via `pm.execution.setNextRequest`, so they MUST be run with the Collection Runner (not the Send button). They stop as soon as a 429 is observed.\n\nSystem Art Packs: `GET /packs` lists approved packs (sorted by downloads, paginated); `GET /packs/{packId}` returns the full install payload and bumps the download counter; `Contribute - create submission` creates a pending contribution to an approved pack (set `packId`, `packName`, `packAuthor` and `userToken`).\n\nRate limiting: the pack download endpoint (`/packs/{packId}/download`) is limited per (IP, pack) to ~4 req/min per pack, so the download counter reflects real installs and cannot be flooded.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8090"
+    },
+    {
+      "key": "clientId",
+      "value": "nsapp_your_client_id"
+    },
+    {
+      "key": "clientSecret",
+      "value": "your_client_secret"
+    },
+    {
+      "key": "userApiKey",
+      "value": ""
+    },
+    {
+      "key": "softname",
+      "value": "postman"
+    },
+    {
+      "key": "systemId",
+      "value": "snes"
+    },
+    {
+      "key": "family",
+      "value": "arcade"
+    },
+    {
+      "key": "group",
+      "value": "mame-fbneo"
+    },
+    {
+      "key": "searchName",
+      "value": "mario"
+    },
+    {
+      "key": "gameType",
+      "value": ""
+    },
+    {
+      "key": "romHash",
+      "value": ""
+    },
+    {
+      "key": "romHashParam",
+      "value": "sha1"
+    },
+    {
+      "key": "guestRLCount",
+      "value": "0"
+    },
+    {
+      "key": "guestRLHit",
+      "value": "false"
+    },
+    {
+      "key": "guestRLRunning",
+      "value": "false"
+    },
+    {
+      "key": "userRLCount",
+      "value": "0"
+    },
+    {
+      "key": "userRLHit",
+      "value": "false"
+    },
+    {
+      "key": "userRLRunning",
+      "value": "false"
+    },
+    {
+      "key": "packId",
+      "value": "neostation",
+      "type": "string"
+    },
+    {
+      "key": "packName",
+      "value": "NeoStation",
+      "type": "string"
+    },
+    {
+      "key": "packAuthor",
+      "value": "NeoStation Team",
+      "type": "string"
+    },
+    {
+      "key": "userToken",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Common scrape credentials for every request.",
+          "pm.request.headers.upsert({ key: 'X-Client-Id', value: pm.variables.get('clientId') });",
+          "pm.request.headers.upsert({ key: 'X-Client-Secret', value: pm.variables.get('clientSecret') });",
+          "const userKey = pm.variables.get('userApiKey');",
+          "if (userKey) {",
+          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + userKey });",
+          "} else {",
+          "  pm.request.headers.remove('Authorization');",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Scraping API",
+      "item": [
+        {
+          "name": "Systems",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('systems is an array', () => pm.expect(j.systems).to.be.an('array'));",
+                  "pm.test('systems is not empty', () => pm.expect(j.systems.length).to.be.above(0));",
+                  "pm.test('system has id and name', () => {",
+                  "  const s = j.systems[0];",
+                  "  pm.expect(s).to.have.property('id');",
+                  "  pm.expect(s).to.have.property('name');",
+                  "});",
+                  "pm.test('quota headers present', () => {",
+                  "  pm.expect(pm.response.headers.has('X-Quota-Limit')).to.be.true;",
+                  "  pm.expect(pm.response.headers.has('X-Quota-Remaining')).to.be.true;",
+                  "  pm.expect(pm.response.headers.has('X-Quota-Reset')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/systems",
+            "description": "Metadata system catalog. Free (does not consume quota). Pick a `systemId` from here."
+          },
+          "response": []
+        },
+        {
+          "name": "Families",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('families is an array', () => pm.expect(j.families).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/families",
+            "description": "System families (e.g. arcade) with their system and game counts. Free. Pick a `family` from here."
+          },
+          "response": []
+        },
+        {
+          "name": "Groups",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/groups",
+            "description": "System groups (emulator sub-sets such as mame-fbneo, flycast) with their system and game counts. Free."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('groups is an array', () => pm.expect(j.groups).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Games - by name",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fallbacks so the selectors are never empty.",
+                  "if (!pm.variables.get('systemId')) { pm.variables.set('systemId', 'snes'); }",
+                  "if (!pm.variables.get('searchName')) { pm.variables.set('searchName', 'mario'); }",
+                  "console.log('Scrape by name: ' + pm.variables.get('searchName') + ' in ' + pm.variables.get('systemId'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('system_id is echoed', () => pm.expect(j.system_id).to.eql(pm.variables.get('systemId')));",
+                  "pm.test('matched_by is name', () => pm.expect(j.matched_by).to.eql('name'));",
+                  "if (j.game) {",
+                  "  const game = j.game;",
+                  "  pm.test('game has id, name and roms', () => {",
+                  "    pm.expect(game).to.have.property('id');",
+                  "    pm.expect(game).to.have.property('name');",
+                  "    pm.expect(game.roms).to.be.an('array');",
+                  "  });",
+                  "  pm.test('game has media and a scrapes counter', () => {",
+                  "    pm.expect(game.media).to.be.an('array');",
+                  "    pm.expect(game).to.have.property('scrapes');",
+                  "  });",
+                  "  const roms = game.roms || [];",
+                  "  const withSha1 = roms.find(r => r.sha1 && r.sha1.length);",
+                  "  const withCrc = roms.find(r => r.crc && r.crc.length);",
+                  "  if (withSha1) {",
+                  "    pm.collectionVariables.set('romHash', withSha1.sha1);",
+                  "    pm.collectionVariables.set('romHashParam', 'sha1');",
+                  "  } else if (withCrc) {",
+                  "    pm.collectionVariables.set('romHash', withCrc.crc);",
+                  "    pm.collectionVariables.set('romHashParam', 'crc');",
+                  "  }",
+                  "  pm.test('stored romHash for the by-hash requests', () => pm.expect(pm.collectionVariables.get('romHash')).to.not.be.empty);",
+                  "} else {",
+                  "  console.log('No game matched \"' + pm.variables.get('searchName') + '\" in ' + pm.variables.get('systemId') + '. Adjust searchName/systemId.');",
+                  "}",
+                  "pm.test('quota remaining is numeric', () => pm.expect(Number(pm.response.headers.get('X-Quota-Remaining'))).to.be.a('number'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/games?system_id={{systemId}}&name={{searchName}}&type={{gameType}}&roms=true&softname={{softname}}",
+            "description": "Name search scoped to system_id (name is cleaned server-side). Optional `type` filter: base, hack or homebrew. `roms=true` includes the ROM list so a hash can be captured. Returns one game and consumes one quota unit; stores romHash for the by-hash requests."
+          },
+          "response": []
+        },
+        {
+          "name": "Games - by system (arcade)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('returns Street Fighter Alpha 3', () => {",
+                  "  pm.expect(j.game).to.not.be.null;",
+                  "  pm.expect(j.game.system_id).to.eql('arc');",
+                  "});",
+                  "pm.test('matched by name', () => pm.expect(j.matched_by).to.eql('name'));",
+                  "pm.test('resolves Street Fighter Alpha 3 on cps2', () => {",
+                  "  pm.expect(j.game).to.not.be.null;",
+                  "  pm.expect(j.game.name).to.eql('Street Fighter Alpha 3');",
+                  "  pm.expect(j.game.system_id).to.eql('cps2');",
+                  "  pm.expect(j.game.rom_name).to.eql('sfa3.zip');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/games?system_id=arc&name=sfa3.zip&softname={{softname}}",
+            "description": "Look up a game by its ROM set name in the virtual `arc` system. `arc` is a virtual system: it owns no games and aggregates the whole `arcade` family, so `sfa3.zip` resolves the CPS2 entry (Street Fighter Alpha 3) without duplicating it. Same as family=arcade; for MAME/FBNeo only use group=mame-fbneo."
+          },
+          "response": []
+        },
+        {
+          "name": "Games - by hash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "const hash = pm.collectionVariables.get('romHash');",
+                  "if (hash) {",
+                  "  pm.test('matched_by is hash', () => pm.expect(j.matched_by).to.eql('hash'));",
+                  "  pm.test('returns a game with ROM hashes', () => {",
+                  "    pm.expect(j.game).to.not.eql(null);",
+                  "    pm.expect(j.game.roms.length).to.be.above(0);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('romHash is set (run Games - by name first)', () => pm.expect(hash).to.not.be.empty);",
+                  "}",
+                  "pm.test('quota remaining is numeric', () => pm.expect(Number(pm.response.headers.get('X-Quota-Remaining'))).to.be.a('number'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/games?system_id={{systemId}}&{{romHashParam}}={{romHash}}&roms=true&softname={{softname}}",
+            "description": "ROM identification by hash (crc/md5/sha1/sha256), scoped to system_id. `roms=true` includes the ROM list. The hash is captured from `Games - by name`."
+          },
+          "response": []
+        },
+        {
+          "name": "Games - by name + hash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('matched_by is hash or name', () => pm.expect(['hash', 'name']).to.include(j.matched_by));",
+                  "pm.test('returns a game', () => pm.expect(j.game).to.not.eql(null));",
+                  "pm.test('quota remaining is numeric', () => pm.expect(Number(pm.response.headers.get('X-Quota-Remaining'))).to.be.a('number'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/games?system_id={{systemId}}&{{romHashParam}}={{romHash}}&name={{searchName}}&softname={{softname}}",
+            "description": "Hash + name together: the hash wins and the name is the fallback. Consumes one quota unit."
+          },
+          "response": []
+        },
+        {
+          "name": "Games - by family",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/games?family={{family}}&name={{searchName}}&softname={{softname}}",
+            "description": "Look up a single game across every system of a family (e.g. arcade). Same selectors as by system_id."
+          },
+          "response": []
+        },
+        {
+          "name": "Games - by group",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/games?group={{group}}&name={{searchName}}&softname={{softname}}",
+            "description": "Look up a single game across every system of a group (e.g. mame-fbneo). Same selectors as by system_id."
+          },
+          "response": []
+        },
+        {
+          "name": "Popular",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('games is an array', () => pm.expect(j.games).to.be.an('array'));",
+                  "if (j.games.length > 0) {",
+                  "  pm.test('rows have scrapes and are ordered desc', () => {",
+                  "    pm.expect(j.games[0]).to.have.property('scrapes');",
+                  "    for (let i = 1; i < j.games.length; i++) {",
+                  "      pm.expect(j.games[i - 1].scrapes).to.be.at.least(j.games[i].scrapes);",
+                  "    }",
+                  "  });",
+                  "}",
+                  "pm.test('quota headers present', () => pm.expect(pm.response.headers.has('X-Quota-Remaining')).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/popular?limit=10&softname={{softname}}",
+            "description": "Most scraped games (free). Optional system_id filters the ranking."
+          },
+          "response": []
+        },
+        {
+          "name": "Account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('subject is user or guest', () => pm.expect(['user', 'guest']).to.include(j.subject));",
+                  "pm.test('client is identified', () => {",
+                  "  pm.expect(j.client).to.have.property('id');",
+                  "  pm.expect(j.client).to.have.property('name');",
+                  "});",
+                  "pm.test('quota is complete', () => {",
+                  "  pm.expect(j.quota).to.have.property('daily_limit');",
+                  "  pm.expect(j.quota).to.have.property('used');",
+                  "  pm.expect(j.quota).to.have.property('remaining');",
+                  "  pm.expect(j.quota).to.have.property('resets_at');",
+                  "});",
+                  "if (pm.variables.get('userApiKey')) {",
+                  "  pm.test('registered user has a username', () => {",
+                  "    pm.expect(j.subject).to.eql('user');",
+                  "    pm.expect(j.user).to.have.property('username');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('guest has no user and the guest daily limit', () => {",
+                  "    pm.expect(j.subject).to.eql('guest');",
+                  "    pm.expect(j.user).to.eql(null);",
+                  "    pm.expect(j.quota.daily_limit).to.eql(2000);",
+                  "  });",
+                  "}",
+                  "pm.test('quota headers present', () => {",
+                  "  pm.expect(pm.response.headers.has('X-Quota-Limit')).to.be.true;",
+                  "  pm.expect(pm.response.headers.has('X-Quota-Remaining')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/account",
+            "description": "Current subject and quota. Free. Asserts the guest daily limit (1000) when no user API key is set."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Rate limit",
+      "item": [
+        {
+          "name": "Rate Limit - Guest",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Guest mode: never send a user credential.",
+                  "pm.request.headers.remove('Authorization');",
+                  "if (pm.collectionVariables.get('guestRLRunning') !== 'true') {",
+                  "  pm.collectionVariables.set('guestRLCount', '0');",
+                  "  pm.collectionVariables.set('guestRLHit', 'false');",
+                  "  pm.collectionVariables.set('guestRLRunning', 'true');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.response.code;",
+                  "const count = Number(pm.collectionVariables.get('guestRLCount')) + 1;",
+                  "pm.collectionVariables.set('guestRLCount', String(count));",
+                  "if (code === 429) {",
+                  "  pm.collectionVariables.set('guestRLHit', 'true');",
+                  "}",
+                  "pm.test('response is 200 or 429 (request #' + count + ')', () => pm.expect([200, 429]).to.include(code));",
+                  "if (pm.collectionVariables.get('guestRLHit') === 'true') {",
+                  "  pm.test('guest rate limit triggered (429) after ' + count + ' requests', () => pm.expect(true).to.be.true);",
+                  "  pm.collectionVariables.set('guestRLRunning', 'false');",
+                  "  pm.execution.setNextRequest(null);",
+                  "} else if (count < 40) {",
+                  "  pm.execution.setNextRequest('Rate Limit - Guest');",
+                  "} else {",
+                  "  pm.collectionVariables.set('guestRLRunning', 'false');",
+                  "  pm.test('guest rate limit triggered within 40 requests', () => pm.expect.fail('No 429 after ' + count + ' requests. Check SCRAPE_GUEST_RPM.'));",
+                  "  pm.execution.setNextRequest(null);",
+                  "}",
+                  "if (code === 429) {",
+                  "  pm.test('429 body has an error message', () => pm.expect(pm.response.json()).to.have.property('error'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/account",
+            "description": "Guest rate limit test. Loops itself until a 429 appears (default guest limit is 10 req/min). MUST be run with the Collection Runner. Leave `userApiKey` empty."
+          },
+          "response": []
+        },
+        {
+          "name": "Rate Limit - User",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const key = pm.variables.get('userApiKey');",
+                  "if (key) {",
+                  "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + key });",
+                  "}",
+                  "if (pm.collectionVariables.get('userRLRunning') !== 'true') {",
+                  "  pm.collectionVariables.set('userRLCount', '0');",
+                  "  pm.collectionVariables.set('userRLHit', 'false');",
+                  "  pm.collectionVariables.set('userRLRunning', 'true');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const key = pm.variables.get('userApiKey');",
+                  "if (!key) {",
+                  "  pm.test('userApiKey is set to test the user rate limit', () => pm.expect.fail('Set the userApiKey environment variable (Profile > API keys).'));",
+                  "  pm.collectionVariables.set('userRLRunning', 'false');",
+                  "  pm.execution.setNextRequest(null);",
+                  "} else {",
+                  "  const code = pm.response.code;",
+                  "  const count = Number(pm.collectionVariables.get('userRLCount')) + 1;",
+                  "  pm.collectionVariables.set('userRLCount', String(count));",
+                  "  if (code === 429) {",
+                  "    pm.collectionVariables.set('userRLHit', 'true');",
+                  "  }",
+                  "  pm.test('response is 200 or 429 (request #' + count + ')', () => pm.expect([200, 429]).to.include(code));",
+                  "  if (pm.collectionVariables.get('userRLHit') === 'true') {",
+                  "    pm.test('user rate limit triggered (429) after ' + count + ' requests', () => pm.expect(true).to.be.true);",
+                  "    pm.collectionVariables.set('userRLRunning', 'false');",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (count < 90) {",
+                  "    pm.execution.setNextRequest('Rate Limit - User');",
+                  "  } else {",
+                  "    pm.collectionVariables.set('userRLRunning', 'false');",
+                  "    pm.test('user rate limit triggered within 90 requests', () => pm.expect.fail('No 429 after ' + count + ' requests. Check SCRAPE_USER_RPM.'));",
+                  "    pm.execution.setNextRequest(null);",
+                  "  }",
+                  "  if (code === 429) {",
+                  "    pm.test('429 body has an error message', () => pm.expect(pm.response.json()).to.have.property('error'));",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/scrape/account",
+            "description": "Registered-user rate limit test. Loops itself until a 429 appears (default user limit is 60 req/min). MUST be run with the Collection Runner and a valid `userApiKey`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "System Art Packs",
+      "item": [
+        {
+          "name": "Packs - List",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/packs?sort=downloads&limit=10&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "packs"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "downloads",
+                  "description": "downloads (default), name or created"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Public list of approved System Art Packs, sorted by downloads and paginated. Returns { themes, total }."
+          },
+          "response": []
+        },
+        {
+          "name": "Pack - Detail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/packs/{{packId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "packs",
+                "{{packId}}"
+              ]
+            },
+            "description": "Full public payload of one approved pack: metadata, every published file with public URLs, pending contributions and contributor names. Pure read: does NOT bump the download counter."
+          },
+          "response": []
+        },
+        {
+          "name": "Contribute - create submission",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{packName}}\",\n  \"author\": \"{{packAuthor}}\",\n  \"description\": \"An updated description contributed to this pack.\",\n  \"contribution\": true,\n  \"pack_id\": \"{{packId}}\",\n  \"files\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/submissions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "submissions"
+              ]
+            },
+            "description": "Create a contribution (pending review) to an existing approved pack. Set packId, packName, packAuthor and userToken (a user JWT from POST /login) first. Files (object_key of staged uploads) can be added to the `files` array."
+          },
+          "response": []
+        },
+        {
+          "name": "Pack - Download",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/packs/{{packId}}/download",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "packs",
+                "{{packId}}",
+                "download"
+              ]
+            },
+            "description": "Same payload as Pack - Detail, but bumps the pack download counter. This is the install/scrape action that front-ends call when a pack is actually installed.\n\nRate limited per (client IP, pack): a client may download the same pack only a few times per minute (429 when exceeded), so download counters cannot be inflated by flooding."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,597 @@
+[
+  {
+    "id": "amazon",
+    "name": "Amazon",
+    "short_name": "Amazon"
+  },
+  {
+    "id": "cpc",
+    "name": "Amstrad CPC",
+    "short_name": "CPC"
+  },
+  {
+    "id": "a2",
+    "name": "Apple II",
+    "short_name": "A2"
+  },
+  {
+    "id": "arc",
+    "name": "Arcade",
+    "short_name": "Arcade"
+  },
+  {
+    "id": "ard",
+    "name": "Arduboy",
+    "short_name": "ARD"
+  },
+  {
+    "id": "2600",
+    "name": "Atari 2600",
+    "short_name": "A2600"
+  },
+  {
+    "id": "5200",
+    "name": "Atari 5200",
+    "short_name": "A5200"
+  },
+  {
+    "id": "7800",
+    "name": "Atari 7800",
+    "short_name": "A7800"
+  },
+  {
+    "id": "jag",
+    "name": "Atari Jaguar",
+    "short_name": "Jaguar"
+  },
+  {
+    "id": "jagcd",
+    "name": "Atari Jaguar CD",
+    "short_name": "JCD"
+  },
+  {
+    "id": "lynx",
+    "name": "Atari Lynx",
+    "short_name": "Lynx"
+  },
+  {
+    "id": "ast",
+    "name": "Atari ST",
+    "short_name": "AST"
+  },
+  {
+    "id": "aw",
+    "name": "Atomiswave",
+    "short_name": "AW"
+  },
+  {
+    "id": "bbcmicro",
+    "name": "BBC Micro",
+    "short_name": "BBCM"
+  },
+  {
+    "id": "cps1",
+    "name": "CP System I",
+    "short_name": "CPSI"
+  },
+  {
+    "id": "cps2",
+    "name": "CP System II",
+    "short_name": "CPSII"
+  },
+  {
+    "id": "cps3",
+    "name": "CP System III",
+    "short_name": "CPSIII"
+  },
+  {
+    "id": "cv",
+    "name": "ColecoVision",
+    "short_name": "CV"
+  },
+  {
+    "id": "pet",
+    "name": "Commodore - PET",
+    "short_name": "PET"
+  },
+  {
+    "id": "plus4",
+    "name": "Commodore - PLUS/4",
+    "short_name": "Plus/4"
+  },
+  {
+    "id": "c64",
+    "name": "Commodore 64",
+    "short_name": "C64"
+  },
+  {
+    "id": "amiga",
+    "name": "Commodore Amiga",
+    "short_name": "Amiga"
+  },
+  {
+    "id": "a2001",
+    "name": "Emerson Arcadia 2001",
+    "short_name": "A2001"
+  },
+  {
+    "id": "epic",
+    "name": "Epic Games",
+    "short_name": "Epic"
+  },
+  {
+    "id": "chf",
+    "name": "Fairchild Channel F",
+    "short_name": "CHF"
+  },
+  {
+    "id": "fds",
+    "name": "Famicom Disk System",
+    "short_name": "FDS"
+  },
+  {
+    "id": "fc",
+    "name": "Family Computer",
+    "short_name": "FC"
+  },
+  {
+    "id": "fbneo",
+    "name": "FinalBurn Neo",
+    "short_name": "FBNeo"
+  },
+  {
+    "id": "gog",
+    "name": "GOG",
+    "short_name": "GOG"
+  },
+  {
+    "id": "gw",
+    "name": "Game \u0026 Watch",
+    "short_name": "G\u0026W"
+  },
+  {
+    "id": "gb",
+    "name": "Game Boy",
+    "short_name": "GB"
+  },
+  {
+    "id": "gba",
+    "name": "Game Boy Advance",
+    "short_name": "GBA"
+  },
+  {
+    "id": "gba-hacks",
+    "name": "Game Boy Advance Hacks",
+    "short_name": "GBAH"
+  },
+  {
+    "id": "gbc",
+    "name": "Game Boy Color",
+    "short_name": "GBC"
+  },
+  {
+    "id": "gbc-hacks",
+    "name": "Game Boy Color Hacks",
+    "short_name": "GBCH"
+  },
+  {
+    "id": "gb-hacks",
+    "name": "Game Boy Hacks",
+    "short_name": "GBH"
+  },
+  {
+    "id": "intv",
+    "name": "Intellivision",
+    "short_name": "INTV"
+  },
+  {
+    "id": "vc4k",
+    "name": "Interton VC 4000",
+    "short_name": "VC4K"
+  },
+  {
+    "id": "mame",
+    "name": "M.A.M.E.",
+    "short_name": "MAME"
+  },
+  {
+    "id": "dos",
+    "name": "MS-DOS",
+    "short_name": "DOS"
+  },
+  {
+    "id": "msx",
+    "name": "MSX",
+    "short_name": "MSX"
+  },
+  {
+    "id": "mo2",
+    "name": "Magnavox Odyssey 2",
+    "short_name": "MO2"
+  },
+  {
+    "id": "duck",
+    "name": "Mega Duck",
+    "short_name": "Duck"
+  },
+  {
+    "id": "xbox360",
+    "name": "Microsoft - XBox 360",
+    "short_name": "XB360"
+  },
+  {
+    "id": "music",
+    "name": "Music",
+    "short_name": "Music"
+  },
+  {
+    "id": "pc88",
+    "name": "NEC PC-8801",
+    "short_name": "PC88"
+  },
+  {
+    "id": "pc98",
+    "name": "NEC PC-9801",
+    "short_name": "PC98"
+  },
+  {
+    "id": "pcfx",
+    "name": "NEC PC-FX",
+    "short_name": "PC-FX"
+  },
+  {
+    "id": "neogeo",
+    "name": "Neo Geo",
+    "short_name": "Neo Geo"
+  },
+  {
+    "id": "ngcd",
+    "name": "Neo Geo CD",
+    "short_name": "NGCD"
+  },
+  {
+    "id": "ngp",
+    "name": "NeoGeo Pocket",
+    "short_name": "NGP"
+  },
+  {
+    "id": "ngpc",
+    "name": "NeoGeo Pocket Color",
+    "short_name": "NGPC"
+  },
+  {
+    "id": "3ds",
+    "name": "Nintendo 3DS",
+    "short_name": "3DS"
+  },
+  {
+    "id": "n64",
+    "name": "Nintendo 64",
+    "short_name": "N64"
+  },
+  {
+    "id": "ds",
+    "name": "Nintendo DS",
+    "short_name": "DS"
+  },
+  {
+    "id": "nes",
+    "name": "Nintendo Entertainment System",
+    "short_name": "NES"
+  },
+  {
+    "id": "nes-hacks",
+    "name": "Nintendo Entertainment System Hacks",
+    "short_name": "NESH"
+  },
+  {
+    "id": "gc",
+    "name": "Nintendo GameCube",
+    "short_name": "GC"
+  },
+  {
+    "id": "satellaview",
+    "name": "Nintendo Satellaview",
+    "short_name": "SV"
+  },
+  {
+    "id": "switch",
+    "name": "Nintendo Switch",
+    "short_name": "Switch"
+  },
+  {
+    "id": "wii",
+    "name": "Nintendo Wii",
+    "short_name": "Wii"
+  },
+  {
+    "id": "wiiu",
+    "name": "Nintendo Wii U",
+    "short_name": "Wii U"
+  },
+  {
+    "id": "pce",
+    "name": "PC Engine",
+    "short_name": "PCE"
+  },
+  {
+    "id": "pccd",
+    "name": "PC Engine-CD",
+    "short_name": "PCCD"
+  },
+  {
+    "id": "pico8",
+    "name": "PICO-8",
+    "short_name": "PICO-8"
+  },
+  {
+    "id": "palm",
+    "name": "Palm OS",
+    "short_name": "Palm"
+  },
+  {
+    "id": "3do",
+    "name": "Panasonic 3DO",
+    "short_name": "3DO"
+  },
+  {
+    "id": "cdi",
+    "name": "Philips CD-i",
+    "short_name": "CD-i"
+  },
+  {
+    "id": "pspminis",
+    "name": "PlayStation Portable Minis",
+    "short_name": "PSPM"
+  },
+  {
+    "id": "mini",
+    "name": "Pokémon Mini",
+    "short_name": "Mini"
+  },
+  {
+    "id": "rpgmaker",
+    "name": "RPG Maker",
+    "short_name": "RPGM"
+  },
+  {
+    "id": "scummvm",
+    "name": "ScummVM",
+    "short_name": "ScummVM"
+  },
+  {
+    "id": "32x",
+    "name": "Sega 32X",
+    "short_name": "32X"
+  },
+  {
+    "id": "scd",
+    "name": "Sega CD",
+    "short_name": "SCD"
+  },
+  {
+    "id": "dc",
+    "name": "Sega Dreamcast",
+    "short_name": "DC"
+  },
+  {
+    "id": "gg",
+    "name": "Sega Game Gear",
+    "short_name": "GG"
+  },
+  {
+    "id": "gg-hacks",
+    "name": "Sega Game Gear Hacks",
+    "short_name": "GGH"
+  },
+  {
+    "id": "genesis",
+    "name": "Sega Genesis",
+    "short_name": "Genesis"
+  },
+  {
+    "id": "gen-hacks",
+    "name": "Sega Genesis Hacks",
+    "short_name": "GENH"
+  },
+  {
+    "id": "mark3",
+    "name": "Sega Mark III",
+    "short_name": "Mark3"
+  },
+  {
+    "id": "sms",
+    "name": "Sega Master System",
+    "short_name": "SMS"
+  },
+  {
+    "id": "md",
+    "name": "Sega Mega Drive",
+    "short_name": "MD"
+  },
+  {
+    "id": "md-hacks",
+    "name": "Sega Mega Drive Hacks",
+    "short_name": "MDH"
+  },
+  {
+    "id": "mcd",
+    "name": "Sega Mega-CD",
+    "short_name": "MCD"
+  },
+  {
+    "id": "model3",
+    "name": "Sega Model 3",
+    "short_name": "SM3"
+  },
+  {
+    "id": "naomi",
+    "name": "Sega Naomi",
+    "short_name": "Naomi"
+  },
+  {
+    "id": "naomi2",
+    "name": "Sega Naomi 2",
+    "short_name": "Naomi 2"
+  },
+  {
+    "id": "naomigd",
+    "name": "Sega Naomi GD-ROM",
+    "short_name": "Naomi GD"
+  },
+  {
+    "id": "pico",
+    "name": "Sega Pico",
+    "short_name": "Pico"
+  },
+  {
+    "id": "sg1k",
+    "name": "Sega SG-1000",
+    "short_name": "SG1K"
+  },
+  {
+    "id": "sat",
+    "name": "Sega Saturn",
+    "short_name": "Saturn"
+  },
+  {
+    "id": "x1",
+    "name": "Sharp X1",
+    "short_name": "X1"
+  },
+  {
+    "id": "sharpx68000",
+    "name": "Sharp X68000",
+    "short_name": "X68K"
+  },
+  {
+    "id": "vita",
+    "name": "Sony PS Vita",
+    "short_name": "Vita"
+  },
+  {
+    "id": "ps1",
+    "name": "Sony PlayStation",
+    "short_name": "PS1"
+  },
+  {
+    "id": "ps2",
+    "name": "Sony PlayStation 2",
+    "short_name": "PS2"
+  },
+  {
+    "id": "ps3",
+    "name": "Sony PlayStation 3",
+    "short_name": "PS3"
+  },
+  {
+    "id": "psp",
+    "name": "Sony PlayStation Portable",
+    "short_name": "PSP"
+  },
+  {
+    "id": "steam",
+    "name": "Steam",
+    "short_name": "Steam"
+  },
+  {
+    "id": "sfc",
+    "name": "Super Family Computer",
+    "short_name": "SFC"
+  },
+  {
+    "id": "sfc-hacks",
+    "name": "Super Family Computer Hacks",
+    "short_name": "SFCH"
+  },
+  {
+    "id": "snes",
+    "name": "Super Nintendo Entertainment System",
+    "short_name": "SNES"
+  },
+  {
+    "id": "snes-hacks",
+    "name": "Super Nintendo Entertainment System Hacks",
+    "short_name": "SNESH"
+  },
+  {
+    "id": "tic80",
+    "name": "TIC-80",
+    "short_name": "TIC-80"
+  },
+  {
+    "id": "triforce",
+    "name": "Triforce",
+    "short_name": "Triforce"
+  },
+  {
+    "id": "tg16",
+    "name": "TurboGrafx-16",
+    "short_name": "TG-16"
+  },
+  {
+    "id": "tgcd",
+    "name": "TurboGrafx-CD",
+    "short_name": "TG-CD"
+  },
+  {
+    "id": "uze",
+    "name": "Uzebox",
+    "short_name": "UZE"
+  },
+  {
+    "id": "vic20",
+    "name": "VIC-20",
+    "short_name": "VIC-20"
+  },
+  {
+    "id": "vect",
+    "name": "Vectrex",
+    "short_name": "Vect"
+  },
+  {
+    "id": "vb",
+    "name": "Virtual Boy",
+    "short_name": "VB"
+  },
+  {
+    "id": "wasm4",
+    "name": "WASM-4",
+    "short_name": "WASM-4"
+  },
+  {
+    "id": "wsv",
+    "name": "Watara Supervision",
+    "short_name": "WSV"
+  },
+  {
+    "id": "windows",
+    "name": "Windows",
+    "short_name": "Windows"
+  },
+  {
+    "id": "ws",
+    "name": "WonderSwan",
+    "short_name": "WS"
+  },
+  {
+    "id": "wsc",
+    "name": "WonderSwan Color",
+    "short_name": "WSC"
+  },
+  {
+    "id": "xbox",
+    "name": "Xbox",
+    "short_name": "Xbox"
+  },
+  {
+    "id": "zx81",
+    "name": "ZX 81",
+    "short_name": "ZX81"
+  },
+  {
+    "id": "zxspectrum",
+    "name": "ZX Spectrum",
+    "short_name": "ZXS"
+  }
+]

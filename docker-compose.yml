@@ -1,0 +1,65 @@
+services:
+  # NeoAssets API service. Connects to an external PostgreSQL via DATABASE_URL
+  # (no bundled database). For Dokploy deployments the database is a managed
+  # service on the shared dokploy-network, so the container resolves its hostname
+  # there; for local development set DATABASE_URL to your local Postgres.
+  neoassets-service:
+    build: .
+    container_name: neoassets-service
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8090}:8090"
+    environment:
+      PORT: 8090
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:?R2_ACCOUNT_ID is required}
+      R2_ACCESS_KEY: ${R2_ACCESS_KEY:?R2_ACCESS_KEY is required}
+      R2_SECRET_KEY: ${R2_SECRET_KEY:?R2_SECRET_KEY is required}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-neoassets}
+      R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-https://cdn.neoassets.dev}
+      ADMIN_SEED_EMAIL: ${ADMIN_SEED_EMAIL}
+      ADMIN_SEED_PASSWORD: ${ADMIN_SEED_PASSWORD}
+      PROTECTED_ADMIN_EMAIL: ${PROTECTED_ADMIN_EMAIL}
+      SKIP_EMAIL_VERIFICATION: ${SKIP_EMAIL_VERIFICATION:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-NeoAssets Team}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8091}
+      EMAIL_LOGO_URL: ${EMAIL_LOGO_URL:-}
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+      TRANSLATE_WORKER_URL: ${TRANSLATE_WORKER_URL:-}
+      TRANSLATE_WORKER_TOKEN: ${TRANSLATE_WORKER_TOKEN:-}
+      # Public scraping API limits (0 = built-in defaults).
+      SCRAPE_GUEST_THREADS: ${SCRAPE_GUEST_THREADS:-0}
+      SCRAPE_ADMIN_THREADS: ${SCRAPE_ADMIN_THREADS:-0}
+      SCRAPE_SUPPORTER_BONUS_THREADS: ${SCRAPE_SUPPORTER_BONUS_THREADS:-0}
+      SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS: ${SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS:-0}
+      XP_SUPPORTER_BONUS_PCT: ${XP_SUPPORTER_BONUS_PCT:-0}
+      XP_MONTHLY_SUPPORTER_BONUS_PCT: ${XP_MONTHLY_SUPPORTER_BONUS_PCT:-0}
+      SCRAPE_DAILY_GAMES_PER_THREAD: ${SCRAPE_DAILY_GAMES_PER_THREAD:-0}
+      POINTS_TEXT_METADATA: ${POINTS_TEXT_METADATA:-0}
+      POINTS_IMAGE_METADATA: ${POINTS_IMAGE_METADATA:-0}
+      POINTS_VIDEO_METADATA: ${POINTS_VIDEO_METADATA:-0}
+      POINTS_SAP_IMAGE: ${POINTS_SAP_IMAGE:-0}
+      POINTS_NEW_GAME: ${POINTS_NEW_GAME:-0}
+      SCRAPE_GUEST_RPM: ${SCRAPE_GUEST_RPM:-0}
+      SCRAPE_USER_RPM: ${SCRAPE_USER_RPM:-0}
+      # Donations (Ko-fi -> donor status).
+      KOFI_VERIFICATION_TOKEN: ${KOFI_VERIFICATION_TOKEN:-}
+      PATREON_WEBHOOK_SECRET: ${PATREON_WEBHOOK_SECRET:-}
+      DONOR_SUBSCRIPTION_GRACE_DAYS: ${DONOR_SUBSCRIPTION_GRACE_DAYS:-0}
+      ENABLE_DEBUG_MODE: ${ENABLE_DEBUG_MODE:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8091}
+    volumes:
+      - ./migrations:/app/migrations
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true
+    name: dokploy-network

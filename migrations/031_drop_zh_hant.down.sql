@@ -1,0 +1,1 @@
+UPDATE lang SET enabled = true WHERE code = 'zh_hant';

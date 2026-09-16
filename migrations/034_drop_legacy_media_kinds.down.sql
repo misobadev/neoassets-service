@@ -1,0 +1,2 @@
+ALTER TABLE media DROP CONSTRAINT IF EXISTS media_kind_check;
+ALTER TABLE media ADD CONSTRAINT media_kind_check CHECK (kind IN ('cover','boxfront','boxback','screenshot','logo','cartridge','manual','other','title','fanart','video'));
