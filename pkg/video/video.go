@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 
 	"neoassets/internal/models"
 )
@@ -22,9 +23,9 @@ type ffprobeOutput struct {
 		RFrameRate string `json:"r_frame_rate"`
 	} `json:"streams"`
 	Format struct {
-		FormatName string  `json:"format_name"`
-		Duration   string  `json:"duration"`
-		Size       string  `json:"size"`
+		FormatName string `json:"format_name"`
+		Duration   string `json:"duration"`
+		Size       string `json:"size"`
 	} `json:"format"`
 }
 
@@ -145,12 +146,14 @@ func Probe(ctx context.Context, data []byte) (*models.VideoMeta, error) {
 	return meta, nil
 }
 
-// ConvertToWebm converts the input video to WebM (AV1 via SVT-AV1 + Opus audio)
+// ConvertToMP4 converts the input video to MP4 (H.265/HEVC via libx265 + AAC)
 // at the original resolution using nearest-neighbour scaling
 // (scale=flags=neighbor, crisp for pixel-art games), capped at 45 seconds. The
-// output matches the videosnap-converter format/quality. The returned bytes are
-// uploaded directly.
-func ConvertToWebm(ctx context.Context, data []byte) ([]byte, error) {
+// source frame rate is preserved, except videos above 60 fps which are capped
+// to 60 fps. The output matches the videosnap-converter format/quality (x265
+// CRF 28, preset slow, hvc1 tag, yuv420p, AAC audio kept at the source bitrate
+// capped at 128k). The returned bytes are uploaded directly.
+func ConvertToMP4(ctx context.Context, data []byte) ([]byte, error) {
 	in, err := os.CreateTemp("", "video-in-*")
 	if err != nil {
 		return nil, fmt.Errorf("create input temp: %w", err)
@@ -164,7 +167,7 @@ func ConvertToWebm(ctx context.Context, data []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	out, err := os.CreateTemp("", "video-out-*.webm")
+	out, err := os.CreateTemp("", "video-out-*.mp4")
 	if err != nil {
 		return nil, fmt.Errorf("create output temp: %w", err)
 	}
@@ -172,21 +175,27 @@ func ConvertToWebm(ctx context.Context, data []byte) ([]byte, error) {
 	out.Close()
 	defer os.Remove(outPath)
 
-	// Match the videosnap-converter output: AV1 (SVT) CRF 36, preset 8,
-	// film-grain=0, yuv420p, nearest-neighbour scaling at the original
-	// resolution, capped at 45 seconds, Opus audio at 128k.
+	// Keep the source frame rate, but cap videos above 60 fps down to 60.
+	vf := "scale=flags=neighbor"
+	if probeVideoFPS(ctx, in.Name()) > 60 {
+		vf += ",fps=60"
+	}
+
+	// Match the videosnap-converter output: HEVC (x265) CRF 28, preset slow,
+	// hvc1 tag, yuv420p, nearest-neighbour scaling at the original resolution,
+	// capped at 45 seconds, AAC audio at the source bitrate capped at 128k.
 	args := []string{
 		"-y",
 		"-i", in.Name(),
-		"-vf", "scale=flags=neighbor",
+		"-vf", vf,
 		"-t", "45",
-		"-c:v", "libsvtav1",
-		"-crf", "36",
-		"-preset", "8",
-		"-svtav1-params", "film-grain=0",
+		"-c:v", "libx265",
+		"-crf", "28",
+		"-preset", "slow",
+		"-tag:v", "hvc1",
 		"-pix_fmt", "yuv420p",
-		"-c:a", "libopus",
-		"-b:a", "128k",
+		"-c:a", "aac",
+		"-b:a", strconv.Itoa(audioBitrate(ctx, in.Name())),
 		outPath,
 	}
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
@@ -201,6 +210,86 @@ func ConvertToWebm(ctx context.Context, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("read converted video: %w", err)
 	}
 	return converted, nil
+}
+
+// audioBitrate returns the AAC bitrate to use when converting a video: the
+// source audio bitrate, capped at 128 kbps. It falls back to the cap when the
+// source bitrate cannot be determined.
+func audioBitrate(ctx context.Context, path string) int {
+	const cap = 128000
+	if v := probeAudioBitrate(ctx, path); v > 0 && v < cap {
+		return v
+	}
+	return cap
+}
+
+// probeAudioBitrate returns the source audio bitrate in bits per second, or 0
+// when it cannot be determined. It first reads the stream bit_rate (mp4/aac)
+// and falls back to summing packet sizes over the duration (webm/opus, where
+// ffprobe reports bit_rate as N/A).
+func probeAudioBitrate(ctx context.Context, path string) int {
+	if out, err := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "a:0",
+		"-show_entries", "stream=bit_rate",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		path,
+	).Output(); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil && n > 0 {
+			return n
+		}
+	}
+
+	packets, err := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "a:0",
+		"-show_entries", "packet=size",
+		"-of", "csv=p=0",
+		path,
+	).Output()
+	if err != nil {
+		return 0
+	}
+	var total int64
+	for _, line := range strings.Split(strings.TrimSpace(string(packets)), "\n") {
+		if n, err := strconv.ParseInt(strings.TrimSpace(line), 10, 64); err == nil {
+			total += n
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+
+	durOut, err := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "csv=p=0",
+		path,
+	).Output()
+	if err != nil {
+		return 0
+	}
+	dur, err := strconv.ParseFloat(strings.TrimSpace(string(durOut)), 64)
+	if err != nil || dur <= 0 {
+		return 0
+	}
+	return int(float64(total) * 8 / dur)
+}
+
+// probeVideoFPS returns the source video frame rate as an integer (rounded
+// down, so 59.94 -> 59), or 0 when it cannot be determined.
+func probeVideoFPS(ctx context.Context, path string) int {
+	out, err := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=r_frame_rate",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		path,
+	).Output()
+	if err != nil {
+		return 0
+	}
+	return ParseFPS(strings.TrimSpace(string(out)))
 }
 
 // ResizeImage scales an image so its longest side is at most maxSize (never

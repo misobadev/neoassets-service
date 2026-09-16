@@ -1034,7 +1034,7 @@ func (r *Repository) UpdateMetadataSubmissionFileObjectKey(fileID uuid.UUID, obj
 }
 
 // UpdateMetadataSubmissionFileMime updates a submission file's MIME type (used
-// when a video is converted to WebM on approval).
+// when a video is converted to MP4 on approval).
 func (r *Repository) UpdateMetadataSubmissionFileMime(fileID uuid.UUID, mime string) error {
 	_, err := r.db.Exec(`UPDATE metadata_submission_files SET mime = $1 WHERE id = $2`, mime, fileID)
 	if err != nil {

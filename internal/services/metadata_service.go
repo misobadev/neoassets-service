@@ -32,8 +32,8 @@ var mediaExts = map[string]bool{
 const MaxDescriptionLength = 1500
 
 // videoExts are the accepted video extensions for gameplay video submissions.
-// Any ffmpeg-supported container is accepted; the file is converted to WebM
-// (VP9) on approval.
+// Any ffmpeg-supported container is accepted; the file is converted to MP4
+// (HEVC) on approval.
 var videoExts = map[string]bool{
 	".webm": true,
 	".mp4":  true,
@@ -723,9 +723,9 @@ func (s *Service) decorateMetadataNames(list []models.MetadataSubmission) error 
 
 // validateApprovedMedia checks the media files of a submission before it is
 // applied: every image must be WebP (the frontend converts on upload), fanart
-// must be exactly 1920x1080 (16:9), and videos must be ~60 fps (accepted range
-// 50-70 to tolerate encoders reporting 59.94/60.x). Videos are re-encoded after
-// this check.
+// must be exactly 1920x1080 (16:9), and videos must have a sane frame rate
+// (at least 23 fps, 60 fps recommended). The source frame rate is preserved on
+// re-encode, except videos above 60 fps, which are capped to 60 fps.
 func (s *Service) validateApprovedMedia(ctx context.Context, files []models.MetadataSubmissionFile) error {
 	for _, f := range files {
 		data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
@@ -737,8 +737,8 @@ func (s *Service) validateApprovedMedia(ctx context.Context, files []models.Meta
 			if err != nil {
 				return fmt.Errorf("probe video: %w", err)
 			}
-			if meta.FPS < 50 || meta.FPS > 70 {
-				return fmt.Errorf("video must be 60 fps (detected %d fps)", meta.FPS)
+			if meta.FPS < 23 {
+				return fmt.Errorf("video must be at least 23 fps, 60 recommended (detected %d fps)", meta.FPS)
 			}
 			continue
 		}
@@ -836,7 +836,7 @@ func (s *Service) translateApprovedDescription(sub *models.MetadataSubmission) e
 // translateAndStoreDescription translates an English description and upserts the
 // result for the target game or system, returning how many languages were
 // stored. Only languages enabled in the `lang` table are written, so disabled
-// languages (e.g. zh_hant) are never re-inserted.
+// languages are never re-inserted.
 func (s *Service) translateAndStoreDescription(ctx context.Context, desc string, gameID *uuid.UUID, systemID *string) (int, error) {
 	if s.translator == nil {
 		return 0, fmt.Errorf("translator is not configured")
@@ -995,8 +995,8 @@ func (s *Service) moveSubmissionMediaToCanonical(ctx context.Context, id uuid.UU
 	s.deleteReplacedMediaObjects(ctx, sub, files)
 
 	for _, f := range files {
-		// Videos are re-encoded to WebM (VP9 + Opus) at the original resolution
-		// with nearest-neighbour scaling; the canonical object is always .webm.
+		// Videos are re-encoded to MP4 (HEVC + AAC) at the original resolution
+		// with nearest-neighbour scaling; the canonical object is always .mp4.
 		if f.Kind == models.MediaVideo {
 			if err := s.convertVideoToCanonical(ctx, f, sub, systemID); err != nil {
 				return err
@@ -1075,21 +1075,21 @@ func (s *Service) probeVideo(ctx context.Context, objectKey string) (*models.Vid
 }
 
 // convertVideoToCanonical downloads the user's uploaded video, re-encodes it to
-// WebM (VP9 + Opus, nearest-neighbour scaling, original resolution, 30s cap)
-// and uploads it to the canonical media/games or media/systems key as .webm.
+// MP4 (HEVC + AAC, nearest-neighbour scaling, original resolution, 45s cap)
+// and uploads it to the canonical media/games or media/systems key as .mp4.
 // The submission's original object is removed and the file row is updated.
 func (s *Service) convertVideoToCanonical(ctx context.Context, f models.MetadataSubmissionFile, sub *models.MetadataSubmission, systemID string) error {
 	data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
 	if err != nil {
 		return fmt.Errorf("download video %s: %w", f.ObjectKey, err)
 	}
-	converted, err := video.ConvertToWebm(ctx, data)
+	converted, err := video.ConvertToMP4(ctx, data)
 	if err != nil {
 		return err
 	}
 
-	dest := immutableMediaKey(sub, systemID, f.Kind, ".webm")
-	if err := s.r2.UploadFileCached(ctx, dest, "video/webm", mediaCacheControl, bytes.NewReader(converted)); err != nil {
+	dest := immutableMediaKey(sub, systemID, f.Kind, ".mp4")
+	if err := s.r2.UploadFileCached(ctx, dest, "video/mp4", mediaCacheControl, bytes.NewReader(converted)); err != nil {
 		return fmt.Errorf("upload converted video %s: %w", dest, err)
 	}
 	if err := s.r2.DeleteObject(ctx, f.ObjectKey); err != nil {
@@ -1098,10 +1098,10 @@ func (s *Service) convertVideoToCanonical(ctx context.Context, f models.Metadata
 	if err := s.repo.UpdateMetadataSubmissionFileObjectKey(f.ID, dest); err != nil {
 		return err
 	}
-	if err := s.repo.UpdateMetadataSubmissionFileMime(f.ID, "video/webm"); err != nil {
+	if err := s.repo.UpdateMetadataSubmissionFileMime(f.ID, "video/mp4"); err != nil {
 		return err
 	}
-	log.Info().Str("src", f.ObjectKey).Str("dest", dest).Msg("video converted to webm (vp9)")
+	log.Info().Str("src", f.ObjectKey).Str("dest", dest).Msg("video converted to mp4 (hevc)")
 	return nil
 }
 
@@ -1138,7 +1138,7 @@ func validMediaKind(kind string) bool {
 }
 
 // validMediaExt reports whether an extension is accepted for a media kind:
-// images for the image kinds, webm/mp4 for video.
+// images for the image kinds, video containers for video.
 func validMediaExt(kind, ext string) bool {
 	if kind == models.MediaVideo {
 		return videoExts[ext]
