@@ -224,7 +224,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			return nil, fmt.Errorf("a game with that name already exists in this system")
 		}
 		// Block a duplicate pending new game with the same name in this system.
-		subs, err := s.repo.ListMetadataSubmissionsByUser(userID)
+		subs, _, err := s.repo.ListMetadataSubmissionsByUser(userID, "", 0, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -311,7 +311,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 // pendingSubmissionKeys returns the set of payload fields and media kinds that
 // already have a pending submission for the given user and game/system.
 func (s *Service) pendingSubmissionKeys(userID uuid.UUID, gameID *uuid.UUID, systemID *string) (map[string]bool, error) {
-	subs, err := s.repo.ListMetadataSubmissionsByUser(userID)
+	subs, _, err := s.repo.ListMetadataSubmissionsByUser(userID, "", 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -516,18 +516,22 @@ func payloadHasText(payload json.RawMessage) bool {
 }
 
 // ListMyMetadataSubmissions lists the user's contributions.
-func (s *Service) ListMyMetadataSubmissions(userID uuid.UUID) ([]models.MetadataSubmission, error) {
-	list, err := s.repo.ListMetadataSubmissionsByUser(userID)
+func (s *Service) ListMyMetadataSubmissions(userID uuid.UUID, status string, limit, offset int) ([]models.MetadataSubmission, int64, int, error) {
+	list, total, err := s.repo.ListMetadataSubmissionsByUser(userID, status, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	if err := s.decorateMetadataNames(list); err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	if err := s.enrichMetadataSubmissions(list); err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
-	return list, nil
+	metadataXP, _, err := s.repo.UserAwardedXPBySource(userID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return list, total, metadataXP, nil
 }
 
 // ListMetadataSubmissions lists all contributions, optionally filtered. With no

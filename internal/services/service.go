@@ -627,20 +627,22 @@ func (s *Service) SubmitForReview(ctx context.Context, submissionID uuid.UUID, u
 
 // ListUserSubmissions returns the submissions of a user, each with its files
 // and logs. Files are included so the frontend can render uploaded thumbnails.
-func (s *Service) ListUserSubmissions(ctx context.Context, userID uuid.UUID) ([]models.SubmissionDetail, error) {
-	list, err := s.repo.ListSubmissionsByUser(userID)
+// status/limit/offset page the result; total is the unpaged count and totalXP
+// the lifetime XP earned from approved system art packs.
+func (s *Service) ListUserSubmissions(ctx context.Context, userID uuid.UUID, status string, limit, offset int) ([]models.SubmissionDetail, int64, int, error) {
+	list, total, err := s.repo.ListSubmissionsByUser(userID, status, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	details, err := s.loadDetails(ctx, list)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	if err := s.decorateWithUsername(ctx, details); err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	if err := s.decorateLogUsers(ctx, details); err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	ids := make([]uuid.UUID, 0, len(details))
 	for i := range details {
@@ -652,7 +654,11 @@ func (s *Service) ListUserSubmissions(ctx context.Context, userID uuid.UUID) ([]
 			details[i].BasePointsEarned = len(details[i].Files) * PointsSAPImage
 		}
 	}
-	return details, nil
+	_, totalXP, err := s.repo.UserAwardedXPBySource(userID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return details, total, totalXP, nil
 }
 
 // ListAdminSubmissions returns submissions (with files and logs) filtered by

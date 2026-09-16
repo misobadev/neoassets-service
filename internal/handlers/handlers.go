@@ -390,12 +390,14 @@ func (h *Handler) TrashSubmission(w http.ResponseWriter, r *http.Request) {
 
 // ListUserSubmissions returns the submissions of the logged-in user.
 func (h *Handler) ListUserSubmissions(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.ListUserSubmissions(r.Context(), userFromRequest(r))
+	limit, offset := parseUserListParams(r)
+	status := r.URL.Query().Get("status")
+	list, total, totalXP, err := h.svc.ListUserSubmissions(r.Context(), userFromRequest(r), status, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list submissions")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"submissions": list})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"submissions": list, "total": total, "total_xp": totalXP})
 }
 
 // GetUserSubmission returns a single submission owned by the logged-in user.

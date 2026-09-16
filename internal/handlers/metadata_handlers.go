@@ -31,6 +31,21 @@ func parseLimitOffset(r *http.Request) (int, int) {
 	return limit, offset
 }
 
+// parseUserListParams reads optional paging params for the user's own lists.
+// Unlike parseLimitOffset, a missing or invalid limit means no limit (the caller
+// gets everything), so callers that do not page keep their current behavior.
+func parseUserListParams(r *http.Request) (int, int) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 0 || limit > 1000 {
+		limit = 0
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
 // ListMetadataSystems returns the metadata system catalog.
 func (h *Handler) ListMetadataSystems(w http.ResponseWriter, r *http.Request) {
 	list, err := h.svc.ListMetadataSystems()
@@ -200,12 +215,14 @@ func (h *Handler) SubmitMetadataSubmission(w http.ResponseWriter, r *http.Reques
 
 // ListMyMetadataSubmissions lists the user's contributions.
 func (h *Handler) ListMyMetadataSubmissions(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.ListMyMetadataSubmissions(userFromRequest(r))
+	limit, offset := parseUserListParams(r)
+	status := r.URL.Query().Get("status")
+	list, total, totalXP, err := h.svc.ListMyMetadataSubmissions(userFromRequest(r), status, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list submissions")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"submissions": list})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"submissions": list, "total": total, "total_xp": totalXP})
 }
 
 // ---------------------------------------------------------------------------

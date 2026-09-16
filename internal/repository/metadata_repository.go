@@ -799,15 +799,39 @@ func (r *Repository) GetMetadataSubmissionForUser(id, userID uuid.UUID) (*models
 }
 
 // ListMetadataSubmissionsByUser lists a user's contributions, newest first.
-func (r *Repository) ListMetadataSubmissionsByUser(userID uuid.UUID) ([]models.MetadataSubmission, error) {
-	rows, err := r.db.Query(
-		`SELECT `+msCols+` FROM metadata_submissions WHERE user_id = $1 ORDER BY created_at DESC`, userID,
-	)
+// status filters by review state: "review" returns only pending/approved/rejected,
+// an empty status returns everything (including drafts). When limit > 0 the
+// result is paged and total is the unpaged count.
+func (r *Repository) ListMetadataSubmissionsByUser(userID uuid.UUID, status string, limit, offset int) ([]models.MetadataSubmission, int64, error) {
+	where := []string{"user_id = $1"}
+	args := []interface{}{userID}
+	switch status {
+	case "review":
+		where = append(where, "status IN ('pending','approved','rejected')")
+	case "":
+	default:
+		where = append(where, "status = $2")
+		args = append(args, status)
+	}
+	cond := strings.Join(where, " AND ")
+
+	var total int64
+	if err := r.db.QueryRow(`SELECT COUNT(*) FROM metadata_submissions WHERE `+cond, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `SELECT ` + msCols + ` FROM metadata_submissions WHERE ` + cond + ` ORDER BY created_at DESC`
+	if limit > 0 {
+		args = append(args, limit, offset)
+		query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+	}
+	rows, err := r.db.Query(query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	return scanMSRows(rows)
+	list, err := scanMSRows(rows)
+	return list, total, err
 }
 
 // ListMetadataSubmissions lists contributions by an optional status filter.

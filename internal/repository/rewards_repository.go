@@ -180,6 +180,30 @@ func (r *Repository) SubmissionPointsByIDs(ids []uuid.UUID) (map[uuid.UUID]int, 
 	return out, rows.Err()
 }
 
+// UserAwardedXPBySource returns the lifetime XP a user earned from approved
+// metadata contributions and from approved system art pack contributions.
+func (r *Repository) UserAwardedXPBySource(userID uuid.UUID) (metadataXP, sapXP int, err error) {
+	if err = r.db.QueryRow(
+		`SELECT COALESCE(SUM(x.delta), 0)
+		   FROM xp_ledger x
+		   JOIN metadata_submissions ms ON ms.id = x.submission_id
+		  WHERE x.user_id = $1 AND x.delta > 0 AND ms.status = 'approved'`,
+		userID,
+	).Scan(&metadataXP); err != nil {
+		return 0, 0, fmt.Errorf("failed to sum metadata xp: %w", err)
+	}
+	if err = r.db.QueryRow(
+		`SELECT COALESCE(SUM(x.delta), 0)
+		   FROM xp_ledger x
+		   JOIN submissions s ON s.id = x.submission_id
+		  WHERE x.user_id = $1 AND x.delta > 0 AND s.status = 'approved'`,
+		userID,
+	).Scan(&sapXP); err != nil {
+		return 0, 0, fmt.Errorf("failed to sum sap xp: %w", err)
+	}
+	return metadataXP, sapXP, nil
+}
+
 // AwardXP credits a user's XP and records the reason in the ledger.
 func (r *Repository) AwardXP(userID uuid.UUID, delta int, reason string, submissionID *uuid.UUID) error {
 	if delta == 0 {

@@ -187,16 +187,39 @@ func (r *Repository) ListReviewSubmissions() ([]models.Submission, error) {
 }
 
 // ListSubmissionsByUser returns submissions belonging to a user, newest first.
-// Trashed submissions are hidden unless the caller asks for them explicitly.
-func (r *Repository) ListSubmissionsByUser(userID uuid.UUID) ([]models.Submission, error) {
-	rows, err := r.db.Query(
-		`SELECT id, pack_id, name, author, description, donation_url, ai, version,
-		        status, anon_user_id, user_id, created_at, reviewed_at, reviewed_by, admin_version, contribution
-		 FROM submissions WHERE user_id = $1 AND status <> $2 ORDER BY created_at DESC`,
-		userID, models.StatusTrashed,
-	)
+// status filters by review state: "review" returns only pending/approved/rejected
+// (the review feed), an empty status returns everything except trashed. When
+// limit > 0 the result is paged and total is the unpaged count.
+func (r *Repository) ListSubmissionsByUser(userID uuid.UUID, status string, limit, offset int) ([]models.Submission, int64, error) {
+	where := []string{"user_id = $1"}
+	args := []interface{}{userID}
+	switch status {
+	case "":
+		where = append(where, "status <> $2")
+		args = append(args, models.StatusTrashed)
+	case "review":
+		where = append(where, "status IN ('pending','approved','rejected')")
+	default:
+		where = append(where, "status = $2")
+		args = append(args, status)
+	}
+	cond := strings.Join(where, " AND ")
+
+	var total int64
+	if err := r.db.QueryRow(`SELECT COUNT(*) FROM submissions WHERE `+cond, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count user submissions: %w", err)
+	}
+
+	query := `SELECT id, pack_id, name, author, description, donation_url, ai, version,
+	                 status, anon_user_id, user_id, created_at, reviewed_at, reviewed_by, admin_version, contribution
+	          FROM submissions WHERE ` + cond + ` ORDER BY created_at DESC`
+	if limit > 0 {
+		args = append(args, limit, offset)
+		query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+	}
+	rows, err := r.db.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list user submissions: %w", err)
+		return nil, 0, fmt.Errorf("failed to list user submissions: %w", err)
 	}
 	defer rows.Close()
 
@@ -207,11 +230,11 @@ func (r *Repository) ListSubmissionsByUser(userID uuid.UUID) ([]models.Submissio
 			&s.ID, &s.PackID, &s.Name, &s.Author, &s.Description, &s.DonationURL, &s.AI, &s.Version,
 			&s.Status, &s.AnonUserID, &s.UserID, &s.CreatedAt, &s.ReviewedAt, &s.ReviewedBy, &s.AdminVersion, &s.Contribution,
 		); err != nil {
-			return nil, fmt.Errorf("failed to scan user submission: %w", err)
+			return nil, 0, fmt.Errorf("failed to scan user submission: %w", err)
 		}
 		list = append(list, s)
 	}
-	return list, rows.Err()
+	return list, total, rows.Err()
 }
 
 // SetSubmissionStatus updates the status of a submission and records who/when
