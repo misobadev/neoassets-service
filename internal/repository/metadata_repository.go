@@ -535,8 +535,9 @@ func (r *Repository) SearchGames(q, systemID, gtype, sort string, limit, offset 
 		n := len(args)
 		// Match the display name or the short name (the MAME/FBNeo ROM set, e.g.
 		// "sfa3"), so a filename like "sfa3.zip" resolves the arcade game.
+		// f_unaccent is the immutable wrapper indexed by migration 059.
 		where = append(where, fmt.Sprintf(
-			"(regexp_replace(unaccent(lower(g.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR regexp_replace(unaccent(lower(g.short_name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d)",
+			"(regexp_replace(f_unaccent(lower(g.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR regexp_replace(f_unaccent(lower(g.short_name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d)",
 			n, n))
 	}
 	if systemID != "" {
