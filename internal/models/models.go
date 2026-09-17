@@ -739,6 +739,12 @@ type MetadataSubmission struct {
 	// brand-new game contribution ("new_game").
 	Kind          string          `json:"kind" db:"kind"`
 	Payload       json.RawMessage `json:"payload" db:"payload"`
+	// OldPayload and OldMedia snapshot the target's published text and media at
+	// approval time, so the review detail still shows the "old" side after the
+	// target has been updated. The replaced media objects are kept under the
+	// history/ prefix in R2.
+	OldPayload    json.RawMessage `json:"old_payload" db:"old_payload"`
+	OldMedia      json.RawMessage `json:"old_media" db:"old_media"`
 	ReviewComment string          `json:"review_comment" db:"review_comment"`
 	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
 	ReviewedAt    *time.Time      `json:"reviewed_at" db:"reviewed_at"`

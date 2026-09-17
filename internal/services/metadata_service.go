@@ -792,6 +792,11 @@ func (s *Service) ApproveMetadataSubmission(id, adminID uuid.UUID, comment strin
 		sub.GameID = &gameID
 		sub.SystemID = nil
 	}
+	// Snapshot the target's current text and media before the approval overwrites
+	// them, so the review detail can still show the "old" side afterwards.
+	if sub.Kind != "new_game" {
+		s.captureOldState(context.Background(), sub, files)
+	}
 	if err := s.moveSubmissionMediaToCanonical(context.Background(), id, sub); err != nil {
 		return nil, err
 	}
@@ -964,6 +969,83 @@ func (s *Service) awardMetadataPoints(id uuid.UUID, sub *models.MetadataSubmissi
 		return nil
 	}
 	return s.awardXP(sub.UserID, delta, "approved_metadata", &id)
+}
+
+// captureOldState snapshots the target's published text and media just before
+// an approval overwrites them, so the review detail can still show the "old"
+// side afterwards. The replaced media objects are moved to the history/ prefix
+// in R2 so they are preserved (like rejected/), out of the orphan-cleanup path.
+func (s *Service) captureOldState(ctx context.Context, sub *models.MetadataSubmission, files []models.MetadataSubmissionFile) {
+	oldPayload := map[string]any{}
+	if sub.GameID != nil {
+		if g, err := s.repo.GetGame(*sub.GameID, ""); err == nil {
+			oldPayload = map[string]any{
+				"name":          g.Name,
+				"description":   g.Description,
+				"region":        g.Region,
+				"genre":         g.Genre,
+				"developer":     g.Developer,
+				"publisher":     g.Publisher,
+				"release_year":  g.ReleaseYear,
+				"release_month": g.ReleaseMonth,
+				"rating":        g.Rating,
+				"type":          g.Type,
+			}
+		}
+	} else if sub.SystemID != nil {
+		if sys, err := s.repo.GetMetadataSystem(*sub.SystemID); err == nil {
+			oldPayload = map[string]any{"description": sys.Description, "region": sys.Region}
+		}
+	}
+
+	kinds := map[string]bool{}
+	for _, f := range files {
+		kinds[f.Kind] = true
+	}
+	var media []models.Media
+	var err error
+	if sub.GameID != nil {
+		media, err = s.repo.ListMediaByGame(*sub.GameID)
+	} else if sub.SystemID != nil {
+		media, err = s.repo.ListMediaBySystem(*sub.SystemID)
+	}
+	oldMedia := []map[string]any{}
+	if err == nil {
+		for _, m := range media {
+			if !kinds[m.Kind] {
+				continue
+			}
+			key := m.ObjectKey
+			hist := "history/" + key
+			if cerr := s.r2.CopyObject(ctx, key, hist); cerr == nil {
+				if derr := s.r2.DeleteObject(ctx, key); derr != nil {
+					log.Warn().Err(derr).Str("object", key).Msg("failed to delete replaced media after history copy")
+				}
+				key = hist
+			} else {
+				log.Warn().Err(cerr).Str("object", m.ObjectKey).Msg("failed to preserve replaced media in history")
+			}
+			oldMedia = append(oldMedia, map[string]any{
+				"kind":       m.Kind,
+				"object_key": key,
+				"mime":       m.Mime,
+				"size":       m.Size,
+				"created_at": m.CreatedAt,
+			})
+		}
+	}
+
+	pb, err := json.Marshal(oldPayload)
+	if err != nil {
+		return
+	}
+	mb, err := json.Marshal(oldMedia)
+	if err != nil {
+		return
+	}
+	if err := s.repo.SetMetadataSubmissionOldState(sub.ID, pb, mb); err != nil {
+		log.Warn().Err(err).Str("submission", sub.ID.String()).Msg("failed to store old state snapshot")
+	}
 }
 
 // moveSubmissionMediaToCanonical moves approved submission media objects from

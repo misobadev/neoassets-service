@@ -695,6 +695,18 @@ func (r *Repository) CreateMetadataSubmission(gameID *uuid.UUID, systemID *strin
 	return id, nil
 }
 
+// SetMetadataSubmissionOldState stores the target's pre-approval snapshot (old
+// text and old media) on the submission.
+func (r *Repository) SetMetadataSubmissionOldState(id uuid.UUID, oldPayload, oldMedia []byte) error {
+	if _, err := r.db.Exec(
+		`UPDATE metadata_submissions SET old_payload = $1, old_media = $2 WHERE id = $3`,
+		oldPayload, oldMedia, id,
+	); err != nil {
+		return fmt.Errorf("failed to store submission old state: %w", err)
+	}
+	return nil
+}
+
 // SetMetadataSubmissionGame points a submission at the game it created (used
 // when approving a "new_game" contribution) and clears the system target.
 func (r *Repository) SetMetadataSubmissionGame(id, gameID uuid.UUID) error {
@@ -774,16 +786,22 @@ func (r *Repository) GameExistsByName(systemID, name string) (bool, error) {
 	return exists, nil
 }
 
-const msCols = `id, game_id, system_id, user_id, status, kind, payload, review_comment, created_at, reviewed_at, reviewed_by`
+const msCols = `id, game_id, system_id, user_id, status, kind, payload, old_payload, old_media, review_comment, created_at, reviewed_at, reviewed_by`
 
 func scanMS(row *sql.Row) (*models.MetadataSubmission, error) {
 	var m models.MetadataSubmission
-	err := row.Scan(&m.ID, &m.GameID, &m.SystemID, &m.UserID, &m.Status, &m.Kind, &m.Payload, &m.ReviewComment, &m.CreatedAt, &m.ReviewedAt, &m.ReviewedBy)
+	err := row.Scan(&m.ID, &m.GameID, &m.SystemID, &m.UserID, &m.Status, &m.Kind, &m.Payload, &m.OldPayload, &m.OldMedia, &m.ReviewComment, &m.CreatedAt, &m.ReviewedAt, &m.ReviewedBy)
 	if err != nil {
 		return nil, err
 	}
 	if m.Payload == nil {
 		m.Payload = json.RawMessage("{}")
+	}
+	if m.OldPayload == nil {
+		m.OldPayload = json.RawMessage("{}")
+	}
+	if m.OldMedia == nil {
+		m.OldMedia = json.RawMessage("[]")
 	}
 	return &m, nil
 }
@@ -870,11 +888,17 @@ func scanMSRows(rows *sql.Rows) ([]models.MetadataSubmission, error) {
 	var list []models.MetadataSubmission
 	for rows.Next() {
 		var m models.MetadataSubmission
-		if err := rows.Scan(&m.ID, &m.GameID, &m.SystemID, &m.UserID, &m.Status, &m.Kind, &m.Payload, &m.ReviewComment, &m.CreatedAt, &m.ReviewedAt, &m.ReviewedBy); err != nil {
+		if err := rows.Scan(&m.ID, &m.GameID, &m.SystemID, &m.UserID, &m.Status, &m.Kind, &m.Payload, &m.OldPayload, &m.OldMedia, &m.ReviewComment, &m.CreatedAt, &m.ReviewedAt, &m.ReviewedBy); err != nil {
 			return nil, err
 		}
 		if m.Payload == nil {
 			m.Payload = json.RawMessage("{}")
+		}
+		if m.OldPayload == nil {
+			m.OldPayload = json.RawMessage("{}")
+		}
+		if m.OldMedia == nil {
+			m.OldMedia = json.RawMessage("[]")
 		}
 		list = append(list, m)
 	}
