@@ -359,6 +359,9 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 	// Per-IP limiters for the unauthenticated surfaces.
 	authLimiter := handlers.NewIPLimiter(10, 10)
 	metadataLimiter := handlers.NewIPLimiter(30, 30)
+	// The catalog list endpoints (web browse) get a stricter per-IP limit; the
+	// scraping API has its own quota and must NOT share this.
+	catalogLimiter := handlers.NewIPLimiter(20, 20)
 	// Pack downloads are keyed by (IP, pack): a client may install a given pack
 	// only a few times per minute, so download counters cannot be inflated by
 	// hammering the endpoint while legitimate installs still work.
@@ -385,12 +388,15 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 		// Patreon member webhooks, verified via the X-Patreon-Signature HMAC.
 		r.Post("/webhooks/patreon", h.PatreonWebhook)
 
-		// Metadata catalog (public browse + lookup, per-IP rate limited)
+		// Metadata catalog (public browse + lookup, per-IP rate limited). The list
+		// endpoints get a stricter limiter and a shared-cache TTL so Cloudflare
+		// can serve them at the edge and absorb scraping.
 		r.Group(func(r chi.Router) {
 			r.Use(metadataLimiter.Handler)
+			r.Use(handlers.CacheControl("public, max-age=60, s-maxage=300"))
 			r.Get("/metadata/systems", h.ListMetadataSystems)
-			r.Get("/metadata/systems/{id}/games", h.ListGamesBySystem)
-			r.Get("/metadata/games", h.SearchGames)
+			r.With(catalogLimiter.Handler).Get("/metadata/systems/{id}/games", h.ListGamesBySystem)
+			r.With(catalogLimiter.Handler).Get("/metadata/games", h.SearchGames)
 			r.Get("/metadata/games/lookup", h.LookupGame)
 			r.Get("/metadata/games/{id}", h.GetGameDetail)
 			r.Get("/metadata/languages", h.ListMetadataLanguages)

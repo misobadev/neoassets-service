@@ -3,6 +3,7 @@ package handlers
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,13 +89,38 @@ func (l *IPLimiter) KeyedHandler(keyFn func(r *http.Request) string) func(http.H
 	}
 }
 
-// ClientIP returns the remote address host without the port.
+// ClientIP returns the real client IP. The API sits behind Cloudflare and
+// Traefik, so RemoteAddr is a proxy address: prefer Cloudflare's
+// CF-Connecting-IP, then the first X-Forwarded-For entry, and only fall back to
+// RemoteAddr. The origin is firewalled to the proxy, so these headers are
+// trusted; without this the per-IP limiters would key on the proxy address.
 func ClientIP(r *http.Request) string {
+	if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); ip != "" {
+		return ip
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+			return first
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// CacheControl sets a Cache-Control header on GET responses so a shared cache
+// (Cloudflare) can serve the public catalog at the edge and absorb scraping.
+func CacheControl(value string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				w.Header().Set("Cache-Control", value)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // maxRequestBody caps the size of any request body (2 MiB), enough for JSON

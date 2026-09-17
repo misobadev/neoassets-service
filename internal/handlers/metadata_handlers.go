@@ -13,13 +13,20 @@ import (
 	"neoassets/pkg/auth"
 )
 
-// maxSearchOffset bounds deep scans on the public catalog endpoints.
+// maxSearchOffset bounds deep scans on the public catalog endpoints. It is high
+// so the search can filter across the whole catalog (large systems included).
 const maxSearchOffset = 50000
+
+// maxPageLimit caps how many rows a single catalog request can return.
+const maxPageLimit = 60
 
 func parseLimitOffset(r *http.Request) (int, int) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	}
+	if limit > maxPageLimit {
+		limit = maxPageLimit
 	}
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if offset < 0 {
