@@ -1,8 +1,3 @@
-# Regenerate the embedded system catalog from the neostation-frontend repo.
-.PHONY: sync
-sync:
-	go run ./cmd/sync-systems
-
 # Run the service locally.
 .PHONY: run
 run:

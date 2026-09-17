@@ -102,7 +102,7 @@ func main() {
 	repo := repository.NewRepository(db)
 
 	// Load the embedded system catalog used for validation and by the web
-	// endpoint. See cmd/sync-systems for how systems.json is generated.
+	// endpoint (internal/systems/systems.json).
 	catalog, err := systems.Load()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load system catalog")

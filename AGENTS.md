@@ -13,7 +13,6 @@ the DB via `GET /api/v1/packs`.
 
 ```
 cmd/main.go                 config, DB, migration runner, router
-cmd/sync-systems            rebuilds internal/systems/systems.json from the repo
 internal/models             request/response + DB structs (scrape.go = scraping DTOs)
 internal/repository         SQL access (repository.go, user_repository.go,
                             metadata_repository.go, developer_repository.go)

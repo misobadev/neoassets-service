@@ -5,6 +5,21 @@
     "short_name": "Amazon"
   },
   {
+    "id": "android",
+    "name": "Android",
+    "short_name": "Android"
+  },
+  {
+    "id": "all",
+    "name": "All",
+    "short_name": "All"
+  },
+  {
+    "id": "favorites",
+    "name": "Favorites",
+    "short_name": "Favorites"
+  },
+  {
     "id": "cpc",
     "name": "Amstrad CPC",
     "short_name": "CPC"
