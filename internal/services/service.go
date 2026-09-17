@@ -378,6 +378,27 @@ func isReviewObjectKey(objectKey string) bool {
 	return strings.Contains(objectKey, "/review/") || strings.Contains(objectKey, "/uploads/")
 }
 
+// rejectedObjectKey is where a rejected submission's file is preserved, so the
+// rejected upload stays available for the review history instead of being
+// deleted.
+func rejectedObjectKey(objectKey string) string {
+	return "rejected/" + objectKey
+}
+
+// preserveRejectedFile moves an object to its rejected location (copy + delete)
+// and returns the new key. The caller stores the new key so the file row keeps
+// pointing at the preserved object.
+func preserveRejectedFile(ctx context.Context, r2c r2.Client, objectKey string) (string, error) {
+	dst := rejectedObjectKey(objectKey)
+	if err := r2c.CopyObject(ctx, objectKey, dst); err != nil {
+		return "", err
+	}
+	if err := r2c.DeleteObject(ctx, objectKey); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
 // reviewObjectKey builds the staged review object key for a submission upload,
 // kept separate from the canonical published keys so the live pack is never
 // touched until an admin approves the submission.
@@ -982,22 +1003,17 @@ func (s *Service) Reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 	if err != nil {
 		return nil, err
 	}
-	var reviewKeys []string
-	var reviewFileIDs []uuid.UUID
+	// Rejected uploads are preserved under rejected/ (not deleted) so the review
+	// history keeps the submitted art; each file row is updated to the new key.
 	for _, f := range files {
 		if !isReviewObjectKey(f.ObjectKey) {
 			continue
 		}
-		reviewKeys = append(reviewKeys, f.ObjectKey)
-		reviewFileIDs = append(reviewFileIDs, f.ID)
-	}
-	if len(reviewKeys) > 0 {
-		if err := s.r2.DeleteObjects(ctx, reviewKeys); err != nil {
-			return nil, fmt.Errorf("delete review files: %w", err)
+		newKey, err := preserveRejectedFile(ctx, s.r2, f.ObjectKey)
+		if err != nil {
+			return nil, fmt.Errorf("preserve rejected file: %w", err)
 		}
-	}
-	for _, id := range reviewFileIDs {
-		if err := s.repo.DeleteSubmissionFile(id); err != nil {
+		if err := s.repo.UpdateSubmissionFileObjectKey(f.ID, newKey); err != nil {
 			return nil, err
 		}
 	}

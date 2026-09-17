@@ -1119,9 +1119,15 @@ func (s *Service) RejectMetadataSubmission(ctx context.Context, id, adminID uuid
 	if err != nil {
 		return nil, err
 	}
+	// Rejected uploads are preserved under rejected/ (not deleted) so the review
+	// history keeps the submitted art; each file row is updated to the new key.
 	for _, f := range files {
-		if err := s.r2.DeleteObject(ctx, f.ObjectKey); err != nil {
-			return nil, fmt.Errorf("failed to delete %s: %w", f.ObjectKey, err)
+		newKey, err := preserveRejectedFile(ctx, s.r2, f.ObjectKey)
+		if err != nil {
+			return nil, fmt.Errorf("preserve rejected file %s: %w", f.ObjectKey, err)
+		}
+		if err := s.repo.UpdateMetadataSubmissionFileObjectKey(f.ID, newKey); err != nil {
+			return nil, err
 		}
 	}
 	return s.repo.SetMetadataStatusForAdmin(id, models.MetadataRejected, adminID, comment)
