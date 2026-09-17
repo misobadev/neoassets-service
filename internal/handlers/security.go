@@ -110,19 +110,6 @@ func ClientIP(r *http.Request) string {
 	return host
 }
 
-// CacheControl sets a Cache-Control header on GET responses so a shared cache
-// (Cloudflare) can serve the public catalog at the edge and absorb scraping.
-func CacheControl(value string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet {
-				w.Header().Set("Cache-Control", value)
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
 // maxRequestBody caps the size of any request body (2 MiB), enough for JSON
 // payloads while bounding memory against oversized submissions.
 const maxRequestBody = 2 << 20

@@ -389,11 +389,10 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 		r.Post("/webhooks/patreon", h.PatreonWebhook)
 
 		// Metadata catalog (public browse + lookup, per-IP rate limited). The list
-		// endpoints get a stricter limiter and a shared-cache TTL so Cloudflare
-		// can serve them at the edge and absorb scraping.
+		// endpoints get a stricter limiter; no edge cache is used so the catalog
+		// is always fresh.
 		r.Group(func(r chi.Router) {
 			r.Use(metadataLimiter.Handler)
-			r.Use(handlers.CacheControl("public, max-age=60, s-maxage=300"))
 			r.Get("/metadata/systems", h.ListMetadataSystems)
 			r.With(catalogLimiter.Handler).Get("/metadata/systems/{id}/games", h.ListGamesBySystem)
 			r.With(catalogLimiter.Handler).Get("/metadata/games", h.SearchGames)
