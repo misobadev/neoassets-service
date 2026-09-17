@@ -175,8 +175,11 @@ func Middleware(secret string) func(http.Handler) http.Handler {
 }
 
 // ReviewMiddleware validates a reviewer session: an admin token (from the admin
-// login) or a user token whose role is admin or reviewer. Role enforcement is
-// re-checked against the database by the review handlers.
+// login) or any valid user token. The role is NOT checked from the token claim
+// (it can be stale: a user promoted to reviewer keeps the old role until the
+// token is reissued); the review handlers re-check the current role against the
+// database (RequireReviewer), so a promotion grants access immediately and a
+// demotion revokes it.
 func ReviewMiddleware(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,10 +196,6 @@ func ReviewMiddleware(secret string) func(http.Handler) http.Handler {
 			claims, err := ParseUserToken(secret, tokenString)
 			if err != nil {
 				writeAuthError(w, http.StatusUnauthorized, "Invalid or expired token")
-				return
-			}
-			if claims.Role != "admin" && claims.Role != "reviewer" {
-				writeAuthError(w, http.StatusForbidden, "Forbidden")
 				return
 			}
 			r = r.WithContext(WithUser(r.Context(), claims))
