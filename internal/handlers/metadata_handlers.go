@@ -105,6 +105,16 @@ func (h *Handler) ListMetadataLanguages(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"languages": list})
 }
 
+// ListGenres returns the canonical genre catalog for the web forms.
+func (h *Handler) ListGenres(w http.ResponseWriter, r *http.Request) {
+	list, err := h.svc.ListGenres()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list genres")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"genres": list})
+}
+
 // GetGameDetail returns a game bundled with ROMs and media. An optional ?lang=
 // query param resolves the description to that language's translation
 // (falling back to English when no translation exists).

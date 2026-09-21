@@ -49,6 +49,10 @@ constraint (migrations `008` + `009`). Array of statuses differs from older docs
 - `GET /api/v1/config`                       public runtime config (threads,
   daily games per thread, thread cost curve and points) so the UI renders the
   current economy without hardcoded values.
+- `GET /api/v1/metadata/genres`               canonical genre catalog
+  (`genres` table, migration `061`) used by the web metadata forms. Submissions
+  must send one of these names; the service validates membership but never
+  normalizes (normalization lives in the importer).
 - `GET /api/v1/packs?sort=&limit=&offset=`   `services.ListedApprovedPacks()` ->
   `{"themes":[...],"total":N}`, sorted by `downloads` (default), `name` or
   `created`, paginated. Only `approved` submissions are served. Each pack

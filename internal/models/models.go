@@ -644,6 +644,13 @@ type Language struct {
 	NativeName string `json:"native_name" db:"native_name"`
 }
 
+// Genre is a canonical game genre from the genres catalog.
+type Genre struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	SortOrder int    `json:"sort_order"`
+}
+
 // Game is a single game in the metadata catalog.
 type Game struct {
 	ID           uuid.UUID `json:"id" db:"id"`

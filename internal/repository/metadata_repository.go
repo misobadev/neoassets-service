@@ -662,6 +662,37 @@ func (r *Repository) ListRomsByGame(gameID uuid.UUID) ([]models.Rom, error) {
 	return list, rows.Err()
 }
 
+// ListGenres returns the canonical genre catalog ordered for display.
+func (r *Repository) ListGenres() ([]models.Genre, error) {
+	rows, err := r.db.Query(`SELECT id, name, sort_order FROM genres ORDER BY sort_order, name`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list genres: %w", err)
+	}
+	defer rows.Close()
+	out := []models.Genre{}
+	for rows.Next() {
+		var g models.Genre
+		if err := rows.Scan(&g.ID, &g.Name, &g.SortOrder); err != nil {
+			return nil, fmt.Errorf("failed to scan genre: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// GenreExists reports whether a genre name is in the canonical catalog.
+func (r *Repository) GenreExists(name string) (bool, error) {
+	var n int
+	err := r.db.QueryRow(`SELECT 1 FROM genres WHERE name = $1`, name).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to check genre: %w", err)
+	}
+	return true, nil
+}
+
 // ListMediaByGame returns media attached to a game.
 func (r *Repository) ListMediaByGame(gameID uuid.UUID) ([]models.Media, error) {
 	return r.listMedia(`WHERE m.game_id = $1 ORDER BY m.created_at`, gameID)

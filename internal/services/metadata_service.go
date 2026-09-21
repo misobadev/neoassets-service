@@ -167,6 +167,11 @@ func (s *Service) ListLanguages() ([]models.Language, error) {
 	return s.repo.ListLanguages()
 }
 
+// ListGenres returns the canonical genre catalog used by the web forms.
+func (s *Service) ListGenres() ([]models.Genre, error) {
+	return s.repo.ListGenres()
+}
+
 // LookupGame finds games by any of the given ROM hashes, optionally scoped to a
 // system (empty systemID searches all systems).
 func (s *Service) LookupGame(crc, md5, sha1, sha256, systemID string) ([]models.Game, error) {
@@ -204,6 +209,20 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 	if desc, ok := req.Payload["description"].(string); ok {
 		if n := len([]rune(strings.TrimSpace(desc))); n > MaxDescriptionLength {
 			return nil, fmt.Errorf("description must be at most %d characters (got %d)", MaxDescriptionLength, n)
+		}
+	}
+	// The genre must be one of the canonical catalog values. The service does
+	// not normalize: callers (web form, importer) must send a catalog name.
+	if g, ok := req.Payload["genre"].(string); ok {
+		g = strings.TrimSpace(g)
+		if g != "" {
+			exists, err := s.repo.GenreExists(g)
+			if err != nil {
+				return nil, err
+			}
+			if !exists {
+				return nil, fmt.Errorf("unknown genre %q", g)
+			}
 		}
 	}
 
