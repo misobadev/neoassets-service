@@ -807,6 +807,48 @@ func (r *Repository) refreshGamePrimary(gameID uuid.UUID) error {
 	return nil
 }
 
+// MediaExists reports whether a game already has a media row of the given kind
+// and object key (used to validate a region move).
+func (r *Repository) MediaExists(gameID uuid.UUID, kind, objectKey string) (bool, error) {
+	var n int
+	err := r.db.QueryRow(`SELECT 1 FROM media WHERE game_id = $1 AND kind = $2 AND object_key = $3`, gameID, kind, objectKey).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to check media: %w", err)
+	}
+	return true, nil
+}
+
+// ClearGameRegion clears the name and/or release of a region (used when a value
+// is moved to another region). The row is dropped when it becomes empty.
+func (r *Repository) ClearGameRegion(gameID uuid.UUID, region string, clearName, clearRelease bool) error {
+	sets := []string{}
+	if clearName {
+		sets = append(sets, "name = ''")
+	}
+	if clearRelease {
+		sets = append(sets, "release_year = NULL", "release_month = NULL")
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+	if _, err := r.db.Exec(
+		`UPDATE game_regions SET `+strings.Join(sets, ", ")+`, updated_at = NOW() WHERE game_id = $1 AND region = $2`,
+		gameID, region,
+	); err != nil {
+		return fmt.Errorf("failed to clear game region: %w", err)
+	}
+	if _, err := r.db.Exec(
+		`DELETE FROM game_regions WHERE game_id = $1 AND region = $2 AND name = '' AND release_year IS NULL`,
+		gameID, region,
+	); err != nil {
+		return fmt.Errorf("failed to drop empty game region: %w", err)
+	}
+	return nil
+}
+
 // ListMediaByGame returns media attached to a game.
 func (r *Repository) ListMediaByGame(gameID uuid.UUID) ([]models.Media, error) {
 	return r.listMedia(`WHERE m.game_id = $1 ORDER BY m.created_at`, gameID)
@@ -1282,17 +1324,44 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 	// kind for that game/system (a submission replaces, it does not add).
 	if sub.GameID != nil {
 		gid := *sub.GameID
+		files, err := r.ListMetadataSubmissionFiles(id)
+		if err != nil {
+			return err
+		}
+		// A file whose object_key is not a staging upload references an existing
+		// media being moved to another region: reassign its region, replacing
+		// whatever the target region had for that kind.
+		for _, f := range files {
+			if strings.HasPrefix(f.ObjectKey, "media/staging/") {
+				continue
+			}
+			if _, err := r.db.Exec(
+				`DELETE FROM media WHERE game_id = $1 AND kind = $2 AND region = $3 AND object_key <> $4`,
+				gid, f.Kind, f.Region, f.ObjectKey,
+			); err != nil {
+				return fmt.Errorf("failed to clear target region media: %w", err)
+			}
+			if _, err := r.db.Exec(
+				`UPDATE media SET region = $1 WHERE game_id = $2 AND object_key = $3`,
+				f.Region, gid, f.ObjectKey,
+			); err != nil {
+				return fmt.Errorf("failed to move media region: %w", err)
+			}
+		}
+		// Replace the media for the (kind, region) of the new uploads.
 		if _, err := r.db.Exec(
 			`DELETE FROM media m WHERE m.game_id = $1 AND EXISTS (
 			   SELECT 1 FROM metadata_submission_files f
-			   WHERE f.submission_id = $2 AND f.kind = m.kind AND f.region = m.region)`,
+			   WHERE f.submission_id = $2 AND f.kind = m.kind AND f.region = m.region
+			     AND f.object_key LIKE 'media/staging/%' AND m.object_key <> f.object_key)`,
 			gid, id,
 		); err != nil {
 			return fmt.Errorf("failed to replace media: %w", err)
 		}
 		if _, err := r.db.Exec(
 			`INSERT INTO media (game_id, kind, object_key, mime, region, size, submitted_by)
-			 SELECT $1, kind, object_key, mime, region, size, $3 FROM metadata_submission_files WHERE submission_id = $2`,
+			 SELECT $1, kind, object_key, mime, region, size, $3 FROM metadata_submission_files
+			 WHERE submission_id = $2 AND object_key LIKE 'media/staging/%'`,
 			gid, id, sub.UserID,
 		); err != nil {
 			return fmt.Errorf("failed to apply media files: %w", err)
@@ -1341,10 +1410,17 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 	if sub.GameID != nil {
 		gid := *sub.GameID
 		region := str("region")
+		regionFrom := str("region_from")
 		if v := str("name"); v != "" {
 			// With a region, the name is stored per region and the game's
-			// canonical name is recomputed by region priority.
+			// canonical name is recomputed by region priority. region_from moves
+			// an existing name from another region.
 			if region != "" {
+				if regionFrom != "" && regionFrom != region {
+					if err := r.ClearGameRegion(gid, regionFrom, true, false); err != nil {
+						return err
+					}
+				}
 				if err := r.UpsertGameRegion(gid, region, v, nil, nil); err != nil {
 					return err
 				}
@@ -1385,6 +1461,11 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 				mp = &m
 			}
 			if region != "" {
+				if regionFrom != "" && regionFrom != region {
+					if err := r.ClearGameRegion(gid, regionFrom, false, true); err != nil {
+						return err
+					}
+				}
 				if err := r.UpsertGameRegion(gid, region, "", &y, mp); err != nil {
 					return err
 				}

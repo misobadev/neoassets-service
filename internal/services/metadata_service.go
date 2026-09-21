@@ -373,12 +373,23 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 		if f.ObjectKey == "" {
 			return nil, fmt.Errorf("object_key required")
 		}
-		// Only staging uploads may be registered on a submission; canonical
-		// media keys are immutable and reserved for approved content.
+		// A staging key is a new upload. Any other key references an existing
+		// cover/logo of this game that is being moved to another region.
 		if !strings.HasPrefix(f.ObjectKey, "media/staging/") {
-			return nil, fmt.Errorf("object_key must be a staged media upload")
-		}
-		if err := s.ensureUploaded(context.Background(), f.ObjectKey, f.FileName); err != nil {
+			if req.GameID == nil {
+				return nil, fmt.Errorf("media can only be moved on a game")
+			}
+			if f.Kind != models.MediaCover && f.Kind != models.MediaLogo {
+				return nil, fmt.Errorf("only cover and logo can be moved between regions")
+			}
+			ok, err := s.repo.MediaExists(*req.GameID, f.Kind, f.ObjectKey)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, fmt.Errorf("media not found")
+			}
+		} else if err := s.ensureUploaded(context.Background(), f.ObjectKey, f.FileName); err != nil {
 			return nil, err
 		}
 		mime := f.MimeType
@@ -1172,6 +1183,11 @@ func (s *Service) moveSubmissionMediaToCanonical(ctx context.Context, id uuid.UU
 	s.deleteReplacedMediaObjects(ctx, sub, files)
 
 	for _, f := range files {
+		// A non-staging object_key is an existing media being moved to another
+		// region; there is nothing to copy or convert, only its region changes.
+		if !strings.HasPrefix(f.ObjectKey, "media/staging/") {
+			continue
+		}
 		// Videos are re-encoded to MP4 (HEVC + AAC) at the original resolution
 		// with nearest-neighbour scaling; the canonical object is always .mp4.
 		if f.Kind == models.MediaVideo {
