@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"fmt"
+
 	"github.com/google/uuid"
 
 	"neoassets/internal/models"
@@ -127,24 +129,46 @@ func (r *Repository) TopReviewers(limit int) ([]models.UserStat, error) {
 	return out, rows.Err()
 }
 
-// TopSubmitters returns users with the most SAP submissions (any non-trashed
-// state), excluding hidden users.
-func (r *Repository) TopSubmitters(limit int) ([]models.UserCountStat, error) {
-	return r.userSubmissions(limit, `s.status <> 'trashed'`)
+// TopContributions returns users with the most approved contributions across
+// both SAP and metadata, excluding hidden users. A metadata submission counts
+// once, while a SAP submission counts once per uploaded image file.
+func (r *Repository) TopContributions(limit int) ([]models.UserCountStat, error) {
+	return r.topApprovedContributions(limit, 0)
 }
 
-// TopApproved returns users with the most approved SAP submissions.
-func (r *Repository) TopApproved(limit int) ([]models.UserCountStat, error) {
-	return r.userSubmissions(limit, `s.status = 'approved'`)
+// TopApprovedThisWeek returns users with the most approved contributions in
+// the last seven days, using the same counting rule as TopContributions.
+func (r *Repository) TopApprovedThisWeek(limit int) ([]models.UserCountStat, error) {
+	return r.topApprovedContributions(limit, 7)
 }
 
-func (r *Repository) userSubmissions(limit int, cond string) ([]models.UserCountStat, error) {
+// topApprovedContributions counts approved contributions per user. When
+// sinceDays > 0 only contributions reviewed within that window are counted.
+func (r *Repository) topApprovedContributions(limit, sinceDays int) ([]models.UserCountStat, error) {
+	sapFilter := ""
+	metaFilter := ""
+	if sinceDays > 0 {
+		sapFilter = fmt.Sprintf(" AND s.reviewed_at >= NOW() - INTERVAL '%d days'", sinceDays)
+		metaFilter = fmt.Sprintf(" AND m.reviewed_at >= NOW() - INTERVAL '%d days'", sinceDays)
+	}
 	rows, err := r.db.Query(`
-		SELECT s.user_id, u.username, u.avatar_key, COUNT(*) AS c
-		FROM submissions s JOIN users u ON u.id = s.user_id
-		WHERE s.user_id IS NOT NULL AND `+cond+` AND NOT u.hidden
-		GROUP BY s.user_id, u.username, u.avatar_key
-		ORDER BY c DESC
+		SELECT u.id, u.username, u.avatar_key, SUM(t.c) AS c
+		FROM (
+			SELECT s.user_id AS user_id, COUNT(sf.id) AS c
+			FROM submissions s
+			JOIN submission_files sf ON sf.submission_id = s.id
+			WHERE s.status = 'approved' AND s.user_id IS NOT NULL`+sapFilter+`
+			GROUP BY s.user_id
+			UNION ALL
+			SELECT m.user_id AS user_id, COUNT(*) AS c
+			FROM metadata_submissions m
+			WHERE m.status = 'approved'`+metaFilter+`
+			GROUP BY m.user_id
+		) t
+		JOIN users u ON u.id = t.user_id
+		WHERE NOT u.hidden
+		GROUP BY u.id, u.username, u.avatar_key
+		ORDER BY SUM(t.c) DESC, u.username ASC
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, err

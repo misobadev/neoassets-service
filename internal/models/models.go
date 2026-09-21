@@ -230,8 +230,8 @@ type Dashboard struct {
 	TotalUsers         int              `json:"total_users"`
 	TotalContributions int              `json:"total_contributions"`
 	TopReviewers       []UserStat       `json:"top_reviewers"`
-	TopSubmitters      []UserCountStat  `json:"top_submitters"`
-	TopApproved        []UserCountStat  `json:"top_approved"`
+	TopContributions   []UserCountStat  `json:"top_contributions"`
+	TopApprovedWeek    []UserCountStat  `json:"top_approved_week"`
 	TopLevels          []LevelStat      `json:"top_levels"`
 	TopGames           []PopularGame    `json:"top_games"`
 	RecentPacks        []RecentPack     `json:"recent_packs"`
