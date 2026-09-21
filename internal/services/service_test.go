@@ -17,8 +17,13 @@ func TestValidateUploadRequestSystemID(t *testing.T) {
 	valid := []models.UploadRequest{
 		{FileName: "gba.webp", Kind: models.KindBackground, Size: 1, MimeType: "image/webp"},
 		{FileName: "arc.gif", Kind: models.KindBackground, Size: 1, MimeType: "image/gif"},
+		// The backend normalizes images on approval, so any common raster
+		// format is accepted from the client.
+		{FileName: "gba.png", Kind: models.KindBackground, Size: 1, MimeType: "image/png"},
+		{FileName: "gba.jpg", Kind: models.KindBackground, Size: 1, MimeType: "image/jpeg"},
 		{FileName: "nes.webp", Kind: models.KindLogo, Size: 1, MimeType: "image/webp"},
 		{FileName: "preview.webp", Kind: models.KindPreview, Size: 1, MimeType: "image/webp"},
+		{FileName: "preview.png", Kind: models.KindPreview, Size: 1, MimeType: "image/png"},
 		{FileName: "theme.json", Kind: models.KindTheme, Size: 1, MimeType: "application/json"},
 	}
 	for _, req := range valid {
@@ -28,13 +33,10 @@ func TestValidateUploadRequestSystemID(t *testing.T) {
 	}
 
 	invalid := []models.UploadRequest{
-		// Background: unknown/unapproved system id or wrong extension.
+		// Background: unknown/unapproved system id or unsupported extension.
 		{FileName: "nonexistent.webp", Kind: models.KindBackground, Size: 1, MimeType: "image/webp"},
 		{FileName: "evil;rm.webp", Kind: models.KindBackground, Size: 1, MimeType: "image/webp"},
-		{FileName: "gba.png", Kind: models.KindBackground, Size: 1, MimeType: "image/png"},
-		{FileName: "gba.jpg", Kind: models.KindBackground, Size: 1, MimeType: "image/jpeg"},
-		// Preview: images only, so no png/jpg.
-		{FileName: "preview.png", Kind: models.KindPreview, Size: 1, MimeType: "image/png"},
+		{FileName: "gba.bmp", Kind: models.KindBackground, Size: 1, MimeType: "image/bmp"},
 		// Theme: must be json.
 		{FileName: "theme.json", Kind: models.KindBackground, Size: 1, MimeType: "application/json"},
 		{FileName: "theme.txt", Kind: models.KindTheme, Size: 1, MimeType: "text/plain"},
@@ -79,6 +81,30 @@ func TestValidatePackObjectKey(t *testing.T) {
 	for _, f := range bad {
 		if err := svc.validatePackObjectKey(packID, f); err == nil {
 			t.Errorf("expected %q to be rejected", f.ObjectKey)
+		}
+	}
+}
+
+func TestObjectKeyNormalizesImagesToWebp(t *testing.T) {
+	svc := NewService(nil, nil, "", "", nil)
+
+	cases := []struct {
+		kind     string
+		fileName string
+		want     string
+	}{
+		{models.KindBackground, "gba.png", "packs/mypack/backgrounds/gba.webp"},
+		{models.KindBackground, "gba.jpg", "packs/mypack/backgrounds/gba.webp"},
+		{models.KindBackground, "gba.webp", "packs/mypack/backgrounds/gba.webp"},
+		// Animated GIFs keep their extension.
+		{models.KindBackground, "gba.gif", "packs/mypack/backgrounds/gba.gif"},
+		{models.KindLogo, "nes.png", "packs/mypack/logos/nes.webp"},
+		{models.KindPreview, "preview.png", "packs/mypack/preview.webp"},
+		{models.KindTheme, "theme.json", "packs/mypack/theme.json"},
+	}
+	for _, c := range cases {
+		if got := svc.ObjectKey("mypack", c.kind, c.fileName); got != c.want {
+			t.Errorf("ObjectKey(%s, %s) = %q, want %q", c.kind, c.fileName, got, c.want)
 		}
 	}
 }

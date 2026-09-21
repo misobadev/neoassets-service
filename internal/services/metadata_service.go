@@ -429,16 +429,19 @@ func immutableMediaKey(sub *models.MetadataSubmission, systemID, kind, ext strin
 	return fmt.Sprintf("media/systems/%s/%s-%s%s", systemID, kind, uuid.NewString(), ext)
 }
 
-// mediaDimensionCap returns the longest-side cap for an approved media kind:
-// logos and covers 1024px, fanart 1920px. Zero means the image is copied as-is.
-func mediaDimensionCap(kind string) int {
+// metadataImageSpec returns the normalization applied to an approved metadata
+// image, so the backend never trusts client-side conversion. Fanart is
+// center-cropped to 1920x1080 (16:9), covers and logos are capped at 1024px,
+// and the remaining image kinds are capped at 1920px. Metadata images are
+// always flattened to a single WebP frame.
+func metadataImageSpec(kind string) video.ImageSpec {
 	switch kind {
-	case models.MediaLogo, models.MediaCover:
-		return 1024
 	case models.MediaFanart:
-		return 1920
+		return video.ImageSpec{TargetW: 1920, TargetH: 1080, Quality: 90, FirstFrameOnly: true}
+	case models.MediaCover, models.MediaLogo:
+		return video.ImageSpec{MaxSize: 1024, Quality: 90, FirstFrameOnly: true}
 	default:
-		return 0
+		return video.ImageSpec{MaxSize: 1920, Quality: 90, FirstFrameOnly: true}
 	}
 }
 
@@ -722,10 +725,10 @@ func (s *Service) decorateMetadataNames(list []models.MetadataSubmission) error 
 }
 
 // validateApprovedMedia checks the media files of a submission before it is
-// applied: every image must be WebP (the frontend converts on upload), fanart
-// must be exactly 1920x1080 (16:9), and videos must have a sane frame rate
-// (at least 23 fps, 60 fps recommended). The source frame rate is preserved on
-// re-encode, except videos above 60 fps, which are capped to 60 fps.
+// applied. Images are normalized by the backend on approval, so they only need
+// to be decodable; videos must have a sane frame rate (at least 23 fps, 60 fps
+// recommended). The source frame rate is preserved on re-encode, except videos
+// above 60 fps, which are capped to 60 fps.
 func (s *Service) validateApprovedMedia(ctx context.Context, files []models.MetadataSubmissionFile) error {
 	for _, f := range files {
 		data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
@@ -742,15 +745,8 @@ func (s *Service) validateApprovedMedia(ctx context.Context, files []models.Meta
 			}
 			continue
 		}
-		info, err := video.ProbeImage(ctx, data)
-		if err != nil {
+		if _, err := video.ProbeImage(ctx, data); err != nil {
 			return fmt.Errorf("probe %s image: %w", f.Kind, err)
-		}
-		if info.Codec != "webp" {
-			return fmt.Errorf("%s image must be WebP, got %s", f.Kind, info.Codec)
-		}
-		if f.Kind == models.MediaFanart && (info.Width != 1920 || info.Height != 1080) {
-			return fmt.Errorf("fanart must be 1920x1080 (16:9), got %dx%d", info.Width, info.Height)
 		}
 	}
 	return nil
@@ -1085,34 +1081,29 @@ func (s *Service) moveSubmissionMediaToCanonical(ctx context.Context, id uuid.UU
 			}
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(f.FileName))
-		if ext == "" {
-			ext = strings.ToLower(filepath.Ext(f.ObjectKey))
+		// Images are normalized server-side (format, crop and size) so a bad
+		// client conversion can never publish a non-WebP asset. The canonical
+		// object is always .webp with a random immutable key, so no cache
+		// invalidation is needed (the old object is deleted above).
+		data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
+		if err != nil {
+			return fmt.Errorf("download %s %s: %w", f.Kind, f.ObjectKey, err)
 		}
-		// New immutable key: a random UUID per replacement means a new URL, so
-		// no cache invalidation is needed (the old object is deleted above).
-		dest := immutableMediaKey(sub, systemID, f.Kind, ext)
-		if max := mediaDimensionCap(f.Kind); max > 0 {
-			// Logos and covers are normalized to at most 1024px, fanart to
-			// 1920px.
-			data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
-			if err != nil {
-				return fmt.Errorf("download %s %s: %w", f.Kind, f.ObjectKey, err)
-			}
-			resized, err := video.ResizeImage(ctx, data, max)
-			if err != nil {
-				return err
-			}
-			if err := s.r2.UploadFileCached(ctx, dest, "image/webp", mediaCacheControl, bytes.NewReader(resized)); err != nil {
-				return fmt.Errorf("upload resized %s %s: %w", f.Kind, dest, err)
-			}
-		} else if err := s.r2.CopyObjectCached(ctx, f.ObjectKey, dest, mediaCacheControl); err != nil {
-			return fmt.Errorf("copy submission media %s: %w", f.ObjectKey, err)
+		normalized, err := video.NormalizeImage(ctx, data, metadataImageSpec(f.Kind))
+		if err != nil {
+			return fmt.Errorf("normalize %s: %w", f.Kind, err)
+		}
+		dest := immutableMediaKey(sub, systemID, f.Kind, ".webp")
+		if err := s.r2.UploadFileCached(ctx, dest, "image/webp", mediaCacheControl, bytes.NewReader(normalized)); err != nil {
+			return fmt.Errorf("upload normalized %s %s: %w", f.Kind, dest, err)
 		}
 		if err := s.r2.DeleteObject(ctx, f.ObjectKey); err != nil {
 			log.Warn().Err(err).Str("object", f.ObjectKey).Msg("failed to delete staging media")
 		}
 		if err := s.repo.UpdateMetadataSubmissionFileObjectKey(f.ID, dest); err != nil {
+			return err
+		}
+		if err := s.repo.UpdateMetadataSubmissionFileMime(f.ID, "image/webp"); err != nil {
 			return err
 		}
 	}

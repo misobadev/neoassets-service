@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"neoassets/internal/systems"
 	"neoassets/pkg/auth"
 	"neoassets/pkg/r2"
+	"neoassets/pkg/video"
 )
 
 // packIDRegex validates that a pack id is a safe path segment.
@@ -50,11 +52,16 @@ func NewService(repo *repository.Repository, r2Client r2.Client, publicBase, jwt
 		r2:         r2Client,
 		publicBase: strings.TrimRight(publicBase, "/"),
 		uploadTTL:  15 * time.Minute,
-		// Images (backgrounds, previews, logos) must be WebP or GIF. Themes are
-		// JSON files and are validated separately.
+		// Images (backgrounds, previews, logos) may be uploaded in any common
+		// raster format: the backend normalizes them to WebP on approval. GIFs
+		// are kept as-is to preserve animation. Themes are JSON files and are
+		// validated separately.
 		imageExts: map[string]bool{
 			".webp": true,
 			".gif":  true,
+			".png":  true,
+			".jpg":  true,
+			".jpeg": true,
 		},
 		jwtSecret: jwtSecret,
 		tokenTTL:  12 * time.Hour,
@@ -333,6 +340,10 @@ func (s *Service) SubmissionUploadURLPre(ctx context.Context, req models.Submiss
 // GIFs are stored as-is (not re-encoded) and can be large.
 const maxGIFSize = 5 << 20
 
+// maxImageSize caps a non-GIF image upload. The backend re-encodes it to WebP
+// on approval, so the raw upload only needs to be reasonable in size.
+const maxImageSize = 25 << 20
+
 // ValidateUploadRequest checks a single file upload request against the
 // allowed kinds, extensions, and (for backgrounds) system ids.
 func (s *Service) ValidateUploadRequest(req models.UploadRequest) error {
@@ -353,9 +364,14 @@ func (s *Service) ValidateUploadRequest(req models.UploadRequest) error {
 		return fmt.Errorf("unsupported image extension %q", ext)
 	}
 
-	// GIFs are stored as-is (animation preserved), so cap their size.
-	if ext == ".gif" && req.Size > maxGIFSize {
-		return fmt.Errorf("GIF must be at most %d MB", maxGIFSize>>20)
+	// GIFs are stored as-is (animation preserved), so cap their size. Other
+	// images are re-encoded on approval, so they only need a sane size cap.
+	if ext == ".gif" {
+		if req.Size > maxGIFSize {
+			return fmt.Errorf("GIF must be at most %d MB", maxGIFSize>>20)
+		}
+	} else if req.Size > maxImageSize {
+		return fmt.Errorf("image must be at most %d MB", maxImageSize>>20)
 	}
 
 	if req.Kind == models.KindBackground || req.Kind == models.KindLogo {
@@ -413,14 +429,20 @@ func (s *Service) ObjectKey(packID, kind, fileName string) string {
 		return fmt.Sprintf("packs/%s/preview.webp", packID)
 	case models.KindTheme:
 		return fmt.Sprintf("packs/%s/theme.json", packID)
-	case models.KindBackground:
-		ext := getExt(fileName)
-		systemID := strings.TrimSuffix(fileName, ext)
-		return fmt.Sprintf("packs/%s/backgrounds/%s%s", packID, systemID, ext)
-	case models.KindLogo:
-		ext := getExt(fileName)
-		systemID := strings.TrimSuffix(fileName, ext)
-		return fmt.Sprintf("packs/%s/logos/%s%s", packID, systemID, ext)
+	case models.KindBackground, models.KindLogo:
+		// Images are normalized to WebP on approval; only animated GIFs keep
+		// their original extension.
+		rawExt := getExt(fileName)
+		ext := strings.ToLower(rawExt)
+		if ext != ".gif" {
+			ext = ".webp"
+		}
+		systemID := strings.TrimSuffix(fileName, rawExt)
+		dir := "backgrounds"
+		if kind == models.KindLogo {
+			dir = "logos"
+		}
+		return fmt.Sprintf("packs/%s/%s/%s%s", packID, dir, systemID, ext)
 	default:
 		return fmt.Sprintf("packs/%s/%s", packID, fileName)
 	}
@@ -544,8 +566,16 @@ func (s *Service) ensureUploaded(ctx context.Context, objectKey, fileName string
 	if !ok {
 		return fmt.Errorf("upload for %q did not complete — try uploading again", fileName)
 	}
-	if strings.EqualFold(getExt(fileName), ".gif") && size > maxGIFSize {
-		return fmt.Errorf("GIF %q is too large (max %d MB)", fileName, maxGIFSize>>20)
+	ext := strings.ToLower(getExt(fileName))
+	switch {
+	case ext == ".gif":
+		if size > maxGIFSize {
+			return fmt.Errorf("GIF %q is too large (max %d MB)", fileName, maxGIFSize>>20)
+		}
+	case s.imageExts[ext]:
+		if size > maxImageSize {
+			return fmt.Errorf("image %q is too large (max %d MB)", fileName, maxImageSize>>20)
+		}
 	}
 	return nil
 }
@@ -928,9 +958,12 @@ func (s *Service) Approve(ctx context.Context, submissionID uuid.UUID, adminID u
 	return updated, nil
 }
 
-// moveSubmissionFilesToCanonical moves approved temp uploads to their canonical
-// pack keys (overwriting the previous published image), deletes the temp copies
-// and updates the file rows so they point at the canonical location.
+// moveSubmissionFilesToCanonical publishes an approved submission's files to
+// their canonical pack keys. Theme JSON and animated GIFs are copied unchanged;
+// every other image is normalized to WebP by the backend (crop, scale, quality)
+// so the published art never depends on client-side conversion. The staging
+// objects and the replaced canonical objects are deleted so R2 does not
+// accumulate garbage.
 func (s *Service) moveSubmissionFilesToCanonical(ctx context.Context, packID string, submissionID uuid.UUID) error {
 	if packID == "" {
 		return nil
@@ -940,38 +973,122 @@ func (s *Service) moveSubmissionFilesToCanonical(ctx context.Context, packID str
 		return err
 	}
 	for i := range files {
-		f := &files[i]
-		canonical := s.ObjectKey(packID, f.Kind, f.FileName)
-		if canonical == "" || canonical == f.ObjectKey {
-			continue
-		}
-		if err := s.r2.CopyObject(ctx, f.ObjectKey, canonical); err != nil {
-			// A missing source upload (404 NoSuchKey) means the object never made
-			// it to R2; drop that stale file row and keep going rather than
-			// failing the whole approval.
-			if isMissingSource(err) {
-				log.Warn().Str("object", f.ObjectKey).Msg("skipping missing submission object on approve")
-				if derr := s.repo.DeleteSubmissionFile(f.ID); derr != nil {
-					return derr
-				}
-				continue
-			}
-			return fmt.Errorf("copy %s -> %s: %w", f.ObjectKey, canonical, err)
-		}
-		if err := s.r2.DeleteObject(ctx, f.ObjectKey); err != nil {
-			return fmt.Errorf("delete temp %s: %w", f.ObjectKey, err)
-		}
-		// A submission may carry a duplicate row for the same system (one already
-		// canonical, one left in review); drop the other row so the unique
-		// (submission_id, object_key) constraint does not block the update.
-		if err := s.repo.DeleteSubmissionFileByObjectKey(submissionID, canonical, f.ID); err != nil {
-			return err
-		}
-		if err := s.repo.UpdateSubmissionFileObjectKey(f.ID, canonical); err != nil {
+		if err := s.publishSubmissionFile(ctx, packID, submissionID, &files[i]); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// publishSubmissionFile moves a single approved file to its canonical key. JSON
+// themes and animated GIFs are copied as-is; all other images are re-encoded to
+// WebP.
+func (s *Service) publishSubmissionFile(ctx context.Context, packID string, submissionID uuid.UUID, f *models.SubmissionFile) error {
+	canonical := s.ObjectKey(packID, f.Kind, f.FileName)
+	if canonical == "" || canonical == f.ObjectKey {
+		return nil
+	}
+
+	// JSON themes are not images and are copied verbatim.
+	if f.Kind == models.KindTheme {
+		return s.copySubmissionFileToCanonical(ctx, packID, submissionID, f, canonical)
+	}
+
+	data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
+	if err != nil {
+		// A missing source upload (404 NoSuchKey) means the object never made it
+		// to R2; drop that stale file row and keep going rather than failing the
+		// whole approval.
+		if isMissingSource(err) {
+			log.Warn().Str("object", f.ObjectKey).Msg("skipping missing submission object on approve")
+			return s.repo.DeleteSubmissionFile(f.ID)
+		}
+		return fmt.Errorf("download %s: %w", f.ObjectKey, err)
+	}
+
+	// Animated GIFs keep their animation and are published unchanged.
+	if info, perr := video.ProbeImage(ctx, data); perr == nil && info.Codec == "gif" {
+		return s.copySubmissionFileToCanonical(ctx, packID, submissionID, f, canonical)
+	}
+
+	normalized, err := video.NormalizeImage(ctx, data, sapImageSpec(f.Kind))
+	if err != nil {
+		return fmt.Errorf("normalize %s: %w", f.FileName, err)
+	}
+	if err := s.r2.UploadFile(ctx, canonical, "image/webp", bytes.NewReader(normalized)); err != nil {
+		return fmt.Errorf("upload normalized %s: %w", canonical, err)
+	}
+	if err := s.r2.DeleteObject(ctx, f.ObjectKey); err != nil {
+		return fmt.Errorf("delete temp %s: %w", f.ObjectKey, err)
+	}
+	// The previous canonical may have used a different extension (a GIF replaced
+	// by a WebP); remove it so it does not linger in R2.
+	s.deleteSiblingCanonical(ctx, packID, f.Kind, f.FileName, canonical)
+	// A submission may carry a duplicate row for the same system (one already
+	// canonical, one left in review); drop the other row so the unique
+	// (submission_id, object_key) constraint does not block the update.
+	if err := s.repo.DeleteSubmissionFileByObjectKey(submissionID, canonical, f.ID); err != nil {
+		return err
+	}
+	if err := s.repo.UpdateSubmissionFileObjectKey(f.ID, canonical); err != nil {
+		return err
+	}
+	return s.repo.UpdateSubmissionFileMime(f.ID, "image/webp")
+}
+
+// copySubmissionFileToCanonical copies a staged file to its canonical key
+// without re-encoding (themes and animated GIFs), deletes the staging object and
+// updates the file row.
+func (s *Service) copySubmissionFileToCanonical(ctx context.Context, packID string, submissionID uuid.UUID, f *models.SubmissionFile, canonical string) error {
+	if err := s.r2.CopyObject(ctx, f.ObjectKey, canonical); err != nil {
+		if isMissingSource(err) {
+			log.Warn().Str("object", f.ObjectKey).Msg("skipping missing submission object on approve")
+			return s.repo.DeleteSubmissionFile(f.ID)
+		}
+		return fmt.Errorf("copy %s -> %s: %w", f.ObjectKey, canonical, err)
+	}
+	if err := s.r2.DeleteObject(ctx, f.ObjectKey); err != nil {
+		return fmt.Errorf("delete temp %s: %w", f.ObjectKey, err)
+	}
+	s.deleteSiblingCanonical(ctx, packID, f.Kind, f.FileName, canonical)
+	if err := s.repo.DeleteSubmissionFileByObjectKey(submissionID, canonical, f.ID); err != nil {
+		return err
+	}
+	return s.repo.UpdateSubmissionFileObjectKey(f.ID, canonical)
+}
+
+// deleteSiblingCanonical removes the alternate-extension canonical object for a
+// background/logo so replacing a GIF with a WebP (or vice versa) does not leave
+// an orphan in R2. It is a no-op for other kinds.
+func (s *Service) deleteSiblingCanonical(ctx context.Context, packID, kind, fileName, canonical string) {
+	if packID == "" || (kind != models.KindBackground && kind != models.KindLogo) {
+		return
+	}
+	rawExt := getExt(fileName)
+	base := strings.TrimSuffix(fileName, rawExt)
+	dir := "backgrounds"
+	if kind == models.KindLogo {
+		dir = "logos"
+	}
+	for _, ext := range []string{".webp", ".gif"} {
+		key := fmt.Sprintf("packs/%s/%s/%s%s", packID, dir, base, ext)
+		if key == canonical {
+			continue
+		}
+		if err := s.r2.DeleteObject(ctx, key); err != nil {
+			log.Warn().Err(err).Str("object", key).Msg("failed to delete replaced canonical object")
+		}
+	}
+}
+
+// sapImageSpec returns the normalization applied to an approved SAP image:
+// backgrounds are center-cropped to a 1024x1024 square and previews/logos are
+// capped at 1024px. GIFs never reach this path (they are copied unchanged).
+func sapImageSpec(kind string) video.ImageSpec {
+	if kind == models.KindBackground {
+		return video.ImageSpec{TargetW: 1024, TargetH: 1024, Quality: 90}
+	}
+	return video.ImageSpec{MaxSize: 1024, Quality: 90}
 }
 
 // isMissingSource reports whether an S3 error means the source key does not

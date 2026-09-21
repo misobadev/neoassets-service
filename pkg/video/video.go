@@ -292,10 +292,24 @@ func probeVideoFPS(ctx context.Context, path string) int {
 	return ParseFPS(strings.TrimSpace(string(out)))
 }
 
-// ResizeImage scales an image so its longest side is at most maxSize (never
-// upscaling) preserving the aspect ratio, and re-encodes it as WebP. Used to
-// normalize approved art (logos/covers 1024px, fanart 1920px).
-func ResizeImage(ctx context.Context, data []byte, maxSize int) ([]byte, error) {
+// ImageSpec describes how an uploaded image must be normalized before it is
+// published. TargetW/TargetH center-crop to an exact size (cover); MaxSize
+// downscales the longest side without upscaling. Target wins over MaxSize.
+type ImageSpec struct {
+	TargetW int
+	TargetH int
+	MaxSize int
+	// Quality is the libwebp quality (1-100). Zero defaults to 90.
+	Quality int
+	// FirstFrameOnly flattens animated inputs (e.g. GIF) to their first frame.
+	FirstFrameOnly bool
+}
+
+// NormalizeImage decodes any ffmpeg-supported image and re-encodes it as WebP
+// with the requested crop/scale, so the backend never trusts client-side
+// conversion. Used to normalize approved art (fanart 1920x1080, covers/logos
+// 1024px, screenshots 1920px, SAP backgrounds 1024x1024).
+func NormalizeImage(ctx context.Context, data []byte, spec ImageSpec) ([]byte, error) {
 	in, err := os.CreateTemp("", "image-in-*")
 	if err != nil {
 		return nil, fmt.Errorf("create input temp: %w", err)
@@ -317,25 +331,49 @@ func ResizeImage(ctx context.Context, data []byte, maxSize int) ([]byte, error) 
 	out.Close()
 	defer os.Remove(outPath)
 
-	filter := fmt.Sprintf("scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease", maxSize, maxSize)
-	args := []string{
-		"-y",
-		"-i", in.Name(),
-		"-vf", filter,
-		"-c:v", "libwebp",
-		"-quality", "90",
-		outPath,
+	quality := spec.Quality
+	if quality <= 0 {
+		quality = 90
 	}
+
+	args := []string{"-y", "-i", in.Name()}
+	if spec.FirstFrameOnly {
+		args = append(args, "-frames:v", "1")
+	}
+	if filter := imageScaleFilter(spec); filter != "" {
+		args = append(args, "-vf", filter)
+	}
+	args = append(args,
+		"-c:v", "libwebp",
+		"-quality", strconv.Itoa(quality),
+		"-compression_level", "6",
+		outPath,
+	)
+
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg resize failed: %w: %s", err, stderr.String())
+		return nil, fmt.Errorf("ffmpeg normalize failed: %w: %s", err, stderr.String())
 	}
 
-	resized, err := os.ReadFile(outPath)
+	normalized, err := os.ReadFile(outPath)
 	if err != nil {
-		return nil, fmt.Errorf("read resized image: %w", err)
+		return nil, fmt.Errorf("read normalized image: %w", err)
 	}
-	return resized, nil
+	return normalized, nil
+}
+
+// imageScaleFilter builds the ffmpeg scale/crop filter for a spec. An empty
+// result means the image is re-encoded at its original size.
+func imageScaleFilter(spec ImageSpec) string {
+	switch {
+	case spec.TargetW > 0 && spec.TargetH > 0:
+		// Cover: scale up to fill the target, then center-crop the overflow.
+		return fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d", spec.TargetW, spec.TargetH, spec.TargetW, spec.TargetH)
+	case spec.MaxSize > 0:
+		return fmt.Sprintf("scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease", spec.MaxSize, spec.MaxSize)
+	default:
+		return ""
+	}
 }

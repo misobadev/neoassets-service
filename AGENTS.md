@@ -201,6 +201,14 @@ the user credential is optional and falls back to guest mode.
   preflight fails during direct uploads. Configure it on the bucket, not in code.
 - Object keys: `packs/{packId}/backgrounds/{system}.webp|gif`,
   `packs/{packId}/preview.webp`, `packs/{packId}/theme.json`.
+- Images are normalized **on approval** by the backend (`video.NormalizeImage`):
+  metadata fanart is center-cropped to 1920x1080, covers/logos are capped at
+  1024px and other image kinds at 1920px; SAP backgrounds are center-cropped to
+  1024x1024 and previews/logos capped at 1024px. Animated GIF backgrounds are
+  kept as-is to preserve animation; metadata images are flattened to WebP. The
+  client uploads the original file, so a bad client conversion can never publish
+  a non-WebP asset. Staging and replaced canonical objects are deleted on
+  approval.
 
 ## Testing / build
 

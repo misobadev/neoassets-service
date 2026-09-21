@@ -891,6 +891,16 @@ func (r *Repository) UpdateSubmissionFileObjectKey(fileID uuid.UUID, objectKey s
 	return nil
 }
 
+// UpdateSubmissionFileMime updates a submission file's MIME type (used when an
+// approved image is normalized to WebP or a GIF is kept as-is).
+func (r *Repository) UpdateSubmissionFileMime(fileID uuid.UUID, mime string) error {
+	_, err := r.db.Exec(`UPDATE submission_files SET mime_type = $1 WHERE id = $2`, mime, fileID)
+	if err != nil {
+		return fmt.Errorf("failed to update submission file mime: %w", err)
+	}
+	return nil
+}
+
 // DeleteSubmissionFileByObjectKey removes other files of a submission that
 // already use the given object key (except the one being updated). This makes
 // approval idempotent when a submission has duplicate file rows for the same
