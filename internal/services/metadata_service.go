@@ -769,7 +769,13 @@ func (s *Service) GetMetadataSubmissionDetail(id uuid.UUID) (*models.MetadataSub
 		game, err := s.GetGame(*sub.GameID, "")
 		if err == nil {
 			detail.Game = game
-			detail.Media = game.Media
+			// All media (every region), so the reviewer can compare the region
+			// being submitted instead of only the resolved primary one.
+			if media, merr := s.repo.ListMediaByGame(*sub.GameID); merr == nil {
+				detail.Media = media
+			} else {
+				detail.Media = game.Media
+			}
 		}
 	case sub.SystemID != nil:
 		if sys, err := s.repo.GetMetadataSystem(*sub.SystemID); err == nil {
