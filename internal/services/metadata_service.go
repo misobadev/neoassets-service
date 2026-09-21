@@ -152,32 +152,37 @@ func (s *Service) GetGame(id uuid.UUID, lang string) (*models.GameDetail, error)
 	if err != nil {
 		return nil, err
 	}
-	// Attach the regional media (cover/logo) to each region.
-	byRegion := map[string][]models.Media{}
-	for _, m := range media {
-		if m.Region != "" && (m.Kind == models.MediaCover || m.Kind == models.MediaLogo) {
-			byRegion[m.Region] = append(byRegion[m.Region], m)
+	// The primary region is the first with text (the catalog priority order).
+	primary := ""
+	for _, gr := range regions {
+		if gr.Name != "" || gr.ReleaseYear != nil {
+			primary = gr.Region
+			break
 		}
 	}
-	primary := ""
+	// Attach cover/logo media to their region. Region-less media (e.g. imported
+	// assets) belong to the primary region, so they show under it.
+	byRegion := map[string][]models.Media{}
+	for i := range media {
+		m := &media[i]
+		if m.Kind != models.MediaCover && m.Kind != models.MediaLogo {
+			continue
+		}
+		if m.Region == "" && primary != "" {
+			m.Region = primary
+		}
+		if m.Region != "" {
+			byRegion[m.Region] = append(byRegion[m.Region], *m)
+		}
+	}
 	for i := range regions {
 		regions[i].Media = byRegion[regions[i].Region]
 		if primary == "" && (regions[i].Name != "" || regions[i].ReleaseYear != nil || len(regions[i].Media) > 0) {
 			primary = regions[i].Region
 		}
 	}
-	// The general media list resolves cover/logo to the primary region so the
-	// detail page shows one asset; the rest stay in the regions array.
-	if primary != "" {
-		resolved := make([]models.Media, 0, len(media))
-		for _, m := range media {
-			if (m.Kind == models.MediaCover || m.Kind == models.MediaLogo) && m.Region != "" && m.Region != primary {
-				continue
-			}
-			resolved = append(resolved, m)
-		}
-		media = resolved
-	}
+	// The full media list is returned so the detail page can show every region's
+	// asset; each item carries its own region.
 	detail := &models.GameDetail{Game: *g, Roms: roms, Media: media, Regions: regions, Region: primary, Translations: translations}
 	if lang != "" && lang != "en" {
 		detail.Lang = lang
