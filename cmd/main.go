@@ -454,6 +454,7 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 			r.Post("/submissions/upload-url", h.SubmissionUploadURLPre)
 			r.Put("/submissions/{id}", h.UpdateSubmission)
 			r.Post("/submissions/{id}/files", h.AddSubmissionFiles)
+			r.Delete("/submissions/{id}/files", h.RemoveSubmissionFile)
 			r.Post("/submissions/{id}/upload", h.GetUploadURL)
 			r.Post("/submissions/{id}/submit", h.SubmitSubmission)
 			r.Post("/submissions/{id}/trash", h.TrashSubmission)

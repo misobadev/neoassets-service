@@ -25,6 +25,10 @@ func TestValidateUploadRequestSystemID(t *testing.T) {
 		{FileName: "preview.webp", Kind: models.KindPreview, Size: 1, MimeType: "image/webp"},
 		{FileName: "preview.png", Kind: models.KindPreview, Size: 1, MimeType: "image/png"},
 		{FileName: "theme.json", Kind: models.KindTheme, Size: 1, MimeType: "application/json"},
+		// Hack/homebrew system ids contain a hyphen.
+		{FileName: "nes-hacks.webp", Kind: models.KindBackground, Size: 1, MimeType: "image/webp"},
+		{FileName: "snes-hacks.png", Kind: models.KindBackground, Size: 1, MimeType: "image/png"},
+		{FileName: "gb-hacks.gif", Kind: models.KindBackground, Size: 1, MimeType: "image/gif"},
 	}
 	for _, req := range valid {
 		if err := svc.ValidateUploadRequest(req); err != nil {
@@ -98,6 +102,7 @@ func TestObjectKeyNormalizesImagesToWebp(t *testing.T) {
 		{models.KindBackground, "gba.webp", "packs/mypack/backgrounds/gba.webp"},
 		// Animated GIFs keep their extension.
 		{models.KindBackground, "gba.gif", "packs/mypack/backgrounds/gba.gif"},
+		{models.KindBackground, "nes-hacks.png", "packs/mypack/backgrounds/nes-hacks.webp"},
 		{models.KindLogo, "nes.png", "packs/mypack/logos/nes.webp"},
 		{models.KindPreview, "preview.png", "packs/mypack/preview.webp"},
 		{models.KindTheme, "theme.json", "packs/mypack/theme.json"},

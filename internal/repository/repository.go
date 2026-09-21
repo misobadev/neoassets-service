@@ -384,6 +384,20 @@ func (r *Repository) ListFiles(submissionID uuid.UUID) ([]models.SubmissionFile,
 	return list, rows.Err()
 }
 
+// GetSubmissionFileByObjectKey returns a submission's file row by its object
+// key (unique within a submission).
+func (r *Repository) GetSubmissionFileByObjectKey(submissionID uuid.UUID, objectKey string) (*models.SubmissionFile, error) {
+	var f models.SubmissionFile
+	err := r.db.QueryRow(
+		`SELECT id, submission_id, object_key, file_name, system_id, kind, size, mime_type, created_at, reason
+		 FROM submission_files WHERE submission_id = $1 AND object_key = $2`, submissionID, objectKey,
+	).Scan(&f.ID, &f.SubmissionID, &f.ObjectKey, &f.FileName, &f.SystemID, &f.Kind, &f.Size, &f.MimeType, &f.CreatedAt, &f.Reason)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get submission file: %w", err)
+	}
+	return &f, nil
+}
+
 // ListFilesBySubmissionIDs returns every file of the given submissions in a
 // single query, keyed by submission id (N+1 avoidance).
 func (r *Repository) ListFilesBySubmissionIDs(ids []uuid.UUID) (map[uuid.UUID][]models.SubmissionFile, error) {

@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -25,8 +26,9 @@ import (
 // packIDRegex validates that a pack id is a safe path segment.
 var packIDRegex = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-// systemIDRegex validates system ids used for background filenames.
-var systemIDRegex = regexp.MustCompile(`^[A-Za-z0-9]+$`)
+// systemIDRegex validates system ids used for background filenames. System ids
+// may contain hyphens and underscores (e.g. "nes-hacks", "gb-hacks").
+var systemIDRegex = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // Service contains the business logic for system art pack submissions.
 type Service struct {
@@ -394,6 +396,13 @@ func isReviewObjectKey(objectKey string) bool {
 	return strings.Contains(objectKey, "/review/") || strings.Contains(objectKey, "/uploads/")
 }
 
+// isStagedObjectKey reports whether an object key is a staged submission upload
+// (review/uploads) or a preserved rejected file, as opposed to a canonical
+// published object. Staged objects may be deleted when a user removes a file.
+func isStagedObjectKey(objectKey string) bool {
+	return isReviewObjectKey(objectKey) || strings.HasPrefix(objectKey, "rejected/")
+}
+
 // rejectedObjectKey is where a rejected submission's file is preserved, so the
 // rejected upload stays available for the review history instead of being
 // deleted.
@@ -553,6 +562,36 @@ func (s *Service) AddSubmissionFiles(ctx context.Context, submissionID uuid.UUID
 		}
 	}
 	return s.repo.GetSubmission(submissionID)
+}
+
+// RemoveSubmissionFile deletes a file from an editable submission (created or
+// rejected). The staged R2 object is deleted too; a canonical published object
+// is never touched, so removing a reference to live art only drops the row.
+func (s *Service) RemoveSubmissionFile(ctx context.Context, submissionID, userID uuid.UUID, objectKey string) error {
+	sub, err := s.repo.GetSubmissionByIDForUser(submissionID, userID)
+	if err != nil {
+		return fmt.Errorf("submission not found")
+	}
+	if sub.Status != models.StatusCreated && sub.Status != models.StatusRejected {
+		return fmt.Errorf("submission cannot be edited")
+	}
+	if strings.TrimSpace(objectKey) == "" {
+		return fmt.Errorf("object_key required")
+	}
+	file, err := s.repo.GetSubmissionFileByObjectKey(submissionID, objectKey)
+	if err != nil {
+		// Already removed: treat as success so a stale click is harmless.
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("file not found")
+	}
+	if isStagedObjectKey(file.ObjectKey) {
+		if err := s.r2.DeleteObject(ctx, file.ObjectKey); err != nil {
+			log.Warn().Err(err).Str("object", file.ObjectKey).Msg("failed to delete removed submission object")
+		}
+	}
+	return s.repo.DeleteSubmissionFile(file.ID)
 }
 
 // ensureUploaded verifies a submitted object actually exists in R2 (and that a

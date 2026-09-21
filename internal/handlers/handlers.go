@@ -215,6 +215,23 @@ func (h *Handler) AddSubmissionFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sub)
 }
 
+// RemoveSubmissionFile deletes a single file from an editable draft/rejected
+// submission (used to fix a file added to the wrong system). The file is
+// identified by its object_key, which is unique within a submission.
+func (h *Handler) RemoveSubmissionFile(w http.ResponseWriter, r *http.Request) {
+	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid submission id")
+		return
+	}
+	objectKey := r.URL.Query().Get("object_key")
+	if err := h.svc.RemoveSubmissionFile(r.Context(), submissionID, userFromRequest(r), objectKey); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // DashStats returns the app home leaderboards and recent published content.
 func (h *Handler) DashStats(w http.ResponseWriter, r *http.Request) {
 	d, err := h.svc.Dashboard()
