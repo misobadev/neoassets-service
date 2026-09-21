@@ -566,12 +566,13 @@ func (r *Repository) SearchGames(q, systemID, gtype, sort string, limit, offset 
 	for _, tok := range searchTokens(q) {
 		args = append(args, "%"+tok+"%")
 		n := len(args)
-		// Match the display name or the short name (the MAME/FBNeo ROM set, e.g.
-		// "sfa3"), so a filename like "sfa3.zip" resolves the arcade game.
+		// Match the display name, the short name (the MAME/FBNeo ROM set, e.g.
+		// "sfa3") or any regional name (game_regions), so searching a localized
+		// title like "Street Fighter Zero 3" finds "Street Fighter Alpha 3".
 		// f_unaccent is the immutable wrapper indexed by migration 059.
 		where = append(where, fmt.Sprintf(
-			"(regexp_replace(f_unaccent(lower(g.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR regexp_replace(f_unaccent(lower(g.short_name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d)",
-			n, n))
+			"(regexp_replace(f_unaccent(lower(g.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR regexp_replace(f_unaccent(lower(g.short_name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR EXISTS (SELECT 1 FROM game_regions gr WHERE gr.game_id = g.id AND regexp_replace(f_unaccent(lower(gr.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d))",
+			n, n, n))
 	}
 	if systemID != "" {
 		args = append(args, systemID)
