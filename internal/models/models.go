@@ -692,10 +692,11 @@ type Game struct {
 // Translations lists the languages that have a translation for this game.
 type GameDetail struct {
 	Game
-	Roms         []Rom      `json:"roms"`
-	Media        []Media    `json:"media"`
-	Lang         string     `json:"lang,omitempty"`
-	Translations []Language `json:"translations,omitempty"`
+	Roms         []Rom           `json:"roms"`
+	Media        []Media         `json:"media"`
+	Lang         string          `json:"lang,omitempty"`
+	Translations []Language      `json:"translations,omitempty"`
+	Contributors []UserCountStat `json:"contributors,omitempty"`
 }
 
 // Rom is a ROM dump of a game, identified by its hashes.
@@ -730,15 +731,15 @@ type Media struct {
 // MetadataSubmission is a user contribution of metadata/media for a game or
 // system, reviewed by admins before being applied.
 type MetadataSubmission struct {
-	ID            uuid.UUID       `json:"id" db:"id"`
-	GameID        *uuid.UUID      `json:"game_id" db:"game_id"`
-	SystemID      *string         `json:"system_id" db:"system_id"`
-	UserID        uuid.UUID       `json:"user_id" db:"user_id"`
-	Status        string          `json:"status" db:"status"`
+	ID       uuid.UUID  `json:"id" db:"id"`
+	GameID   *uuid.UUID `json:"game_id" db:"game_id"`
+	SystemID *string    `json:"system_id" db:"system_id"`
+	UserID   uuid.UUID  `json:"user_id" db:"user_id"`
+	Status   string     `json:"status" db:"status"`
 	// Kind distinguishes a plain edit of an existing game/system ("edit") from a
 	// brand-new game contribution ("new_game").
-	Kind          string          `json:"kind" db:"kind"`
-	Payload       json.RawMessage `json:"payload" db:"payload"`
+	Kind    string          `json:"kind" db:"kind"`
+	Payload json.RawMessage `json:"payload" db:"payload"`
 	// OldPayload and OldMedia snapshot the target's published text and media at
 	// approval time, so the review detail still shows the "old" side after the
 	// target has been updated. The replaced media objects are kept under the

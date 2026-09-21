@@ -646,6 +646,32 @@ func (r *Repository) ListMediaBySystem(systemID string) ([]models.Media, error) 
 	return r.listMedia(`WHERE m.system_id = $1 ORDER BY m.created_at`, systemID)
 }
 
+// ListGameContributors returns the users who have approved metadata
+// contributions for a game, ordered by contribution count (descending). Hidden
+// accounts (e.g. the importer bot) are excluded.
+func (r *Repository) ListGameContributors(gameID uuid.UUID) ([]models.UserCountStat, error) {
+	rows, err := r.db.Query(`
+		SELECT u.id, u.username, u.avatar_key, COUNT(*) AS c
+		FROM metadata_submissions m
+		JOIN users u ON u.id = m.user_id
+		WHERE m.game_id = $1 AND m.status = $2 AND NOT u.hidden
+		GROUP BY u.id, u.username, u.avatar_key
+		ORDER BY c DESC, u.username ASC`, gameID, models.MetadataApproved)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []models.UserCountStat{}
+	for rows.Next() {
+		var s models.UserCountStat
+		if err := rows.Scan(&s.ID, &s.Username, &s.AvatarKey, &s.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repository) listMedia(where string, arg interface{}) ([]models.Media, error) {
 	rows, err := r.db.Query(
 		`SELECT m.id, m.game_id, m.system_id, m.kind, m.object_key, m.mime, m.size, m.created_at,

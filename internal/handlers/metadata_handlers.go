@@ -120,6 +120,11 @@ func (h *Handler) GetGameDetail(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, http.StatusNotFound, "game not found", err)
 		return
 	}
+	// Contributors are only needed by the web detail page, so they are attached
+	// here rather than in GetGame (which the scrape path also uses).
+	if contributors, cerr := h.svc.ListGameContributors(id); cerr == nil {
+		detail.Contributors = contributors
+	}
 	writeJSON(w, http.StatusOK, detail)
 }
 

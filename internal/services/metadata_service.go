@@ -155,6 +155,13 @@ func (s *Service) GetGame(id uuid.UUID, lang string) (*models.GameDetail, error)
 	return detail, nil
 }
 
+// ListGameContributors returns the users with approved metadata contributions
+// for a game, ordered by contribution count. It is kept out of GetGame so the
+// hot scrape path does not pay for the extra aggregate query.
+func (s *Service) ListGameContributors(gameID uuid.UUID) ([]models.UserCountStat, error) {
+	return s.repo.ListGameContributors(gameID)
+}
+
 // ListLanguages returns all enabled description languages.
 func (s *Service) ListLanguages() ([]models.Language, error) {
 	return s.repo.ListLanguages()
