@@ -188,26 +188,33 @@ func (r *Repository) ListGroups() ([]models.MetadataGroup, error) {
 	return list, rows.Err()
 }
 
-const gameCols = `g.id, g.system_id, g.name, g.description, g.region, g.release_year,
+// primaryCover selects the cover with the highest region priority (the regions
+// catalog order); region-less covers sort last.
+const primaryCover = `COALESCE((SELECT m.object_key FROM media m LEFT JOIN regions r ON r.name = m.region
+      WHERE m.game_id = g.id AND m.kind = 'cover' ORDER BY r.sort_order NULLS LAST, m.created_at LIMIT 1), '')`
+const primaryCoverUpdated = `COALESCE((SELECT m.created_at::text FROM media m LEFT JOIN regions r ON r.name = m.region
+      WHERE m.game_id = g.id AND m.kind = 'cover' ORDER BY r.sort_order NULLS LAST, m.created_at LIMIT 1), '')`
+
+const gameCols = `g.id, g.system_id, g.name, g.description, g.release_year,
       g.release_month, g.publisher, g.developer, g.genre, g.rating,
       g.type, g.created_at, g.updated_at, COALESCE(s.name, ''),
-      COALESCE((SELECT m.object_key FROM media m WHERE m.game_id = g.id AND m.kind = 'cover' LIMIT 1), ''),
-      COALESCE((SELECT m.created_at::text FROM media m WHERE m.game_id = g.id AND m.kind = 'cover' LIMIT 1), ''),
+      ` + primaryCover + `,
+      ` + primaryCoverUpdated + `,
       COALESCE((SELECT gs.scrapes FROM game_scrape_stats gs WHERE gs.game_id = g.id), 0) AS scrapes`
 
 // gameColsLang is gameCols with the description replaced by the translation
 // lookup: the requested language's description when present, English otherwise.
-const gameColsLang = `g.id, g.system_id, g.name, COALESCE(gt.description, g.description), g.region, g.release_year,
+const gameColsLang = `g.id, g.system_id, g.name, COALESCE(gt.description, g.description), g.release_year,
       g.release_month, g.publisher, g.developer, g.genre, g.rating,
       g.type, g.created_at, g.updated_at, COALESCE(s.name, ''),
-      COALESCE((SELECT m.object_key FROM media m WHERE m.game_id = g.id AND m.kind = 'cover' LIMIT 1), ''),
-      COALESCE((SELECT m.created_at::text FROM media m WHERE m.game_id = g.id AND m.kind = 'cover' LIMIT 1), ''),
+      ` + primaryCover + `,
+      ` + primaryCoverUpdated + `,
       COALESCE((SELECT gs.scrapes FROM game_scrape_stats gs WHERE gs.game_id = g.id), 0) AS scrapes`
 
 func scanGame(row *sql.Row) (*models.Game, error) {
 	var g models.Game
 	err := row.Scan(
-		&g.ID, &g.SystemID, &g.Name, &g.Description, &g.Region, &g.ReleaseYear,
+		&g.ID, &g.SystemID, &g.Name, &g.Description, &g.ReleaseYear,
 		&g.ReleaseMonth, &g.Publisher, &g.Developer, &g.Genre, &g.Rating,
 		&g.Type, &g.CreatedAt, &g.UpdatedAt, &g.SystemName,
 		&g.Cover, &g.CoverUpdated, &g.Scrapes,
@@ -223,7 +230,7 @@ func scanGameRows(rows *sql.Rows) ([]models.Game, error) {
 	for rows.Next() {
 		var g models.Game
 		if err := rows.Scan(
-			&g.ID, &g.SystemID, &g.Name, &g.Description, &g.Region, &g.ReleaseYear,
+			&g.ID, &g.SystemID, &g.Name, &g.Description, &g.ReleaseYear,
 			&g.ReleaseMonth, &g.Publisher, &g.Developer, &g.Genre, &g.Rating,
 			&g.Type, &g.CreatedAt, &g.UpdatedAt, &g.SystemName,
 			&g.Cover, &g.CoverUpdated, &g.Scrapes,
@@ -693,6 +700,112 @@ func (r *Repository) GenreExists(name string) (bool, error) {
 	return true, nil
 }
 
+// ListRegions returns the canonical region catalog in priority/display order.
+func (r *Repository) ListRegions() ([]models.Region, error) {
+	rows, err := r.db.Query(`SELECT id, name, sort_order FROM regions ORDER BY sort_order, name`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list regions: %w", err)
+	}
+	defer rows.Close()
+	out := []models.Region{}
+	for rows.Next() {
+		var g models.Region
+		if err := rows.Scan(&g.ID, &g.Name, &g.SortOrder); err != nil {
+			return nil, fmt.Errorf("failed to scan region: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// RegionExists reports whether a region name is in the canonical catalog.
+func (r *Repository) RegionExists(name string) (bool, error) {
+	var n int
+	err := r.db.QueryRow(`SELECT 1 FROM regions WHERE name = $1`, name).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to check region: %w", err)
+	}
+	return true, nil
+}
+
+// ListGameRegions returns a game's per-region text, ordered by the region
+// priority. Media is attached by the caller.
+func (r *Repository) ListGameRegions(gameID uuid.UUID) ([]models.GameRegion, error) {
+	rows, err := r.db.Query(`
+		SELECT gr.region, gr.name, gr.release_year, gr.release_month
+		FROM game_regions gr
+		LEFT JOIN regions r ON r.name = gr.region
+		WHERE gr.game_id = $1
+		ORDER BY r.sort_order NULLS LAST, gr.region`, gameID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list game regions: %w", err)
+	}
+	defer rows.Close()
+	out := []models.GameRegion{}
+	for rows.Next() {
+		var g models.GameRegion
+		if err := rows.Scan(&g.Region, &g.Name, &g.ReleaseYear, &g.ReleaseMonth); err != nil {
+			return nil, fmt.Errorf("failed to scan game region: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// UpsertGameRegion stores a game's name and/or release for a region, only
+// overwriting the fields provided (non-empty name, non-zero year).
+func (r *Repository) UpsertGameRegion(gameID uuid.UUID, region, name string, year, month *int) error {
+	_, err := r.db.Exec(`
+		INSERT INTO game_regions (game_id, region, name, release_year, release_month, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (game_id, region) DO UPDATE SET
+		  name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE game_regions.name END,
+		  release_year = COALESCE(EXCLUDED.release_year, game_regions.release_year),
+		  release_month = COALESCE(EXCLUDED.release_month, game_regions.release_month),
+		  updated_at = NOW()`,
+		gameID, region, name, year, month)
+	if err != nil {
+		return fmt.Errorf("failed to upsert game region: %w", err)
+	}
+	return nil
+}
+
+// refreshGamePrimary recomputes a game's canonical name and release from its
+// per-region rows, using the region priority (catalog order). Fields without a
+// regional value keep their current column value.
+func (r *Repository) refreshGamePrimary(gameID uuid.UUID) error {
+	regions, err := r.ListGameRegions(gameID)
+	if err != nil {
+		return err
+	}
+	var name string
+	var year, month *int
+	for _, gr := range regions {
+		if name == "" && gr.Name != "" {
+			name = gr.Name
+		}
+		if year == nil && gr.ReleaseYear != nil {
+			year = gr.ReleaseYear
+			month = gr.ReleaseMonth
+		}
+	}
+	if name == "" && year == nil {
+		return nil
+	}
+	_, err = r.db.Exec(`UPDATE games SET
+		name = COALESCE(NULLIF($2, ''), name),
+		release_year = COALESCE($3, release_year),
+		release_month = COALESCE($4, release_month),
+		updated_at = NOW() WHERE id = $1`, gameID, name, year, month)
+	if err != nil {
+		return fmt.Errorf("failed to refresh game primary: %w", err)
+	}
+	return nil
+}
+
 // ListMediaByGame returns media attached to a game.
 func (r *Repository) ListMediaByGame(gameID uuid.UUID) ([]models.Media, error) {
 	return r.listMedia(`WHERE m.game_id = $1 ORDER BY m.created_at`, gameID)
@@ -731,7 +844,7 @@ func (r *Repository) ListGameContributors(gameID uuid.UUID) ([]models.UserCountS
 
 func (r *Repository) listMedia(where string, arg interface{}) ([]models.Media, error) {
 	rows, err := r.db.Query(
-		`SELECT m.id, m.game_id, m.system_id, m.kind, m.object_key, m.mime, m.size, m.created_at,
+		`SELECT m.id, m.game_id, m.system_id, m.kind, m.object_key, m.mime, m.size, m.region, m.created_at,
 		        m.submitted_by, COALESCE(u.username, '')
 		 FROM media m LEFT JOIN users u ON u.id = m.submitted_by `+where, arg,
 	)
@@ -743,7 +856,7 @@ func (r *Repository) listMedia(where string, arg interface{}) ([]models.Media, e
 	for rows.Next() {
 		var m models.Media
 		var submittedBy uuid.NullUUID
-		if err := rows.Scan(&m.ID, &m.GameID, &m.SystemID, &m.Kind, &m.ObjectKey, &m.Mime, &m.Size, &m.CreatedAt,
+		if err := rows.Scan(&m.ID, &m.GameID, &m.SystemID, &m.Kind, &m.ObjectKey, &m.Mime, &m.Size, &m.Region, &m.CreatedAt,
 			&submittedBy, &m.SubmittedByName); err != nil {
 			return nil, err
 		}
@@ -831,26 +944,32 @@ func (r *Repository) CreateGameFromPayload(systemID string, payload map[string]a
 	default:
 		gtype = "base"
 	}
-	var year, month any
+	var year, month *int
 	if y, ok := intVal("release_year"); ok && y > 0 {
-		year = y
+		year = &y
 		if m, ok := intVal("release_month"); ok && m >= 1 && m <= 12 {
-			month = m
+			month = &m
 		}
 	}
 	rating, _ := intVal("rating")
 
 	var id uuid.UUID
 	err := r.db.QueryRow(
-		`INSERT INTO games (system_id, name, description, region, release_year, release_month,
+		`INSERT INTO games (system_id, name, description, release_year, release_month,
 		     publisher, developer, genre, rating, type)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id`,
-		systemID, name, str("description"), str("region"), year, month,
+		systemID, name, str("description"), year, month,
 		str("publisher"), str("developer"), str("genre"), rating, gtype,
 	).Scan(&id)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create game: %w", err)
+	}
+	// The game's region is stored per-region alongside its name/release.
+	if region := str("region"); region != "" {
+		if err := r.UpsertGameRegion(id, region, name, year, month); err != nil {
+			return uuid.Nil, err
+		}
 	}
 	return id, nil
 }
@@ -1012,7 +1131,7 @@ func (r *Repository) SetMetadataStatusForAdmin(id uuid.UUID, status string, admi
 // ListMetadataSubmissionFiles returns files for a submission.
 func (r *Repository) ListMetadataSubmissionFiles(id uuid.UUID) ([]models.MetadataSubmissionFile, error) {
 	rows, err := r.db.Query(
-		`SELECT id, submission_id, kind, object_key, file_name, mime, size, created_at,
+		`SELECT id, submission_id, kind, object_key, file_name, mime, size, region, created_at,
 		        video_format, video_codec, width, height, fps, duration_sec
 		 FROM metadata_submission_files WHERE submission_id = $1 ORDER BY created_at`, id,
 	)
@@ -1024,7 +1143,7 @@ func (r *Repository) ListMetadataSubmissionFiles(id uuid.UUID) ([]models.Metadat
 	for rows.Next() {
 		var f models.MetadataSubmissionFile
 		var dur sql.NullFloat64
-		if err := rows.Scan(&f.ID, &f.SubmissionID, &f.Kind, &f.ObjectKey, &f.FileName, &f.Mime, &f.Size, &f.CreatedAt,
+		if err := rows.Scan(&f.ID, &f.SubmissionID, &f.Kind, &f.ObjectKey, &f.FileName, &f.Mime, &f.Size, &f.Region, &f.CreatedAt,
 			&f.VideoFormat, &f.VideoCodec, &f.Width, &f.Height, &f.FPS, &dur); err != nil {
 			return nil, err
 		}
@@ -1102,15 +1221,15 @@ func (r *Repository) MetadataSubmissionFileKindsByIDs(ids []uuid.UUID) (map[uuid
 // AddMetadataSubmissionFile records an uploaded media file for a submission.
 // For video submissions, format/codec/resolution/fps/duration are captured at
 // upload time so reviewers can inspect the source file without downloading it.
-func (r *Repository) AddMetadataSubmissionFile(id uuid.UUID, kind, objectKey, fileName, mime string, size int64, video *models.VideoMeta) error {
+func (r *Repository) AddMetadataSubmissionFile(id uuid.UUID, kind, objectKey, fileName, mime, region string, size int64, video *models.VideoMeta) error {
 	if _, err := r.db.Exec(`DELETE FROM metadata_submission_files WHERE submission_id = $1 AND object_key = $2`, id, objectKey); err != nil {
 		return fmt.Errorf("failed to replace metadata submission file: %w", err)
 	}
 	if video == nil {
 		_, err := r.db.Exec(
-			`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, size)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			id, kind, objectKey, fileName, mime, size,
+			`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			id, kind, objectKey, fileName, mime, region, size,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to add metadata submission file: %w", err)
@@ -1118,10 +1237,10 @@ func (r *Repository) AddMetadataSubmissionFile(id uuid.UUID, kind, objectKey, fi
 		return nil
 	}
 	_, err := r.db.Exec(
-		`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, size,
+		`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size,
 		     video_format, video_codec, width, height, fps, duration_sec)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		id, kind, objectKey, fileName, mime, size,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		id, kind, objectKey, fileName, mime, region, size,
 		video.Format, video.Codec, video.Width, video.Height, video.FPS, video.DurationSec,
 	)
 	if err != nil {
@@ -1163,14 +1282,16 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 	if sub.GameID != nil {
 		gid := *sub.GameID
 		if _, err := r.db.Exec(
-			`DELETE FROM media WHERE game_id = $1 AND kind IN (SELECT kind FROM metadata_submission_files WHERE submission_id = $2)`,
+			`DELETE FROM media m WHERE m.game_id = $1 AND EXISTS (
+			   SELECT 1 FROM metadata_submission_files f
+			   WHERE f.submission_id = $2 AND f.kind = m.kind AND f.region = m.region)`,
 			gid, id,
 		); err != nil {
 			return fmt.Errorf("failed to replace media: %w", err)
 		}
 		if _, err := r.db.Exec(
-			`INSERT INTO media (game_id, kind, object_key, mime, size, submitted_by)
-			 SELECT $1, kind, object_key, mime, size, $3 FROM metadata_submission_files WHERE submission_id = $2`,
+			`INSERT INTO media (game_id, kind, object_key, mime, region, size, submitted_by)
+			 SELECT $1, kind, object_key, mime, region, size, $3 FROM metadata_submission_files WHERE submission_id = $2`,
 			gid, id, sub.UserID,
 		); err != nil {
 			return fmt.Errorf("failed to apply media files: %w", err)
@@ -1178,14 +1299,16 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 	} else if sub.SystemID != nil {
 		sid := *sub.SystemID
 		if _, err := r.db.Exec(
-			`DELETE FROM media WHERE system_id = $1 AND kind IN (SELECT kind FROM metadata_submission_files WHERE submission_id = $2)`,
+			`DELETE FROM media m WHERE m.system_id = $1 AND EXISTS (
+			   SELECT 1 FROM metadata_submission_files f
+			   WHERE f.submission_id = $2 AND f.kind = m.kind AND f.region = m.region)`,
 			sid, id,
 		); err != nil {
 			return fmt.Errorf("failed to replace media: %w", err)
 		}
 		if _, err := r.db.Exec(
-			`INSERT INTO media (system_id, kind, object_key, mime, size, submitted_by)
-			 SELECT $1, kind, object_key, mime, size, $3 FROM metadata_submission_files WHERE submission_id = $2`,
+			`INSERT INTO media (system_id, kind, object_key, mime, region, size, submitted_by)
+			 SELECT $1, kind, object_key, mime, region, size, $3 FROM metadata_submission_files WHERE submission_id = $2`,
 			sid, id, sub.UserID,
 		); err != nil {
 			return fmt.Errorf("failed to apply media files: %w", err)
@@ -1216,19 +1339,24 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 	// so a single-field submission never clobbers the other columns.
 	if sub.GameID != nil {
 		gid := *sub.GameID
+		region := str("region")
 		if v := str("name"); v != "" {
-			if _, err := r.db.Exec(`UPDATE games SET name=$1, updated_at=NOW() WHERE id=$2`, v, gid); err != nil {
+			// With a region, the name is stored per region and the game's
+			// canonical name is recomputed by region priority.
+			if region != "" {
+				if err := r.UpsertGameRegion(gid, region, v, nil, nil); err != nil {
+					return err
+				}
+				if err := r.refreshGamePrimary(gid); err != nil {
+					return err
+				}
+			} else if _, err := r.db.Exec(`UPDATE games SET name=$1, updated_at=NOW() WHERE id=$2`, v, gid); err != nil {
 				return fmt.Errorf("failed to apply game name: %w", err)
 			}
 		}
 		if v := str("description"); v != "" {
 			if _, err := r.db.Exec(`UPDATE games SET description=$1, updated_at=NOW() WHERE id=$2`, v, gid); err != nil {
 				return fmt.Errorf("failed to apply game description: %w", err)
-			}
-		}
-		if v := str("region"); v != "" {
-			if _, err := r.db.Exec(`UPDATE games SET region=$1, updated_at=NOW() WHERE id=$2`, v, gid); err != nil {
-				return fmt.Errorf("failed to apply game region: %w", err)
 			}
 		}
 		if v := str("publisher"); v != "" {
@@ -1251,12 +1379,25 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 			if m < 1 || m > 12 {
 				m = 0
 			}
-			var month interface{}
+			var mp *int
 			if m > 0 {
-				month = m
+				mp = &m
 			}
-			if _, err := r.db.Exec(`UPDATE games SET release_year=$1, release_month=$2, updated_at=NOW() WHERE id=$3`, y, month, gid); err != nil {
-				return fmt.Errorf("failed to apply game release: %w", err)
+			if region != "" {
+				if err := r.UpsertGameRegion(gid, region, "", &y, mp); err != nil {
+					return err
+				}
+				if err := r.refreshGamePrimary(gid); err != nil {
+					return err
+				}
+			} else {
+				var month interface{}
+				if m > 0 {
+					month = m
+				}
+				if _, err := r.db.Exec(`UPDATE games SET release_year=$1, release_month=$2, updated_at=NOW() WHERE id=$3`, y, month, gid); err != nil {
+					return fmt.Errorf("failed to apply game release: %w", err)
+				}
 			}
 		}
 		if rating := intVal("rating"); rating >= 1 && rating <= 10 {

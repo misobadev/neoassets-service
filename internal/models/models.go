@@ -651,13 +651,29 @@ type Genre struct {
 	SortOrder int    `json:"sort_order"`
 }
 
+// Region is a canonical region from the regions catalog. The catalog order is
+// the priority used to resolve a game's primary name/release/media.
+type Region struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	SortOrder int    `json:"sort_order"`
+}
+
+// GameRegion is a game's text and media for a single region.
+type GameRegion struct {
+	Region       string  `json:"region"`
+	Name         string  `json:"name,omitempty"`
+	ReleaseYear  *int    `json:"release_year,omitempty"`
+	ReleaseMonth *int    `json:"release_month,omitempty"`
+	Media        []Media `json:"media,omitempty"`
+}
+
 // Game is a single game in the metadata catalog.
 type Game struct {
 	ID           uuid.UUID `json:"id" db:"id"`
 	SystemID     string    `json:"system_id" db:"system_id"`
 	Name         string    `json:"name" db:"name"`
 	Description  string    `json:"description" db:"description"`
-	Region       string    `json:"region" db:"region"`
 	ReleaseYear  *int      `json:"release_year" db:"release_year"`
 	ReleaseMonth *int      `json:"release_month" db:"release_month"`
 	Publisher    string    `json:"publisher" db:"publisher"`
@@ -689,8 +705,12 @@ type Game struct {
 // Translations lists the languages that have a translation for this game.
 type GameDetail struct {
 	Game
-	Roms         []Rom           `json:"roms"`
-	Media        []Media         `json:"media"`
+	Roms    []Rom        `json:"roms"`
+	Media   []Media      `json:"media"`
+	Regions []GameRegion `json:"regions,omitempty"`
+	// Region is the resolved primary region (first region with data) and is kept
+	// for the public scrape payload; the web uses Regions instead.
+	Region       string          `json:"region,omitempty"`
 	Lang         string          `json:"lang,omitempty"`
 	Translations []Language      `json:"translations,omitempty"`
 	Contributors []UserCountStat `json:"contributors,omitempty"`
@@ -719,7 +739,9 @@ type Media struct {
 	ObjectKey string     `json:"object_key" db:"object_key"`
 	Mime      string     `json:"mime" db:"mime"`
 	Size      int64      `json:"size" db:"size"`
-	CreatedAt time.Time  `json:"created_at" db:"created_at"`
+	// Region is set for regional media (cover/logo); empty for the rest.
+	Region    string    `json:"region,omitempty" db:"region"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	// Who contributed the asset; nil when it came from the importer (system).
 	SubmittedBy     *uuid.UUID `json:"submitted_by,omitempty" db:"submitted_by"`
 	SubmittedByName string     `json:"submitted_by_name,omitempty" db:"-"`
@@ -785,7 +807,9 @@ type MetadataSubmissionFile struct {
 	FileName     string    `json:"file_name" db:"file_name"`
 	Mime         string    `json:"mime" db:"mime"`
 	Size         int64     `json:"size" db:"size"`
-	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+	// Region is set for regional media (cover/logo); empty otherwise.
+	Region    string    `json:"region,omitempty" db:"region"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	// Video metadata, captured when a video submission is uploaded so reviewers
 	// can inspect the source without downloading it.
 	VideoFormat string  `json:"video_format,omitempty" db:"video_format"`
@@ -824,6 +848,8 @@ type MetadataUploadRequest struct {
 	MimeType  string `json:"mime_type"`
 	Size      int64  `json:"size"`
 	ObjectKey string `json:"object_key,omitempty"`
+	// Region applies to regional media (cover/logo).
+	Region string `json:"region,omitempty"`
 }
 
 // MetadataUploadURLRequest is the payload for presigning a media upload to its
@@ -835,6 +861,7 @@ type MetadataUploadURLRequest struct {
 	FileName string     `json:"file_name"`
 	MimeType string     `json:"mime_type"`
 	Size     int64      `json:"size"`
+	Region   string     `json:"region,omitempty"`
 }
 
 // MediaReviewRequest is the payload for admin approve/reject of a metadata submission.

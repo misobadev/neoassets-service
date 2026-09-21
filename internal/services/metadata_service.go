@@ -148,7 +148,37 @@ func (s *Service) GetGame(id uuid.UUID, lang string) (*models.GameDetail, error)
 	if err != nil {
 		return nil, err
 	}
-	detail := &models.GameDetail{Game: *g, Roms: roms, Media: media, Translations: translations}
+	regions, err := s.repo.ListGameRegions(id)
+	if err != nil {
+		return nil, err
+	}
+	// Attach the regional media (cover/logo) to each region.
+	byRegion := map[string][]models.Media{}
+	for _, m := range media {
+		if m.Region != "" && (m.Kind == models.MediaCover || m.Kind == models.MediaLogo) {
+			byRegion[m.Region] = append(byRegion[m.Region], m)
+		}
+	}
+	primary := ""
+	for i := range regions {
+		regions[i].Media = byRegion[regions[i].Region]
+		if primary == "" && (regions[i].Name != "" || regions[i].ReleaseYear != nil || len(regions[i].Media) > 0) {
+			primary = regions[i].Region
+		}
+	}
+	// The general media list resolves cover/logo to the primary region so the
+	// detail page shows one asset; the rest stay in the regions array.
+	if primary != "" {
+		resolved := make([]models.Media, 0, len(media))
+		for _, m := range media {
+			if (m.Kind == models.MediaCover || m.Kind == models.MediaLogo) && m.Region != "" && m.Region != primary {
+				continue
+			}
+			resolved = append(resolved, m)
+		}
+		media = resolved
+	}
+	detail := &models.GameDetail{Game: *g, Roms: roms, Media: media, Regions: regions, Region: primary, Translations: translations}
 	if lang != "" && lang != "en" {
 		detail.Lang = lang
 	}
@@ -170,6 +200,27 @@ func (s *Service) ListLanguages() ([]models.Language, error) {
 // ListGenres returns the canonical genre catalog used by the web forms.
 func (s *Service) ListGenres() ([]models.Genre, error) {
 	return s.repo.ListGenres()
+}
+
+// ListRegions returns the canonical region catalog used by the web forms.
+func (s *Service) ListRegions() ([]models.Region, error) {
+	return s.repo.ListRegions()
+}
+
+// validateRegion checks that a non-empty region is in the canonical catalog.
+func (s *Service) validateRegion(region string) error {
+	region = strings.TrimSpace(region)
+	if region == "" {
+		return nil
+	}
+	exists, err := s.repo.RegionExists(region)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("unknown region %q", region)
+	}
+	return nil
 }
 
 // LookupGame finds games by any of the given ROM hashes, optionally scoped to a
@@ -223,6 +274,17 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			if !exists {
 				return nil, fmt.Errorf("unknown genre %q", g)
 			}
+		}
+	}
+	// Regions (text and regional media) must also be catalog values.
+	if r, ok := req.Payload["region"].(string); ok {
+		if err := s.validateRegion(r); err != nil {
+			return nil, err
+		}
+	}
+	for _, f := range req.Files {
+		if err := s.validateRegion(f.Region); err != nil {
+			return nil, err
 		}
 	}
 
@@ -327,7 +389,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 				vmeta = vm
 			}
 		}
-		if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, mime, f.Size, vmeta); err != nil {
+		if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, mime, f.Region, f.Size, vmeta); err != nil {
 			return nil, err
 		}
 	}
@@ -496,7 +558,7 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.AddMetadataSubmissionFile(submissionID, req.Kind, objectKey, req.FileName, req.MimeType, req.Size, nil); err != nil {
+	if err := s.repo.AddMetadataSubmissionFile(submissionID, req.Kind, objectKey, req.FileName, req.MimeType, req.Region, req.Size, nil); err != nil {
 		return nil, err
 	}
 	return &models.UploadResponse{
@@ -1004,7 +1066,6 @@ func (s *Service) captureOldState(ctx context.Context, sub *models.MetadataSubmi
 			oldPayload = map[string]any{
 				"name":          g.Name,
 				"description":   g.Description,
-				"region":        g.Region,
 				"genre":         g.Genre,
 				"developer":     g.Developer,
 				"publisher":     g.Publisher,
@@ -1020,9 +1081,9 @@ func (s *Service) captureOldState(ctx context.Context, sub *models.MetadataSubmi
 		}
 	}
 
-	kinds := map[string]bool{}
+	replaced := map[string]bool{}
 	for _, f := range files {
-		kinds[f.Kind] = true
+		replaced[f.Kind+"\x00"+f.Region] = true
 	}
 	var media []models.Media
 	var err error
@@ -1034,7 +1095,7 @@ func (s *Service) captureOldState(ctx context.Context, sub *models.MetadataSubmi
 	oldMedia := []map[string]any{}
 	if err == nil {
 		for _, m := range media {
-			if !kinds[m.Kind] {
+			if !replaced[m.Kind+"\x00"+m.Region] {
 				continue
 			}
 			key := m.ObjectKey
@@ -1049,6 +1110,7 @@ func (s *Service) captureOldState(ctx context.Context, sub *models.MetadataSubmi
 			}
 			oldMedia = append(oldMedia, map[string]any{
 				"kind":       m.Kind,
+				"region":     m.Region,
 				"object_key": key,
 				"mime":       m.Mime,
 				"size":       m.Size,
@@ -1139,9 +1201,10 @@ func (s *Service) moveSubmissionMediaToCanonical(ctx context.Context, id uuid.UU
 // deleteReplacedMediaObjects removes the R2 objects of the current media for the
 // kinds being replaced by an approved submission.
 func (s *Service) deleteReplacedMediaObjects(ctx context.Context, sub *models.MetadataSubmission, files []models.MetadataSubmissionFile) {
-	kinds := map[string]bool{}
+	// A file replaces the existing media for the same (kind, region).
+	replaced := map[string]bool{}
 	for _, f := range files {
-		kinds[f.Kind] = true
+		replaced[f.Kind+"\x00"+f.Region] = true
 	}
 	var old []models.Media
 	var err error
@@ -1155,7 +1218,7 @@ func (s *Service) deleteReplacedMediaObjects(ctx context.Context, sub *models.Me
 		return
 	}
 	for _, m := range old {
-		if !kinds[m.Kind] {
+		if !replaced[m.Kind+"\x00"+m.Region] {
 			continue
 		}
 		if err := s.r2.DeleteObject(ctx, m.ObjectKey); err != nil {

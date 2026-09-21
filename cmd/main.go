@@ -400,6 +400,7 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 			r.Get("/metadata/games/{id}", h.GetGameDetail)
 			r.Get("/metadata/languages", h.ListMetadataLanguages)
 			r.Get("/metadata/genres", h.ListGenres)
+			r.Get("/metadata/regions", h.ListRegions)
 		})
 
 		// Public scraping API. Developer app credentials are always required;

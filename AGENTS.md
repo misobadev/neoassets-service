@@ -53,6 +53,13 @@ constraint (migrations `008` + `009`). Array of statuses differs from older docs
   (`genres` table, migration `061`) used by the web metadata forms. Submissions
   must send one of these names; the service validates membership but never
   normalizes (normalization lives in the importer).
+- `GET /api/v1/metadata/regions`              canonical region catalog
+  (`regions` table, migration `062`), in priority order (World, USA, Europe,
+  Japan, Spain, France, Germany, Italy, Korea, China). A game has no single
+  region: its per-region name/release live in `game_regions` and its cover/logo
+  in `media.region`. The detail API resolves the primary name/release/cover by
+  region priority and also returns a `regions` array with the text and media per
+  region. Region is submitted only for name, release, logo and cover.
 - `GET /api/v1/packs?sort=&limit=&offset=`   `services.ListedApprovedPacks()` ->
   `{"themes":[...],"total":N}`, sorted by `downloads` (default), `name` or
   `created`, paginated. Only `approved` submissions are served. Each pack
