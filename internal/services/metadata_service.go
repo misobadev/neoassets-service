@@ -392,7 +392,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			if strings.TrimSpace(f.Region) == "" {
 				return nil, fmt.Errorf("region required")
 			}
-			if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, "", f.Region, f.Size, true, nil); err != nil {
+			if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, "", f.Region, f.Size, true, false, nil); err != nil {
 				return nil, err
 			}
 			continue
@@ -401,12 +401,8 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 		if !validMediaExt(f.Kind, ext) {
 			return nil, fmt.Errorf("unsupported %s extension %q", mediaExtLabel(f.Kind), ext)
 		}
-		if f.ObjectKey == "" {
-			return nil, fmt.Errorf("object_key required")
-		}
-		// A staging key is a new upload. Any other key references an existing
-		// cover/logo of this game that is being moved to another region.
-		if !strings.HasPrefix(f.ObjectKey, "media/staging/") {
+		if f.Move {
+			// References an existing cover/logo of this game to move region.
 			if req.GameID == nil {
 				return nil, fmt.Errorf("media can only be moved on a game")
 			}
@@ -420,8 +416,13 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			if !ok {
 				return nil, fmt.Errorf("media not found")
 			}
-		} else if err := s.ensureUploaded(context.Background(), f.ObjectKey, f.FileName); err != nil {
-			return nil, err
+		} else {
+			if f.ObjectKey == "" {
+				return nil, fmt.Errorf("object_key required")
+			}
+			if err := s.ensureUploaded(context.Background(), f.ObjectKey, f.FileName); err != nil {
+				return nil, err
+			}
 		}
 		mime := f.MimeType
 		if mime == "" {
@@ -436,7 +437,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 				vmeta = vm
 			}
 		}
-		if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, mime, f.Region, f.Size, false, vmeta); err != nil {
+		if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, mime, f.Region, f.Size, false, f.Move, vmeta); err != nil {
 			return nil, err
 		}
 	}
@@ -605,7 +606,7 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.AddMetadataSubmissionFile(submissionID, req.Kind, objectKey, req.FileName, req.MimeType, req.Region, req.Size, false, nil); err != nil {
+	if err := s.repo.AddMetadataSubmissionFile(submissionID, req.Kind, objectKey, req.FileName, req.MimeType, req.Region, req.Size, false, false, nil); err != nil {
 		return nil, err
 	}
 	return &models.UploadResponse{
@@ -1217,9 +1218,9 @@ func (s *Service) moveSubmissionMediaToCanonical(ctx context.Context, id uuid.UU
 	s.deleteReplacedMediaObjects(ctx, sub, files)
 
 	for _, f := range files {
-		// A non-staging object_key is an existing media being moved to another
-		// region; there is nothing to copy or convert, only its region changes.
-		if !strings.HasPrefix(f.ObjectKey, "media/staging/") {
+		// A moved existing media has nothing to copy or convert (only its region
+		// changes) and a delete has no object at all.
+		if f.IsMove || f.IsDelete {
 			continue
 		}
 		// Videos are re-encoded to MP4 (HEVC + AAC) at the original resolution

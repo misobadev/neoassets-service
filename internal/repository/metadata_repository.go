@@ -1174,7 +1174,7 @@ func (r *Repository) SetMetadataStatusForAdmin(id uuid.UUID, status string, admi
 // ListMetadataSubmissionFiles returns files for a submission.
 func (r *Repository) ListMetadataSubmissionFiles(id uuid.UUID) ([]models.MetadataSubmissionFile, error) {
 	rows, err := r.db.Query(
-		`SELECT id, submission_id, kind, object_key, file_name, mime, size, region, is_delete, created_at,
+		`SELECT id, submission_id, kind, object_key, file_name, mime, size, region, is_delete, is_move, created_at,
 		        video_format, video_codec, width, height, fps, duration_sec
 		 FROM metadata_submission_files WHERE submission_id = $1 ORDER BY created_at`, id,
 	)
@@ -1186,7 +1186,7 @@ func (r *Repository) ListMetadataSubmissionFiles(id uuid.UUID) ([]models.Metadat
 	for rows.Next() {
 		var f models.MetadataSubmissionFile
 		var dur sql.NullFloat64
-		if err := rows.Scan(&f.ID, &f.SubmissionID, &f.Kind, &f.ObjectKey, &f.FileName, &f.Mime, &f.Size, &f.Region, &f.IsDelete, &f.CreatedAt,
+		if err := rows.Scan(&f.ID, &f.SubmissionID, &f.Kind, &f.ObjectKey, &f.FileName, &f.Mime, &f.Size, &f.Region, &f.IsDelete, &f.IsMove, &f.CreatedAt,
 			&f.VideoFormat, &f.VideoCodec, &f.Width, &f.Height, &f.FPS, &dur); err != nil {
 			return nil, err
 		}
@@ -1264,15 +1264,15 @@ func (r *Repository) MetadataSubmissionFileKindsByIDs(ids []uuid.UUID) (map[uuid
 // AddMetadataSubmissionFile records an uploaded media file for a submission.
 // For video submissions, format/codec/resolution/fps/duration are captured at
 // upload time so reviewers can inspect the source file without downloading it.
-func (r *Repository) AddMetadataSubmissionFile(id uuid.UUID, kind, objectKey, fileName, mime, region string, size int64, isDelete bool, video *models.VideoMeta) error {
+func (r *Repository) AddMetadataSubmissionFile(id uuid.UUID, kind, objectKey, fileName, mime, region string, size int64, isDelete, isMove bool, video *models.VideoMeta) error {
 	if _, err := r.db.Exec(`DELETE FROM metadata_submission_files WHERE submission_id = $1 AND object_key = $2`, id, objectKey); err != nil {
 		return fmt.Errorf("failed to replace metadata submission file: %w", err)
 	}
 	if video == nil {
 		_, err := r.db.Exec(
-			`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size, is_delete)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			id, kind, objectKey, fileName, mime, region, size, isDelete,
+			`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size, is_delete, is_move)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			id, kind, objectKey, fileName, mime, region, size, isDelete, isMove,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to add metadata submission file: %w", err)
@@ -1280,10 +1280,10 @@ func (r *Repository) AddMetadataSubmissionFile(id uuid.UUID, kind, objectKey, fi
 		return nil
 	}
 	_, err := r.db.Exec(
-		`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size, is_delete,
+		`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size, is_delete, is_move,
 		     video_format, video_codec, width, height, fps, duration_sec)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-		id, kind, objectKey, fileName, mime, region, size, isDelete,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		id, kind, objectKey, fileName, mime, region, size, isDelete, isMove,
 		video.Format, video.Codec, video.Width, video.Height, video.FPS, video.DurationSec,
 	)
 	if err != nil {
@@ -1328,10 +1328,8 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 		if err != nil {
 			return err
 		}
-		// A file whose object_key is not a staging upload references an existing
-		// media being moved to another region: reassign its region, replacing
-		// whatever the target region had for that kind. A delete file removes the
-		// media of that region instead.
+		// is_delete removes the media of that (kind, region); is_move reassigns
+		// the region of an existing media. New uploads are inserted below.
 		for _, f := range files {
 			if f.IsDelete {
 				if _, err := r.db.Exec(
@@ -1342,7 +1340,7 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 				}
 				continue
 			}
-			if strings.HasPrefix(f.ObjectKey, "media/staging/") {
+			if !f.IsMove {
 				continue
 			}
 			if _, err := r.db.Exec(
@@ -1363,7 +1361,7 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 			`DELETE FROM media m WHERE m.game_id = $1 AND EXISTS (
 			   SELECT 1 FROM metadata_submission_files f
 			   WHERE f.submission_id = $2 AND f.kind = m.kind AND f.region = m.region
-			     AND f.object_key LIKE 'media/staging/%' AND m.object_key <> f.object_key)`,
+			     AND NOT f.is_delete AND NOT f.is_move AND m.object_key <> f.object_key)`,
 			gid, id,
 		); err != nil {
 			return fmt.Errorf("failed to replace media: %w", err)
@@ -1371,7 +1369,7 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 		if _, err := r.db.Exec(
 			`INSERT INTO media (game_id, kind, object_key, mime, region, size, submitted_by)
 			 SELECT $1, kind, object_key, mime, region, size, $3 FROM metadata_submission_files
-			 WHERE submission_id = $2 AND object_key LIKE 'media/staging/%'`,
+			 WHERE submission_id = $2 AND NOT is_delete AND NOT is_move`,
 			gid, id, sub.UserID,
 		); err != nil {
 			return fmt.Errorf("failed to apply media files: %w", err)
