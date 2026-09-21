@@ -27,10 +27,6 @@ func (s *Service) Dashboard() (*models.Dashboard, error) {
 	if err != nil {
 		return nil, err
 	}
-	topReviewers, err := s.repo.TopReviewers(5)
-	if err != nil {
-		return nil, err
-	}
 	topContributions, err := s.repo.TopContributions(10)
 	if err != nil {
 		return nil, err
@@ -44,6 +40,10 @@ func (s *Service) Dashboard() (*models.Dashboard, error) {
 		return nil, err
 	}
 	topGames, err := s.repo.ListPopularGames("", 10)
+	if err != nil {
+		return nil, err
+	}
+	topSystems, err := s.repo.ListPopularSystems(10)
 	if err != nil {
 		return nil, err
 	}
@@ -61,11 +61,11 @@ func (s *Service) Dashboard() (*models.Dashboard, error) {
 		TotalSystems:       totalSystems,
 		TotalUsers:         totalUsers,
 		TotalContributions: totalContributions,
-		TopReviewers:       topReviewers,
 		TopContributions:   topContributions,
 		TopApprovedWeek:    topApprovedWeek,
 		TopLevels:          topLevels,
 		TopGames:           topGames,
+		TopSystems:         topSystems,
 		RecentPacks:        recentPacks,
 		RecentMetadata:     recentMetadata,
 	}, nil

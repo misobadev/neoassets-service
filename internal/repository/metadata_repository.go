@@ -473,6 +473,32 @@ func (r *Repository) ListPopularGames(systemID string, limit int) ([]models.Popu
 	return list, rows.Err()
 }
 
+// ListPopularSystems returns the systems with the most scrapes, summing the
+// scrape counters of all their games.
+func (r *Repository) ListPopularSystems(limit int) ([]models.PopularSystem, error) {
+	rows, err := r.db.Query(`
+		SELECT g.system_id, COALESCE(s.name, g.system_id), SUM(st.scrapes) AS scrapes
+		FROM game_scrape_stats st
+		JOIN games g ON g.id = st.game_id
+		LEFT JOIN metadata_systems s ON s.id = g.system_id
+		GROUP BY g.system_id, s.name
+		ORDER BY scrapes DESC, COALESCE(s.name, g.system_id) ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list popular systems: %w", err)
+	}
+	defer rows.Close()
+	out := []models.PopularSystem{}
+	for rows.Next() {
+		var p models.PopularSystem
+		if err := rows.Scan(&p.SystemID, &p.Name, &p.Scrapes); err != nil {
+			return nil, fmt.Errorf("failed to scan popular system: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // orderByClause maps a sort key to a safe ORDER BY clause.
 func orderByClause(sort string) string {
 	switch sort {

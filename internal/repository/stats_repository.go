@@ -93,42 +93,6 @@ func (r *Repository) TopLevels(limit int) ([]models.LevelStat, error) {
 	return out, rows.Err()
 }
 
-// TopReviewers returns the users with the most review actions (approved +
-// rejected) across SAP and metadata submissions. Hidden users (NeoBot) and
-// users without review actions are excluded.
-func (r *Repository) TopReviewers(limit int) ([]models.UserStat, error) {
-	rows, err := r.db.Query(`
-		SELECT r.reviewed_by, u.username, u.avatar_key,
-		       COUNT(*) FILTER (WHERE r.status = 'approved') AS approved,
-		       COUNT(*) FILTER (WHERE r.status = 'rejected') AS rejected
-		FROM (
-			SELECT reviewed_by, status FROM submissions
-			 WHERE reviewed_by IS NOT NULL AND status IN ('approved','rejected')
-			UNION ALL
-			SELECT reviewed_by, status FROM metadata_submissions
-			 WHERE reviewed_by IS NOT NULL AND status IN ('approved','rejected')
-		) r
-		JOIN users u ON u.id = r.reviewed_by
-		WHERE NOT u.hidden
-		GROUP BY r.reviewed_by, u.username, u.avatar_key
-		ORDER BY (COUNT(*) FILTER (WHERE r.status = 'approved') + COUNT(*) FILTER (WHERE r.status = 'rejected')) DESC
-		LIMIT $1`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []models.UserStat{}
-	for rows.Next() {
-		var s models.UserStat
-		if err := rows.Scan(&s.ID, &s.Username, &s.AvatarKey, &s.Approved, &s.Rejected); err != nil {
-			return nil, err
-		}
-		s.Total = s.Approved + s.Rejected
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
-
 // TopContributions returns users with the most approved contributions across
 // both SAP and metadata, excluding hidden users. A metadata submission counts
 // once, while a SAP submission counts once per uploaded image file.

@@ -59,8 +59,8 @@ type SoftwareStats struct {
 // rotated.
 type CreatedDeveloperApp struct {
 	DeveloperApp
-	ClientSecret   string `json:"client_secret"`
-	DebugPassword  string `json:"debug_password"`
+	ClientSecret  string `json:"client_secret"`
+	DebugPassword string `json:"debug_password"`
 }
 
 // UserAPIKey is a personal API key used as the user credential of the scraping
@@ -139,6 +139,13 @@ type PopularGame struct {
 	Name          string     `json:"name"`
 	Scrapes       int64      `json:"scrapes"`
 	LastScrapedAt *time.Time `json:"last_scraped_at"`
+}
+
+// PopularSystem is a most-scraped system row (scrapes aggregated per system).
+type PopularSystem struct {
+	SystemID string `json:"system_id"`
+	Name     string `json:"name"`
+	Scrapes  int64  `json:"scrapes"`
 }
 
 // ScrapePopularResponse is the payload returned by GET /api/v1/scrape/popular.

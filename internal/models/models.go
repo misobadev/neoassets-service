@@ -181,16 +181,6 @@ type User struct {
 	UpdatedAt                time.Time  `json:"updated_at" db:"updated_at"`
 }
 
-// UserStat is a leaderboard row in the dashboard.
-type UserStat struct {
-	ID        uuid.UUID `json:"id" db:"id"`
-	Username  string    `json:"username" db:"username"`
-	AvatarKey string    `json:"avatar_key" db:"avatar_key"`
-	Approved  int       `json:"approved" db:"approved"`
-	Rejected  int       `json:"rejected" db:"rejected"`
-	Total     int       `json:"total" db:"total"`
-}
-
 // UserCountStat is a leaderboard row counting submissions.
 type UserCountStat struct {
 	ID        uuid.UUID `json:"id" db:"id"`
@@ -229,11 +219,11 @@ type Dashboard struct {
 	TotalSystems       int              `json:"total_systems"`
 	TotalUsers         int              `json:"total_users"`
 	TotalContributions int              `json:"total_contributions"`
-	TopReviewers       []UserStat       `json:"top_reviewers"`
 	TopContributions   []UserCountStat  `json:"top_contributions"`
 	TopApprovedWeek    []UserCountStat  `json:"top_approved_week"`
 	TopLevels          []LevelStat      `json:"top_levels"`
 	TopGames           []PopularGame    `json:"top_games"`
+	TopSystems         []PopularSystem  `json:"top_systems"`
 	RecentPacks        []RecentPack     `json:"recent_packs"`
 	RecentMetadata     []RecentMetadata `json:"recent_metadata"`
 }
