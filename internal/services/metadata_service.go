@@ -292,6 +292,21 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			return nil, err
 		}
 	}
+	// A deletion must explain why (the region is being removed, not corrected).
+	deleting := false
+	for _, f := range req.Files {
+		if f.Delete {
+			deleting = true
+		}
+	}
+	if v, ok := req.Payload["delete"].(bool); ok && v {
+		deleting = true
+	}
+	if deleting {
+		if note, _ := req.Payload["note"].(string); strings.TrimSpace(note) == "" {
+			return nil, fmt.Errorf("a reason is required when deleting")
+		}
+	}
 
 	if kind == "new_game" {
 		if req.GameID != nil {
@@ -366,6 +381,22 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 		if !validMediaKind(f.Kind) {
 			return nil, fmt.Errorf("invalid media kind %q", f.Kind)
 		}
+		if f.Delete {
+			// Removing a regional media: no file to upload or move.
+			if req.GameID == nil {
+				return nil, fmt.Errorf("media can only be deleted on a game")
+			}
+			if f.Kind != models.MediaCover && f.Kind != models.MediaLogo {
+				return nil, fmt.Errorf("only cover and logo can be deleted per region")
+			}
+			if strings.TrimSpace(f.Region) == "" {
+				return nil, fmt.Errorf("region required")
+			}
+			if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, "", f.Region, f.Size, true, nil); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		ext := strings.ToLower(getExt(f.FileName))
 		if !validMediaExt(f.Kind, ext) {
 			return nil, fmt.Errorf("unsupported %s extension %q", mediaExtLabel(f.Kind), ext)
@@ -405,7 +436,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 				vmeta = vm
 			}
 		}
-		if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, mime, f.Region, f.Size, vmeta); err != nil {
+		if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, mime, f.Region, f.Size, false, vmeta); err != nil {
 			return nil, err
 		}
 	}
@@ -574,7 +605,7 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.AddMetadataSubmissionFile(submissionID, req.Kind, objectKey, req.FileName, req.MimeType, req.Region, req.Size, nil); err != nil {
+	if err := s.repo.AddMetadataSubmissionFile(submissionID, req.Kind, objectKey, req.FileName, req.MimeType, req.Region, req.Size, false, nil); err != nil {
 		return nil, err
 	}
 	return &models.UploadResponse{
@@ -1068,6 +1099,9 @@ func (s *Service) awardMetadataPoints(id uuid.UUID, sub *models.MetadataSubmissi
 	}
 	kinds := make([]string, 0, len(files))
 	for _, f := range files {
+		if f.IsDelete {
+			continue // removing content does not earn points
+		}
 		kinds = append(kinds, f.Kind)
 	}
 	delta := metadataBasePoints(sub.Payload, sub.Kind, kinds)

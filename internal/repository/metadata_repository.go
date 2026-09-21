@@ -1174,7 +1174,7 @@ func (r *Repository) SetMetadataStatusForAdmin(id uuid.UUID, status string, admi
 // ListMetadataSubmissionFiles returns files for a submission.
 func (r *Repository) ListMetadataSubmissionFiles(id uuid.UUID) ([]models.MetadataSubmissionFile, error) {
 	rows, err := r.db.Query(
-		`SELECT id, submission_id, kind, object_key, file_name, mime, size, region, created_at,
+		`SELECT id, submission_id, kind, object_key, file_name, mime, size, region, is_delete, created_at,
 		        video_format, video_codec, width, height, fps, duration_sec
 		 FROM metadata_submission_files WHERE submission_id = $1 ORDER BY created_at`, id,
 	)
@@ -1186,7 +1186,7 @@ func (r *Repository) ListMetadataSubmissionFiles(id uuid.UUID) ([]models.Metadat
 	for rows.Next() {
 		var f models.MetadataSubmissionFile
 		var dur sql.NullFloat64
-		if err := rows.Scan(&f.ID, &f.SubmissionID, &f.Kind, &f.ObjectKey, &f.FileName, &f.Mime, &f.Size, &f.Region, &f.CreatedAt,
+		if err := rows.Scan(&f.ID, &f.SubmissionID, &f.Kind, &f.ObjectKey, &f.FileName, &f.Mime, &f.Size, &f.Region, &f.IsDelete, &f.CreatedAt,
 			&f.VideoFormat, &f.VideoCodec, &f.Width, &f.Height, &f.FPS, &dur); err != nil {
 			return nil, err
 		}
@@ -1264,15 +1264,15 @@ func (r *Repository) MetadataSubmissionFileKindsByIDs(ids []uuid.UUID) (map[uuid
 // AddMetadataSubmissionFile records an uploaded media file for a submission.
 // For video submissions, format/codec/resolution/fps/duration are captured at
 // upload time so reviewers can inspect the source file without downloading it.
-func (r *Repository) AddMetadataSubmissionFile(id uuid.UUID, kind, objectKey, fileName, mime, region string, size int64, video *models.VideoMeta) error {
+func (r *Repository) AddMetadataSubmissionFile(id uuid.UUID, kind, objectKey, fileName, mime, region string, size int64, isDelete bool, video *models.VideoMeta) error {
 	if _, err := r.db.Exec(`DELETE FROM metadata_submission_files WHERE submission_id = $1 AND object_key = $2`, id, objectKey); err != nil {
 		return fmt.Errorf("failed to replace metadata submission file: %w", err)
 	}
 	if video == nil {
 		_, err := r.db.Exec(
-			`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			id, kind, objectKey, fileName, mime, region, size,
+			`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size, is_delete)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			id, kind, objectKey, fileName, mime, region, size, isDelete,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to add metadata submission file: %w", err)
@@ -1280,10 +1280,10 @@ func (r *Repository) AddMetadataSubmissionFile(id uuid.UUID, kind, objectKey, fi
 		return nil
 	}
 	_, err := r.db.Exec(
-		`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size,
+		`INSERT INTO metadata_submission_files (submission_id, kind, object_key, file_name, mime, region, size, is_delete,
 		     video_format, video_codec, width, height, fps, duration_sec)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		id, kind, objectKey, fileName, mime, region, size,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		id, kind, objectKey, fileName, mime, region, size, isDelete,
 		video.Format, video.Codec, video.Width, video.Height, video.FPS, video.DurationSec,
 	)
 	if err != nil {
@@ -1330,8 +1330,18 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 		}
 		// A file whose object_key is not a staging upload references an existing
 		// media being moved to another region: reassign its region, replacing
-		// whatever the target region had for that kind.
+		// whatever the target region had for that kind. A delete file removes the
+		// media of that region instead.
 		for _, f := range files {
+			if f.IsDelete {
+				if _, err := r.db.Exec(
+					`DELETE FROM media WHERE game_id = $1 AND kind = $2 AND region = $3`,
+					gid, f.Kind, f.Region,
+				); err != nil {
+					return fmt.Errorf("failed to delete media: %w", err)
+				}
+				continue
+			}
 			if strings.HasPrefix(f.ObjectKey, "media/staging/") {
 				continue
 			}
@@ -1411,6 +1421,22 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 		gid := *sub.GameID
 		region := str("region")
 		regionFrom := str("region_from")
+		// A text deletion removes the name or the release of a region.
+		if del, ok := p["delete"].(bool); ok && del && region != "" {
+			switch str("field") {
+			case "name":
+				if err := r.ClearGameRegion(gid, region, true, false); err != nil {
+					return err
+				}
+			case "release":
+				if err := r.ClearGameRegion(gid, region, false, true); err != nil {
+					return err
+				}
+			}
+			if err := r.refreshGamePrimary(gid); err != nil {
+				return err
+			}
+		}
 		if v := str("name"); v != "" {
 			// With a region, the name is stored per region and the game's
 			// canonical name is recomputed by region priority. region_from moves

@@ -808,7 +808,9 @@ type MetadataSubmissionFile struct {
 	Mime         string    `json:"mime" db:"mime"`
 	Size         int64     `json:"size" db:"size"`
 	// Region is set for regional media (cover/logo); empty otherwise.
-	Region    string    `json:"region,omitempty" db:"region"`
+	Region string `json:"region,omitempty" db:"region"`
+	// IsDelete requests removing the existing media for (kind, region).
+	IsDelete  bool      `json:"delete,omitempty" db:"is_delete"`
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	// Video metadata, captured when a video submission is uploaded so reviewers
 	// can inspect the source without downloading it.
@@ -850,6 +852,8 @@ type MetadataUploadRequest struct {
 	ObjectKey string `json:"object_key,omitempty"`
 	// Region applies to regional media (cover/logo).
 	Region string `json:"region,omitempty"`
+	// Delete removes the existing media for (kind, region) instead of adding it.
+	Delete bool `json:"delete,omitempty"`
 }
 
 // MetadataUploadURLRequest is the payload for presigning a media upload to its
