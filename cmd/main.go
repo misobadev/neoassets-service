@@ -363,9 +363,9 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 	// scraping API has its own quota and must NOT share this.
 	catalogLimiter := handlers.NewIPLimiter(20, 20)
 	// Pack downloads are keyed by (IP, pack): a client may install a given pack
-	// only a few times per minute, so download counters cannot be inflated by
+	// up to ten times per minute, so download counters cannot be inflated by
 	// hammering the endpoint while legitimate installs still work.
-	downloadLimiter := handlers.NewIPLimiter(4, 3)
+	downloadLimiter := handlers.NewIPLimiter(10, 10)
 
 	r.Get("/health", h.HealthCheck)
 
