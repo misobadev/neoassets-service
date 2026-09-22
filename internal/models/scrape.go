@@ -226,45 +226,6 @@ func (g ScrapeGame) MarshalJSON() ([]byte, error) {
 	return json.Marshal(fields)
 }
 
-// ScrapePackSummary is one system art pack in the public scraping payload. The
-// preview and the first few background images are returned as ready-to-use CDN
-// URLs so any front-end can render a theme gallery.
-type ScrapePackSummary struct {
-	Folder         string   `json:"folder"`
-	Name           string   `json:"name"`
-	Author         string   `json:"author"`
-	Description    string   `json:"description"`
-	DonationURL    string   `json:"donation_url,omitempty"`
-	Version        string   `json:"version"`
-	Preview        string   `json:"preview"`
-	Images         []string `json:"images"`
-	SystemsCovered int      `json:"systems_covered"`
-	Downloads      int64    `json:"downloads"`
-}
-
-// ScrapePackFile is a published file of a system art pack.
-type ScrapePackFile struct {
-	Kind     string `json:"kind"`
-	SystemID string `json:"system_id,omitempty"`
-	FileName string `json:"file_name"`
-	URL      string `json:"url"`
-	Size     int64  `json:"size"`
-	Mime     string `json:"mime"`
-}
-
-// ScrapePackDetail is the full payload of a pack: its summary plus every
-// published file (backgrounds, preview, theme, logos) with public URLs.
-type ScrapePackDetail struct {
-	ScrapePackSummary
-	Files []ScrapePackFile `json:"files"`
-}
-
-// ScrapePacksResponse is the payload returned by GET /api/v1/scrape/packs.
-type ScrapePacksResponse struct {
-	Packs []ScrapePackSummary `json:"packs"`
-	Total int64               `json:"total"`
-}
-
 // ScrapeQuota is the daily quota state for a scrape subject.
 type ScrapeQuota struct {
 	DailyLimit int       `json:"daily_limit"`

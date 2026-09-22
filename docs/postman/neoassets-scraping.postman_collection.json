@@ -699,60 +699,6 @@
             "description": "Same payload as Pack - Detail, but bumps the pack download counter. This is the install/scrape action that front-ends call when a pack is actually installed.\n\nRate limited per (client IP, pack): a client may download the same pack only a few times per minute (429 when exceeded), so download counters cannot be inflated by flooding."
           },
           "response": []
-        },
-        {
-          "name": "Scrape - Packs List",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/scrape/packs?limit=10&offset=0",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "scrape",
-                "packs"
-              ],
-              "query": [
-                {
-                  "key": "limit",
-                  "value": "10"
-                },
-                {
-                  "key": "offset",
-                  "value": "0"
-                }
-              ]
-            },
-            "description": "Public scraping API: approved System Art Packs with a ready-to-use preview URL and the first four background images each. Requires developer credentials (X-Client-Id / X-Client-Secret). Free (does not consume quota). Returns { packs, total }."
-          },
-          "response": []
-        },
-        {
-          "name": "Scrape - Pack Download",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/scrape/packs/{{packId}}/download",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "scrape",
-                "packs",
-                "{{packId}}",
-                "download"
-              ]
-            },
-            "description": "Public scraping API: one System Art Pack with every published file (all its images) as public URLs. Requires developer credentials. Each call bumps the pack download counter and consumes one unit of the daily quota."
-          },
-          "response": []
         }
       ]
     }
