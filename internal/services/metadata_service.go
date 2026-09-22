@@ -800,6 +800,12 @@ func (s *Service) enrichMetadataSubmissions(list []models.MetadataSubmission) er
 				list[i].SystemName = g.SystemName
 				list[i].Cover = g.Cover
 				list[i].CoverUpdated = g.CoverUpdated
+				// A game edit carries game_id, not system_id, so resolve it from
+				// the game for the review list's system filter.
+				if list[i].SystemID == nil && g.SystemID != "" {
+					sid := g.SystemID
+					list[i].SystemID = &sid
+				}
 			}
 		}
 		if list[i].SystemID != nil {
