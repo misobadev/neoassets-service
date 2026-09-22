@@ -733,14 +733,26 @@ func (r *Repository) RegionExists(name string) (bool, error) {
 }
 
 // ListGameRegions returns a game's per-region text, ordered by the region
-// priority. Media is attached by the caller.
+// priority. A region that only carries regional cover/logo media (no name or
+// release row) is included too, so its assets are not dropped from the detail.
+// Media is attached by the caller.
 func (r *Repository) ListGameRegions(gameID uuid.UUID) ([]models.GameRegion, error) {
 	rows, err := r.db.Query(`
-		SELECT gr.region, gr.name, gr.release_year, gr.release_month
-		FROM game_regions gr
-		LEFT JOIN regions r ON r.name = gr.region
-		WHERE gr.game_id = $1
-		ORDER BY r.sort_order NULLS LAST, gr.region`, gameID)
+		SELECT x.region, x.name, x.release_year, x.release_month
+		FROM (
+			SELECT gr.region, gr.name, gr.release_year, gr.release_month
+			FROM game_regions gr
+			WHERE gr.game_id = $1
+			UNION ALL
+			SELECT DISTINCT m.region, '', NULL::int, NULL::int
+			FROM media m
+			WHERE m.game_id = $1
+			  AND m.region <> ''
+			  AND m.kind IN ('cover', 'logo')
+			  AND NOT EXISTS (SELECT 1 FROM game_regions gr2 WHERE gr2.game_id = $1 AND gr2.region = m.region)
+		) x
+		LEFT JOIN regions r ON r.name = x.region
+		ORDER BY r.sort_order NULLS LAST, x.region`, gameID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list game regions: %w", err)
 	}
