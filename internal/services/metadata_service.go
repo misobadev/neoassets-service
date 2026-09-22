@@ -176,7 +176,10 @@ func (s *Service) GetGame(id uuid.UUID, lang string) (*models.GameDetail, error)
 		}
 	}
 	for i := range regions {
-		regions[i].Media = byRegion[regions[i].Region]
+		// Within a region the cover is shown before the logo.
+		rm := byRegion[regions[i].Region]
+		sort.SliceStable(rm, func(a, b int) bool { return mediaKindRank(rm[a].Kind) < mediaKindRank(rm[b].Kind) })
+		regions[i].Media = rm
 		if primary == "" && (regions[i].Name != "" || regions[i].ReleaseYear != nil || len(regions[i].Media) > 0) {
 			primary = regions[i].Region
 		}
@@ -188,6 +191,19 @@ func (s *Service) GetGame(id uuid.UUID, lang string) (*models.GameDetail, error)
 		detail.Lang = lang
 	}
 	return detail, nil
+}
+
+// mediaKindRank orders the media shown per region: the cover first, then the
+// logo, then anything else.
+func mediaKindRank(kind string) int {
+	switch kind {
+	case models.MediaCover:
+		return 0
+	case models.MediaLogo:
+		return 1
+	default:
+		return 2
+	}
 }
 
 // ListGameContributors returns the users with approved metadata contributions
@@ -907,6 +923,38 @@ func (s *Service) validateApprovedMedia(ctx context.Context, files []models.Meta
 	return nil
 }
 
+// resolveSubmissionMediaRegions assigns the game's primary region to cover and
+// logo files submitted without one, so a new asset replaces the primary region's
+// asset (there is one cover and one logo per region) instead of adding a second.
+func (s *Service) resolveSubmissionMediaRegions(sub *models.MetadataSubmission) error {
+	if sub.GameID == nil {
+		return nil
+	}
+	primary, err := s.repo.PrimaryGameRegion(*sub.GameID)
+	if err != nil {
+		return err
+	}
+	if primary == "" {
+		return nil
+	}
+	files, err := s.repo.ListMetadataSubmissionFiles(sub.ID)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if f.Region != "" || f.IsDelete || f.IsMove {
+			continue
+		}
+		if f.Kind != models.MediaCover && f.Kind != models.MediaLogo {
+			continue
+		}
+		if err := s.repo.UpdateMetadataSubmissionFileRegion(f.ID, primary); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ApproveMetadataSubmission approves a pending contribution and applies it.
 func (s *Service) ApproveMetadataSubmission(id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
 	sub, err := s.repo.GetMetadataSubmission(id)
@@ -942,6 +990,15 @@ func (s *Service) ApproveMetadataSubmission(id, adminID uuid.UUID, comment strin
 		}
 		sub.GameID = &gameID
 		sub.SystemID = nil
+	}
+	// A cover/logo submitted without a region belongs to the game's primary
+	// region, so it replaces that region's asset instead of stacking a second one.
+	// The files are re-read so the resolved region is used by the steps below.
+	if err := s.resolveSubmissionMediaRegions(sub); err != nil {
+		return nil, err
+	}
+	if files, err = s.repo.ListMetadataSubmissionFiles(id); err != nil {
+		return nil, err
 	}
 	// Snapshot the target's current text and media before the approval overwrites
 	// them, so the review detail can still show the "old" side afterwards.

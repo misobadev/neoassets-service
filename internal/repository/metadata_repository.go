@@ -768,6 +768,21 @@ func (r *Repository) ListGameRegions(gameID uuid.UUID) ([]models.GameRegion, err
 	return out, rows.Err()
 }
 
+// PrimaryGameRegion returns the game's primary region: the first per-region row
+// with text, in catalog priority order. Empty when the game has no regional text.
+func (r *Repository) PrimaryGameRegion(gameID uuid.UUID) (string, error) {
+	regions, err := r.ListGameRegions(gameID)
+	if err != nil {
+		return "", err
+	}
+	for _, gr := range regions {
+		if gr.Name != "" || gr.ReleaseYear != nil {
+			return gr.Region, nil
+		}
+	}
+	return "", nil
+}
+
 // UpsertGameRegion stores a game's name and/or release for a region, only
 // overwriting the fields provided (non-empty name, non-zero year).
 func (r *Repository) UpsertGameRegion(gameID uuid.UUID, region, name string, year, month *int) error {
@@ -1389,6 +1404,16 @@ func (r *Repository) UpdateMetadataSubmissionFileMime(fileID uuid.UUID, mime str
 	_, err := r.db.Exec(`UPDATE metadata_submission_files SET mime = $1 WHERE id = $2`, mime, fileID)
 	if err != nil {
 		return fmt.Errorf("failed to update metadata submission file mime: %w", err)
+	}
+	return nil
+}
+
+// UpdateMetadataSubmissionFileRegion rewrites a submission file's region (used
+// when a region-less cover/logo is resolved to the game's primary region).
+func (r *Repository) UpdateMetadataSubmissionFileRegion(fileID uuid.UUID, region string) error {
+	_, err := r.db.Exec(`UPDATE metadata_submission_files SET region = $1 WHERE id = $2`, region, fileID)
+	if err != nil {
+		return fmt.Errorf("failed to update metadata submission file region: %w", err)
 	}
 	return nil
 }
