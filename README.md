@@ -81,6 +81,13 @@ Endpoints:
   The ROM list is omitted by default (`rom_count` is always returned; pass
   `roms=true` to include it). Consumes one quota unit.
 - `GET /api/v1/scrape/popular`  most scraped games, optional `system_id`/`limit` (free)
+- `GET /api/v1/scrape/packs`    system art packs (themes), paginated with `limit`/
+  `offset`. Returns `{ packs, total }`; each pack carries a ready-to-use `preview`
+  URL and the first four background `images`, plus `systems_covered` and its
+  lifetime `downloads` counter (free).
+- `GET /api/v1/scrape/packs/{folder}/download`  one system art pack with every
+  published file (`files[]`: `background`, `preview`, `theme`, `logo`) as public
+  URLs. Each call bumps the pack's download counter and consumes one quota unit.
 - `GET /api/v1/scrape/account`  current subject and quota (free)
 
 Self-service credentials (authenticated with the user JWT from `/api/v1/login`):

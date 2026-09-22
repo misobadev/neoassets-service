@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"neoassets/internal/models"
 	"neoassets/internal/services"
 	"neoassets/pkg/auth"
@@ -54,7 +56,7 @@ func (h *Handler) ScrapeGames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	quota, err := h.scrapeSvc.ConsumeGame(subject)
+	quota, err := h.scrapeSvc.ConsumeQuota(subject)
 	if quota != nil {
 		writeQuotaHeaders(w, quota)
 	}
@@ -126,6 +128,63 @@ func (h *Handler) ListScrapeGroups(w http.ResponseWriter, r *http.Request) {
 		h.scrapeSvc.RecordOutcome(subject, "ok")
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"groups": list})
+}
+
+// ListScrapePacks returns the approved system art packs, each with a ready-to-
+// use preview URL and the first few background images. It does not consume quota.
+func (h *Handler) ListScrapePacks(w http.ResponseWriter, r *http.Request) {
+	if subject, ok := scrapeSubject(r); ok {
+		if acct, err := h.scrapeSvc.Account(subject); err == nil {
+			writeQuotaHeaders(w, &acct.Quota)
+		}
+	}
+	limit, offset := parseLimitOffset(r)
+	packs, total, err := h.scrapeSvc.ListPacks(limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list packs")
+		return
+	}
+	if subject, ok := scrapeSubject(r); ok {
+		h.scrapeSvc.RecordOutcome(subject, "ok")
+	}
+	writeJSON(w, http.StatusOK, models.ScrapePacksResponse{Packs: packs, Total: total})
+}
+
+// ScrapePackDownload returns a system art pack with every published file (all
+// its images) and bumps the pack's download counter. Each accepted call
+// consumes one unit of the daily quota.
+func (h *Handler) ScrapePackDownload(w http.ResponseWriter, r *http.Request) {
+	subject, ok := scrapeSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	packID := strings.TrimSpace(chi.URLParam(r, "packID"))
+	if packID == "" {
+		writeError(w, http.StatusBadRequest, "pack id is required")
+		return
+	}
+	quota, err := h.scrapeSvc.ConsumeQuota(subject)
+	if quota != nil {
+		writeQuotaHeaders(w, quota)
+	}
+	if errors.Is(err, services.ErrQuotaExceeded) {
+		h.scrapeSvc.RecordOutcome(subject, "quota_exceeded")
+		writeError(w, http.StatusTooManyRequests, "daily scrape quota exceeded")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to consume quota")
+		return
+	}
+	detail, err := h.scrapeSvc.DownloadPack(packID)
+	if err != nil {
+		h.scrapeSvc.RecordOutcome(subject, "not_found")
+		writeError(w, http.StatusNotFound, "pack not found")
+		return
+	}
+	h.scrapeSvc.RecordOutcome(subject, "ok")
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // ListScrapePopular returns the most scraped games. It does not consume quota.

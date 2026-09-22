@@ -412,6 +412,8 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 			r.Get("/groups", h.ListScrapeGroups)
 			r.Get("/games", h.ScrapeGames)
 			r.Get("/popular", h.ListScrapePopular)
+			r.Get("/packs", h.ListScrapePacks)
+			r.Get("/packs/{packID}/download", h.ScrapePackDownload)
 			r.Get("/account", h.ScrapeAccount)
 		})
 
