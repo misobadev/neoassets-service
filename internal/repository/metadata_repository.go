@@ -862,13 +862,17 @@ func (r *Repository) ClearGameRegion(gameID uuid.UUID, region string, clearName,
 }
 
 // ListMediaByGame returns media attached to a game.
+// mediaRegionOrder sorts regional media (cover/logo) by the region priority
+// (catalog order) and leaves region-less media last, in upload order.
+const mediaRegionOrder = `ORDER BY r.sort_order NULLS LAST, m.created_at`
+
 func (r *Repository) ListMediaByGame(gameID uuid.UUID) ([]models.Media, error) {
-	return r.listMedia(`WHERE m.game_id = $1 ORDER BY m.created_at`, gameID)
+	return r.listMedia(`WHERE m.game_id = $1 `+mediaRegionOrder, gameID)
 }
 
 // ListMediaBySystem returns media attached to a system.
 func (r *Repository) ListMediaBySystem(systemID string) ([]models.Media, error) {
-	return r.listMedia(`WHERE m.system_id = $1 ORDER BY m.created_at`, systemID)
+	return r.listMedia(`WHERE m.system_id = $1 `+mediaRegionOrder, systemID)
 }
 
 // ListGameContributors returns the users who have approved metadata
@@ -901,7 +905,9 @@ func (r *Repository) listMedia(where string, arg interface{}) ([]models.Media, e
 	rows, err := r.db.Query(
 		`SELECT m.id, m.game_id, m.system_id, m.kind, m.object_key, m.mime, m.size, m.region, m.created_at,
 		        m.submitted_by, COALESCE(u.username, '')
-		 FROM media m LEFT JOIN users u ON u.id = m.submitted_by `+where, arg,
+		 FROM media m
+		 LEFT JOIN users u ON u.id = m.submitted_by
+		 LEFT JOIN regions r ON r.name = m.region `+where, arg,
 	)
 	if err != nil {
 		return nil, err
