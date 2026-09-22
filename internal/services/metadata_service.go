@@ -287,6 +287,19 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			return nil, err
 		}
 	}
+	if list, ok := req.Payload["regions"].([]any); ok {
+		for _, item := range list {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if r, ok := m["region"].(string); ok {
+				if err := s.validateRegion(r); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
 	for _, f := range req.Files {
 		if err := s.validateRegion(f.Region); err != nil {
 			return nil, err
@@ -772,7 +785,7 @@ func (s *Service) enrichMetadataSubmissions(list []models.MetadataSubmission) er
 		var p map[string]any
 		if err := json.Unmarshal(list[i].Payload, &p); err == nil {
 			for k := range p {
-				if k == "note" || k == "release_month" {
+				if k == "note" || k == "release_month" || k == "regions" {
 					continue
 				}
 				set[k] = true

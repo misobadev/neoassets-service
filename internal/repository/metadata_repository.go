@@ -960,6 +960,50 @@ func (r *Repository) SetMetadataSubmissionGame(id, gameID uuid.UUID) error {
 // CreateGameFromPayload inserts a brand-new game for a system from an approved
 // contribution payload and returns its id. The games table has a unique
 // (system_id, name) constraint, so a duplicate name returns an error.
+// regionText is one per-region name/release entry of a new-game payload.
+type regionText struct {
+	Region       string
+	Name         string
+	ReleaseYear  *int
+	ReleaseMonth *int
+}
+
+// parseRegionText reads the per-region name/release list of a new-game payload.
+// Entries without a region are ignored.
+func parseRegionText(payload map[string]any) []regionText {
+	raw, ok := payload["regions"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]regionText, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		rt := regionText{}
+		if s, ok := m["region"].(string); ok {
+			rt.Region = strings.TrimSpace(s)
+		}
+		if rt.Region == "" {
+			continue
+		}
+		if s, ok := m["name"].(string); ok {
+			rt.Name = strings.TrimSpace(s)
+		}
+		if n, ok := m["release_year"].(float64); ok && int(n) > 0 {
+			y := int(n)
+			rt.ReleaseYear = &y
+			if mm, ok := m["release_month"].(float64); ok && int(mm) >= 1 && int(mm) <= 12 {
+				mv := int(mm)
+				rt.ReleaseMonth = &mv
+			}
+		}
+		out = append(out, rt)
+	}
+	return out
+}
+
 func (r *Repository) CreateGameFromPayload(systemID string, payload map[string]any) (uuid.UUID, error) {
 	str := func(k string) string {
 		if v, ok := payload[k].(string); ok {
@@ -977,7 +1021,16 @@ func (r *Repository) CreateGameFromPayload(systemID string, payload map[string]a
 		return 0, false
 	}
 
+	regions := parseRegionText(payload)
 	name := str("name")
+	if name == "" {
+		for _, rg := range regions {
+			if rg.Name != "" {
+				name = rg.Name
+				break
+			}
+		}
+	}
 	if name == "" {
 		return uuid.Nil, fmt.Errorf("game name is required")
 	}
@@ -1008,8 +1061,18 @@ func (r *Repository) CreateGameFromPayload(systemID string, payload map[string]a
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create game: %w", err)
 	}
-	// The game's region is stored per-region alongside its name/release.
-	if region := str("region"); region != "" {
+	// The game's region is stored per-region alongside its name/release. A new
+	// game may submit several regions at once; otherwise a single region applies.
+	if len(regions) > 0 {
+		for _, rg := range regions {
+			if err := r.UpsertGameRegion(id, rg.Region, rg.Name, rg.ReleaseYear, rg.ReleaseMonth); err != nil {
+				return uuid.Nil, err
+			}
+		}
+		if err := r.refreshGamePrimary(id); err != nil {
+			return uuid.Nil, err
+		}
+	} else if region := str("region"); region != "" {
 		if err := r.UpsertGameRegion(id, region, name, year, month); err != nil {
 			return uuid.Nil, err
 		}
@@ -1419,6 +1482,19 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 		gid := *sub.GameID
 		region := str("region")
 		regionFrom := str("region_from")
+		// A new game may submit several per-region names/releases at once; each
+		// row is upserted and the canonical columns are recomputed by priority.
+		regions := parseRegionText(p)
+		if len(regions) > 0 {
+			for _, rg := range regions {
+				if err := r.UpsertGameRegion(gid, rg.Region, rg.Name, rg.ReleaseYear, rg.ReleaseMonth); err != nil {
+					return err
+				}
+			}
+			if err := r.refreshGamePrimary(gid); err != nil {
+				return err
+			}
+		}
 		// A text deletion removes the name or the release of a region.
 		if del, ok := p["delete"].(bool); ok && del && region != "" {
 			switch str("field") {
@@ -1435,7 +1511,7 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 				return err
 			}
 		}
-		if v := str("name"); v != "" {
+		if v := str("name"); v != "" && len(regions) == 0 {
 			// With a region, the name is stored per region and the game's
 			// canonical name is recomputed by region priority. region_from moves
 			// an existing name from another region.
@@ -1475,7 +1551,7 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 				return fmt.Errorf("failed to apply game genre: %w", err)
 			}
 		}
-		if y := intVal("release_year"); y > 0 {
+		if y := intVal("release_year"); y > 0 && len(regions) == 0 {
 			m := intVal("release_month")
 			if m < 1 || m > 12 {
 				m = 0
