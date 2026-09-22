@@ -268,14 +268,33 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 	if req.GameID == nil && req.SystemID == nil {
 		return nil, fmt.Errorf("a game or system must be provided")
 	}
+	var targetGame *models.Game
 	if req.GameID != nil {
-		if _, err := s.repo.GetGame(*req.GameID, ""); err != nil {
+		g, err := s.repo.GetGame(*req.GameID, "")
+		if err != nil {
 			return nil, fmt.Errorf("game not found")
 		}
+		targetGame = g
 	}
 	if req.SystemID != nil {
 		if _, err := s.repo.GetMetadataSystem(*req.SystemID); err != nil {
 			return nil, fmt.Errorf("system not found")
+		}
+	}
+	// A rename must not collide with another game's name in the same system (the
+	// games table enforces a unique (system_id, name) constraint).
+	if targetGame != nil {
+		if name, ok := req.Payload["name"].(string); ok {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				taken, err := s.repo.GameNameTaken(targetGame.SystemID, name, targetGame.ID)
+				if err != nil {
+					return nil, err
+				}
+				if taken {
+					return nil, fmt.Errorf("another game in this system already has that name")
+				}
+			}
 		}
 	}
 	if desc, ok := req.Payload["description"].(string); ok {
@@ -955,6 +974,33 @@ func (s *Service) resolveSubmissionMediaRegions(sub *models.MetadataSubmission) 
 	return nil
 }
 
+// ensureGameNameAvailable rejects a rename whose target name already belongs to
+// another game in the same system, so approval fails with a clear message
+// instead of a unique-constraint error.
+func (s *Service) ensureGameNameAvailable(gameID uuid.UUID, payload []byte) error {
+	var p map[string]any
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil
+	}
+	name, _ := p["name"].(string)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	g, err := s.repo.GetGame(gameID, "")
+	if err != nil {
+		return nil
+	}
+	taken, err := s.repo.GameNameTaken(g.SystemID, name, gameID)
+	if err != nil {
+		return err
+	}
+	if taken {
+		return fmt.Errorf("another game in this system already has that name")
+	}
+	return nil
+}
+
 // ApproveMetadataSubmission approves a pending contribution and applies it.
 func (s *Service) ApproveMetadataSubmission(id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
 	sub, err := s.repo.GetMetadataSubmission(id)
@@ -970,6 +1016,13 @@ func (s *Service) ApproveMetadataSubmission(id, adminID uuid.UUID, comment strin
 	}
 	if err := s.validateApprovedMedia(context.Background(), files); err != nil {
 		return nil, err
+	}
+	// A rename must not collide with another game's name in the same system (the
+	// games table enforces a unique (system_id, name) constraint).
+	if sub.GameID != nil {
+		if err := s.ensureGameNameAvailable(*sub.GameID, sub.Payload); err != nil {
+			return nil, err
+		}
 	}
 	// A new game has no row yet: create it and point the submission at it, then
 	// the regular media/field apply path below runs against the new game.

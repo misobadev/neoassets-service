@@ -1127,6 +1127,21 @@ func (r *Repository) GameExistsByName(systemID, name string) (bool, error) {
 	return exists, nil
 }
 
+// GameNameTaken reports whether a system already has another game with the given
+// name (exact, matching the unique constraint). The game being renamed is
+// excluded via excludeID.
+func (r *Repository) GameNameTaken(systemID, name string, excludeID uuid.UUID) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM games WHERE system_id = $1 AND name = $2 AND id <> $3)`,
+		systemID, strings.TrimSpace(name), excludeID,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("failed to check game name: %w", err)
+	}
+	return exists, nil
+}
+
 const msCols = `id, game_id, system_id, user_id, status, kind, payload, old_payload, old_media, review_comment, created_at, reviewed_at, reviewed_by`
 
 func scanMS(row *sql.Row) (*models.MetadataSubmission, error) {
