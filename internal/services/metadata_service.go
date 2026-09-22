@@ -918,9 +918,14 @@ func (s *Service) decorateMetadataNames(list []models.MetadataSubmission) error 
 // applied. Images are normalized by the backend on approval, so they only need
 // to be decodable; videos must have a sane frame rate (at least 23 fps, 60 fps
 // recommended). The source frame rate is preserved on re-encode, except videos
-// above 60 fps, which are capped to 60 fps.
+// above 60 fps, which are capped to 60 fps. Deletes and moves carry no new
+// content: their object key points at the existing media (which may already be
+// gone from R2), so they are skipped.
 func (s *Service) validateApprovedMedia(ctx context.Context, files []models.MetadataSubmissionFile) error {
 	for _, f := range files {
+		if f.IsDelete || f.IsMove {
+			continue
+		}
 		data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
 		if err != nil {
 			return fmt.Errorf("download %s: %w", f.Kind, err)
