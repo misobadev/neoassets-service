@@ -211,7 +211,9 @@ the user credential is optional and falls back to guest mode.
 - **Bucket CORS** must allow `PUT` + request headers, otherwise the browser
   preflight fails during direct uploads. Configure it on the bucket, not in code.
 - Object keys: `packs/{packId}/backgrounds/{system}.webp|gif`,
-  `packs/{packId}/preview.webp`, `packs/{packId}/theme.json`.
+  `packs/{packId}/theme.json`. A pack has no dedicated preview image; its public
+  thumbnail is the background of a popular system (snes, ps1, gba, genesis,
+  falling back to the Atari 2600).
 - Images are normalized **on approval** by the backend (`video.NormalizeImage`):
   metadata fanart is center-cropped to 1920x1080, covers/logos are capped at
   1024px and other image kinds at 1920px; SAP backgrounds are center-cropped to

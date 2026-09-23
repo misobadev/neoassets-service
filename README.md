@@ -144,8 +144,10 @@ pending/draft contributions are listed publicly on the pack.
 r2://neoassets/
   packs/{packId}/theme.json
   packs/{packId}/backgrounds/{system}.webp|gif
-  packs/{packId}/preview.webp
 ```
+
+A pack has no dedicated preview image: its public thumbnail is the background of
+a popular system (snes, ps1, gba or genesis, falling back to the Atari 2600).
 
 Objects are public via the `cdn.neoassets.dev` custom domain and do not
 need signatures. **CORS must be configured on the bucket** so the browser can

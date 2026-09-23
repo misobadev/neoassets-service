@@ -733,70 +733,68 @@ func (r *Repository) ListPackContributions(packID string) ([]models.PackContribu
 	return list, rows.Err()
 }
 
-// ListApprovedPackArt returns, per approved pack, a representative object key
-// to use as its public thumbnail: the pack's registered preview when present,
-// otherwise the most recent background. Legacy packs imported without a preview
-// still get a real image instead of a broken preview.webp URL.
-func (r *Repository) ListApprovedPackArt(packIDs []string) (map[string]string, error) {
-	out := make(map[string]string, len(packIDs))
-	if len(packIDs) == 0 {
-		return out, nil
-	}
-	rows, err := r.db.Query(
-		`SELECT DISTINCT ON (s.pack_id) s.pack_id, sf.object_key
-		 FROM submission_files sf
-		 JOIN submissions s ON s.id = sf.submission_id
-		 WHERE s.pack_id = ANY($1)
-		   AND s.status = 'approved'
-		   AND sf.kind IN ('preview','background')
-		 ORDER BY s.pack_id, (sf.kind = 'preview') DESC, sf.created_at DESC`,
-		pq.Array(packIDs),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list approved pack art: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var packID, objectKey string
-		if err := rows.Scan(&packID, &objectKey); err != nil {
-			return nil, fmt.Errorf("failed to scan pack art: %w", err)
-		}
-		out[packID] = objectKey
-	}
-	return out, rows.Err()
-}
+// packImageSystems is the ordered list of systems whose backgrounds are used to
+// preview an approved pack, so every front-end shows the same four popular
+// systems. packImageFallback covers a missing slot.
+var packImageSystems = []string{"snes", "ps1", "gba", "genesis"}
+
+const packImageFallback = "2600"
 
 // ListApprovedPackBackgrounds returns, per approved pack, up to four published
-// background object keys ordered by upload recency, used to render the pack's
-// icon grid in the public UI.
+// background object keys for the most popular systems (snes, ps1, gba, genesis),
+// falling back to the Atari 2600 background when one of them is missing. They
+// are used to render the pack's image grid in the public UI.
 func (r *Repository) ListApprovedPackBackgrounds(packIDs []string) (map[string][]string, error) {
 	out := make(map[string][]string, len(packIDs))
 	if len(packIDs) == 0 {
 		return out, nil
 	}
+	systems := append(append([]string{}, packImageSystems...), packImageFallback)
 	rows, err := r.db.Query(
-		`SELECT pack_id, object_key FROM (
-		     SELECT s.pack_id, sf.object_key,
-		            ROW_NUMBER() OVER (PARTITION BY s.pack_id ORDER BY sf.created_at DESC) AS rn
-		     FROM submission_files sf
-		     JOIN submissions s ON s.id = sf.submission_id
-		     WHERE s.pack_id = ANY($1) AND s.status = 'approved' AND sf.kind = 'background'
-		 ) t WHERE rn <= 4
-		 ORDER BY pack_id, rn`,
-		pq.Array(packIDs),
+		`SELECT DISTINCT ON (s.pack_id, sf.system_id) s.pack_id, sf.system_id, sf.object_key
+		 FROM submission_files sf
+		 JOIN submissions s ON s.id = sf.submission_id
+		 WHERE s.pack_id = ANY($1) AND s.status = 'approved' AND sf.kind = 'background'
+		   AND sf.system_id = ANY($2)
+		 ORDER BY s.pack_id, sf.system_id, sf.created_at DESC`,
+		pq.Array(packIDs), pq.Array(systems),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list approved pack backgrounds: %w", err)
 	}
 	defer rows.Close()
+	byPack := map[string]map[string]string{}
 	for rows.Next() {
-		var packID, objectKey string
-		if err := rows.Scan(&packID, &objectKey); err != nil {
+		var packID, systemID, objectKey string
+		if err := rows.Scan(&packID, &systemID, &objectKey); err != nil {
 			return nil, fmt.Errorf("failed to scan pack background: %w", err)
 		}
-		out[packID] = append(out[packID], objectKey)
+		if byPack[packID] == nil {
+			byPack[packID] = map[string]string{}
+		}
+		byPack[packID][systemID] = objectKey
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for packID, keys := range byPack {
+		seen := map[string]bool{}
+		list := make([]string, 0, len(packImageSystems))
+		for _, systemID := range packImageSystems {
+			key, ok := keys[systemID]
+			if !ok {
+				key, ok = keys[packImageFallback]
+			}
+			if ok && key != "" && !seen[key] {
+				list = append(list, key)
+				seen[key] = true
+			}
+		}
+		if len(list) > 0 {
+			out[packID] = list
+		}
+	}
+	return out, nil
 }
 
 // CountApprovedByPack returns how many approved submissions already exist for a

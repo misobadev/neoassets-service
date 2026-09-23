@@ -154,7 +154,17 @@ func (r *Repository) RecentApprovedPacks(limit int) ([]models.RecentPack, error)
 	rows, err := r.db.Query(`
 		SELECT s.id, s.pack_id, s.name, s.author,
 		       COALESCE(NULLIF(s.admin_version,''), s.version),
-		       s.created_at, u.username
+		       s.created_at, u.username,
+		       COALESCE((
+		         SELECT sf.object_key
+		         FROM submission_files sf
+		         JOIN submissions s2 ON s2.id = sf.submission_id
+		         WHERE s2.pack_id = s.pack_id AND s2.status = 'approved'
+		           AND sf.kind = 'background'
+		           AND sf.system_id IN ('snes','ps1','gba','genesis','2600')
+		         ORDER BY array_position(ARRAY['snes','ps1','gba','genesis','2600'], sf.system_id), sf.created_at DESC
+		         LIMIT 1
+		       ), '') AS image
 		FROM submissions s LEFT JOIN users u ON u.id = s.user_id
 		WHERE s.status = 'approved'
 		ORDER BY s.created_at DESC
@@ -166,7 +176,7 @@ func (r *Repository) RecentApprovedPacks(limit int) ([]models.RecentPack, error)
 	out := []models.RecentPack{}
 	for rows.Next() {
 		var s models.RecentPack
-		if err := rows.Scan(&s.ID, &s.PackID, &s.Name, &s.Author, &s.Version, &s.CreatedAt, &s.AuthorName); err != nil {
+		if err := rows.Scan(&s.ID, &s.PackID, &s.Name, &s.Author, &s.Version, &s.CreatedAt, &s.AuthorName, &s.Image); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

@@ -1397,10 +1397,6 @@ func (s *Service) ListedApprovedPacks(sort string, limit, offset int) ([]models.
 	for i, p := range packs {
 		packIDs[i] = p.PackID
 	}
-	art, err := s.repo.ListApprovedPackArt(packIDs)
-	if err != nil {
-		return nil, 0, err
-	}
 	backgrounds, err := s.repo.ListApprovedPackBackgrounds(packIDs)
 	if err != nil {
 		return nil, 0, err
@@ -1414,11 +1410,6 @@ func (s *Service) ListedApprovedPacks(sort string, limit, offset int) ([]models.
 		return nil, 0, err
 	}
 	for i := range packs {
-		if key := art[packs[i].PackID]; key != "" {
-			packs[i].Preview = key
-		} else {
-			packs[i].Preview = fmt.Sprintf("packs/%s/preview.webp", packs[i].PackID)
-		}
 		packs[i].Backgrounds = backgrounds[packs[i].PackID]
 		packs[i].Contributions = contribCounts[packs[i].PackID]
 		packs[i].Contributors = contributors[packs[i].PackID]

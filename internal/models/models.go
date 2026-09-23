@@ -191,10 +191,13 @@ type UserCountStat struct {
 
 // RecentPack is a recently published system art pack.
 type RecentPack struct {
-	ID         uuid.UUID `json:"id" db:"id"`
-	PackID     string    `json:"pack_id" db:"pack_id"`
-	Name       string    `json:"name" db:"name"`
-	Author     string    `json:"author" db:"author"`
+	ID     uuid.UUID `json:"id" db:"id"`
+	PackID string    `json:"pack_id" db:"pack_id"`
+	Name   string    `json:"name" db:"name"`
+	Author string    `json:"author" db:"author"`
+	// Image is a representative background object key (a popular system), used
+	// as the dashboard thumbnail. A pack has no dedicated preview image.
+	Image      string    `json:"image,omitempty" db:"image"`
 	Version    string    `json:"version" db:"version"`
 	CreatedAt  time.Time `json:"created_at" db:"created_at"`
 	AuthorName *string   `json:"author_name,omitempty" db:"author_name"`
@@ -448,9 +451,9 @@ type Pack struct {
 	DonationURL string `json:"donation_url"`
 	AI          bool   `json:"ai"`
 	Version     string `json:"version"`
-	Preview     string `json:"preview"`
-	// Backgrounds lists some of the published background object keys, so
-	// clients can render the pack's icons without knowing every system.
+	// Backgrounds lists a few published background object keys (the most popular
+	// systems), so clients can render the pack's icons without knowing every
+	// system. A pack has no dedicated preview image.
 	Backgrounds []string `json:"backgrounds,omitempty"`
 	// Downloads is the lifetime install/download counter for the pack.
 	Downloads int64 `json:"downloads"`
