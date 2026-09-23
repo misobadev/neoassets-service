@@ -721,6 +721,24 @@ func (s *Service) ListMyMetadataSubmissions(userID uuid.UUID, status string, lim
 	return list, total, metadataXP, nil
 }
 
+// ReviewSummary returns the newest review items (lightweight, no payloads) and
+// the user's lifetime awarded XP, so the notification badge never downloads the
+// full review feed.
+func (s *Service) ReviewSummary(userID uuid.UUID, limit int) (*models.ReviewSummary, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	items, err := s.repo.ListUserReviewItems(userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	metadataXP, sapXP, err := s.repo.UserAwardedXPBySource(userID)
+	if err != nil {
+		return nil, err
+	}
+	return &models.ReviewSummary{Items: items, TotalXP: metadataXP + sapXP}, nil
+}
+
 // ListMetadataSubmissions lists all contributions, optionally filtered. With no
 // filter it returns the review history only (never client-side drafts).
 func (s *Service) ListMetadataSubmissions(status string) ([]models.MetadataSubmission, error) {

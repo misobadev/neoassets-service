@@ -257,6 +257,19 @@ func (h *Handler) ListMyMetadataSubmissions(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]interface{}{"submissions": list, "total": total, "total_xp": totalXP})
 }
 
+// ReviewSummary returns the current user's newest review items as lightweight
+// notification entries plus their lifetime awarded XP. It powers the
+// notification badge without downloading the full review feed.
+func (h *Handler) ReviewSummary(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	summary, err := h.svc.ReviewSummary(userFromRequest(r), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load review summary")
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
 // ---------------------------------------------------------------------------
 // Metadata admin review (admin JWT)
 // ---------------------------------------------------------------------------

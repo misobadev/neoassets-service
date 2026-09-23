@@ -790,6 +790,23 @@ type MetadataSubmission struct {
 	BasePointsEarned int `json:"base_points_earned" db:"-"`
 }
 
+// ReviewSummaryItem is a lightweight notification entry: the minimum needed to
+// derive the review key (kind, id, status) and order it, without the payload,
+// files or logs that only the full review feed needs.
+type ReviewSummaryItem struct {
+	Kind   string    `json:"kind"` // "metadata" | "sap"
+	ID     uuid.UUID `json:"id"`
+	Status string    `json:"status"`
+	At     time.Time `json:"at"`
+}
+
+// ReviewSummary powers the notification badge: the newest review items (no heavy
+// payloads) plus the user's lifetime awarded XP.
+type ReviewSummary struct {
+	Items   []ReviewSummaryItem `json:"items"`
+	TotalXP int                 `json:"total_xp"`
+}
+
 // VideoMeta holds probe metadata captured from an uploaded video so reviewers
 // can inspect format/resolution/fps/duration before approving.
 type VideoMeta struct {

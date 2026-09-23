@@ -40,15 +40,18 @@ func (r *Repository) ListMetadataSystems() ([]models.MetadataSystem, error) {
 		          (g.description <> '')::int + (g.genre <> '')::int + (g.developer <> '')::int +
 		          (g.publisher <> '')::int + (g.release_year IS NOT NULL)::int + (g.rating > 0)::int
 		        ), 0) AS text_points,
-		        COALESCE(SUM(
-		          EXISTS(SELECT 1 FROM media m WHERE m.game_id = g.id AND m.kind = 'cover')::int +
-		          EXISTS(SELECT 1 FROM media m WHERE m.game_id = g.id AND m.kind = 'screenshot')::int +
-		          EXISTS(SELECT 1 FROM media m WHERE m.game_id = g.id AND m.kind = 'fanart')::int +
-		          EXISTS(SELECT 1 FROM media m WHERE m.game_id = g.id AND m.kind = 'video')::int +
-		          EXISTS(SELECT 1 FROM media m WHERE m.game_id = g.id AND m.kind = 'logo')::int
-		        ), 0) AS media_points
+		        COALESCE(SUM(mp.media_points), 0) AS media_points
 		 FROM metadata_systems s
 		 LEFT JOIN games g ON g.system_id = s.id
+		 LEFT JOIN (
+		   SELECT game_id,
+		          bool_or(kind = 'cover')::int + bool_or(kind = 'screenshot')::int +
+		          bool_or(kind = 'fanart')::int + bool_or(kind = 'video')::int +
+		          bool_or(kind = 'logo')::int AS media_points
+		   FROM media
+		   WHERE kind IN ('cover', 'screenshot', 'fanart', 'video', 'logo')
+		   GROUP BY game_id
+		 ) mp ON mp.game_id = g.id
 		 GROUP BY s.id
 		 ORDER BY s.name`,
 	)
@@ -510,7 +513,9 @@ func (r *Repository) ListPopularSystems(limit int) ([]models.PopularSystem, erro
 func orderByClause(sort string) string {
 	switch sort {
 	case "scrapes":
-		return "scrapes DESC, g.name ASC"
+		// Order by the joined counter, not the SELECT alias, so Postgres can use
+		// the join instead of running the correlated subquery for every game.
+		return "COALESCE(gs.scrapes, 0) DESC, g.name ASC"
 	case "name_desc":
 		return "g.name DESC"
 	case "rating_asc":
@@ -544,6 +549,7 @@ func (r *Repository) ListGamesBySystem(systemID string, limit, offset int, gtype
 	rows, err := r.db.Query(
 		`SELECT `+gameCols+` FROM games g
 		 LEFT JOIN metadata_systems s ON s.id = g.system_id
+		 LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id
 		 WHERE `+cond+` ORDER BY `+orderByClause(sort)+` LIMIT $`+itoa(len(args)-1)+` OFFSET $`+itoa(len(args)),
 		args...,
 	)
@@ -594,6 +600,7 @@ func (r *Repository) SearchGames(q, systemID, gtype, sort string, limit, offset 
 	rows, err := r.db.Query(
 		`SELECT `+gameCols+` FROM games g
 		 LEFT JOIN metadata_systems s ON s.id = g.system_id
+		 LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id
 		 WHERE `+cond+` ORDER BY `+orderByClause(sort)+` LIMIT $`+itoa(len(args)+1)+` OFFSET $`+itoa(len(args)+2),
 		argsCount...,
 	)
@@ -1206,6 +1213,37 @@ func (r *Repository) ListMetadataSubmissionsByUser(userID uuid.UUID, status stri
 	defer rows.Close()
 	list, err := scanMSRows(rows)
 	return list, total, err
+}
+
+// ListUserReviewItems returns the user's newest metadata and system art pack
+// submissions as lightweight notification entries (no payload, files or logs),
+// so the notification badge never downloads the full review feed.
+func (r *Repository) ListUserReviewItems(userID uuid.UUID, limit int) ([]models.ReviewSummaryItem, error) {
+	rows, err := r.db.Query(`
+		SELECT kind, id, status, at FROM (
+		  SELECT 'metadata' AS kind, id, status, COALESCE(reviewed_at, created_at) AS at
+		  FROM metadata_submissions
+		  WHERE user_id = $1 AND status <> 'created'
+		  UNION ALL
+		  SELECT 'sap', id, status, COALESCE(reviewed_at, created_at)
+		  FROM submissions
+		  WHERE user_id = $1 AND status NOT IN ('created', 'trashed')
+		) t
+		ORDER BY at DESC
+		LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list review items: %w", err)
+	}
+	defer rows.Close()
+	out := []models.ReviewSummaryItem{}
+	for rows.Next() {
+		var it models.ReviewSummaryItem
+		if err := rows.Scan(&it.Kind, &it.ID, &it.Status, &it.At); err != nil {
+			return nil, fmt.Errorf("failed to scan review item: %w", err)
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
 }
 
 // ListMetadataSubmissions lists contributions by an optional status filter.

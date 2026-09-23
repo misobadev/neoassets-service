@@ -468,6 +468,9 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 			r.Post("/auth/api-keys", h.CreateAPIKey)
 			r.Delete("/auth/api-keys/{id}", h.RevokeAPIKey)
 
+			// Notification badge (lightweight review feed)
+			r.Get("/auth/reviews/summary", h.ReviewSummary)
+
 			// Metadata contributions
 			r.Get("/auth/metadata/submissions", h.ListMyMetadataSubmissions)
 			r.Get("/metadata/games/{id}/pending", h.GetMetadataPending)
