@@ -62,18 +62,40 @@ func TestUsageKey(t *testing.T) {
 }
 
 func TestRateLimiterBurstThenBlock(t *testing.T) {
-	s := &ScrapeService{guestRPM: 2, userRPM: 10, limiters: map[string]*limiterEntry{}}
+	s := &ScrapeService{rpmPerThread: 100, limiters: map[string]*limiterEntry{}}
 
-	if !s.allow("app-1", true) || !s.allow("app-1", true) {
+	if !s.limiterFor("app-1", 2).Allow() || !s.limiterFor("app-1", 2).Allow() {
 		t.Fatal("expected the initial burst to be allowed")
 	}
-	if s.allow("app-1", true) {
+	if s.limiterFor("app-1", 2).Allow() {
 		t.Error("expected the limiter to block after the burst is exhausted")
 	}
 
 	// A different client has its own bucket.
-	if !s.allow("app-2", true) {
+	if !s.limiterFor("app-2", 2).Allow() {
 		t.Error("expected an independent bucket for a different client")
+	}
+}
+
+func TestAllowSubjectUsesThreadsAndSubjectKey(t *testing.T) {
+	s := &ScrapeService{rpmPerThread: 100, limiters: map[string]*limiterEntry{}}
+
+	// A guest is keyed by the developer app and gets the guest thread count.
+	guest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", Threads: 2}
+	for i := 0; i < 200; i++ {
+		if !s.allowSubject(guest) {
+			t.Fatalf("guest request %d should be allowed within the burst", i)
+		}
+	}
+	if s.allowSubject(guest) {
+		t.Error("expected the guest limiter to block after the burst is exhausted")
+	}
+
+	// A user gets threads * rpmPerThread and its own bucket.
+	userID := uuid.New()
+	user := &auth.ScrapeSubject{Kind: auth.ScrapeKindUser, ClientID: "nsapp_abc", UserID: userID, Threads: 16}
+	if !s.allowSubject(user) {
+		t.Error("expected the user bucket to be independent from the guest bucket")
 	}
 }
 

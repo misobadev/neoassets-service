@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "3f9c1a2e-0b7a-4d1e-9c3a-6b2f8d4a1c07",
     "name": "NeoAssets Scraping API",
-    "description": "Public scraping API of NeoAssets.\n\nSetup:\n1. Import also the environment `neoassets-scraping.postman_environment.json` and select it.\n2. Set `clientId` and `clientSecret` with your developer app credentials.\n3. Set `systemId` (from GET /scrape/systems, e.g. `snes`) and `searchName` (e.g. `mario`).\n4. To test as a registered user, set `userApiKey` with a personal API key (Profile page). Leave it empty for guest mode.\n5. Run the requests in order. `Games - by name` stores `romHash`/`romHashParam` so the by-hash requests work.\n\n`GET /scrape/games` requires `system_id`, `family` or `group` plus a ROM hash or a name, and returns a SINGLE game (`game`, null when nothing matched) with `matched_by` (`hash`|`name`) and the game's `scrapes` counter.\n\nRate limit tests: the two `Rate Limit - *` requests loop themselves via `pm.execution.setNextRequest`, so they MUST be run with the Collection Runner (not the Send button). They stop as soon as a 429 is observed.\n\nSystem Art Packs: `GET /packs` lists approved packs (sorted by downloads, paginated); `GET /packs/{packId}` returns the full install payload and bumps the download counter; `Contribute - create submission` creates a pending contribution to an approved pack (set `packId`, `packName`, `packAuthor` and `userToken`).\n\nRate limiting: the pack download endpoint (`/packs/{packId}/download`) is limited per (IP, pack) to ~4 req/min per pack, so the download counter reflects real installs and cannot be flooded.",
+    "description": "Public scraping API of NeoAssets.\n\nSetup:\n1. Import also the environment `neoassets-scraping.postman_environment.json` and select it.\n2. Set `clientId` and `clientSecret` with your developer app credentials.\n3. Set `systemId` (from GET /scrape/systems, e.g. `snes`) and `searchName` (e.g. `mario`).\n4. To test as a registered user, set `userApiKey` with a personal API key (Profile page). Leave it empty for guest mode.\n5. Run the requests in order. `Games - by name` stores `romHash`/`romHashParam` so the by-hash requests work.\n\n`GET /scrape/games` requires `system_id`, `family` or `group` plus a ROM hash or a name, and returns a SINGLE game (`game`, null when nothing matched) with `matched_by` (`hash`|`name`) and the game's `scrapes` counter.\n\nRate limit tests: the two `Rate Limit - *` requests loop themselves via `pm.execution.setNextRequest`, so they MUST be run with the Collection Runner (not the Send button). They stop as soon as a 429 is observed.\n\nSystem Art Packs: `GET /packs` lists approved packs (sorted by downloads, paginated); `GET /packs/{packId}` returns the full install payload and bumps the download counter; `Contribute - create submission` creates a pending contribution to an approved pack (set `packId`, `packName`, `packAuthor` and `userToken`).\n\nRate limiting: the pack download endpoint (`/packs/{packId}/download`) is limited per (IP, pack) to ~10 req/min per pack, so the download counter reflects real installs and cannot be flooded.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -495,11 +495,11 @@
                   "  pm.test('guest rate limit triggered (429) after ' + count + ' requests', () => pm.expect(true).to.be.true);",
                   "  pm.collectionVariables.set('guestRLRunning', 'false');",
                   "  pm.execution.setNextRequest(null);",
-                  "} else if (count < 40) {",
+                  "} else if (count < 250) {",
                   "  pm.execution.setNextRequest('Rate Limit - Guest');",
                   "} else {",
                   "  pm.collectionVariables.set('guestRLRunning', 'false');",
-                  "  pm.test('guest rate limit triggered within 40 requests', () => pm.expect.fail('No 429 after ' + count + ' requests. Check SCRAPE_GUEST_RPM.'));",
+                  "  pm.test('guest rate limit triggered within 250 requests', () => pm.expect.fail('No 429 after ' + count + ' requests. Check SCRAPE_RPM_PER_THREAD and SCRAPE_GUEST_THREADS.'));",
                   "  pm.execution.setNextRequest(null);",
                   "}",
                   "if (code === 429) {",
@@ -513,7 +513,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/account",
-            "description": "Guest rate limit test. Loops itself until a 429 appears (default guest limit is 10 req/min). MUST be run with the Collection Runner. Leave `userApiKey` empty."
+            "description": "Guest rate limit test. Loops itself until a 429 appears (default guest limit is 200 req/min = 2 threads x 100). MUST be run with the Collection Runner. Leave `userApiKey` empty."
           },
           "response": []
         },
@@ -559,11 +559,11 @@
                   "    pm.test('user rate limit triggered (429) after ' + count + ' requests', () => pm.expect(true).to.be.true);",
                   "    pm.collectionVariables.set('userRLRunning', 'false');",
                   "    pm.execution.setNextRequest(null);",
-                  "  } else if (count < 90) {",
+                  "  } else if (count < 700) {",
                   "    pm.execution.setNextRequest('Rate Limit - User');",
                   "  } else {",
                   "    pm.collectionVariables.set('userRLRunning', 'false');",
-                  "    pm.test('user rate limit triggered within 90 requests', () => pm.expect.fail('No 429 after ' + count + ' requests. Check SCRAPE_USER_RPM.'));",
+                  "    pm.test('user rate limit triggered within 700 requests', () => pm.expect.fail('No 429 after ' + count + ' requests. Check SCRAPE_RPM_PER_THREAD.'));",
                   "    pm.execution.setNextRequest(null);",
                   "  }",
                   "  if (code === 429) {",
@@ -578,7 +578,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/account",
-            "description": "Registered-user rate limit test. Loops itself until a 429 appears (default user limit is 60 req/min). MUST be run with the Collection Runner and a valid `userApiKey`."
+            "description": "Registered-user rate limit test. Loops itself until a 429 appears (the user limit is threads x 100 req/min, e.g. a 16-thread admin = 1600). MUST be run with the Collection Runner and a valid `userApiKey`."
           },
           "response": []
         }

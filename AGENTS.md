@@ -96,8 +96,10 @@ the user credential is optional and falls back to guest mode.
   level rank (levels 1-10 -> 4, 91-100 -> 16; see `internal/progression`); guests
   get `SCRAPE_GUEST_THREADS` (2) and admins `SCRAPE_ADMIN_THREADS` (16). Guest
   quota is keyed by the **developer app owner**, so creating more apps does not
-  multiply the limit. Threads also set concurrency. Per-minute rate limit: guest
-  `SCRAPE_GUEST_RPM` (10), user `SCRAPE_USER_RPM` (60). In-memory limiters (single
+  multiply the limit. Threads also set concurrency. Per-minute rate limit: **threads
+  * `SCRAPE_RPM_PER_THREAD`** (default 100), keyed by the user for registered
+  accounts and by the developer app for guests (a generous per-app pre-check
+  bounds DB lookups from bogus credentials). In-memory limiters (single
   instance); daily counters live in `scrape_usage`.
 - XP & ranks: approved contributions award XP (`POINTS_TEXT_METADATA` 10 /
   `POINTS_IMAGE_METADATA` 50 / `POINTS_VIDEO_METADATA` 100 / `POINTS_SAP_IMAGE` 20).

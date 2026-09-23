@@ -188,8 +188,7 @@ SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS=0 # monthly donor bonus threads (default 
 XP_SUPPORTER_BONUS_PCT=0                # one-time donor XP bonus % (default 25)
 XP_MONTHLY_SUPPORTER_BONUS_PCT=0        # monthly donor XP bonus % (default 50)
 SCRAPE_DAILY_GAMES_PER_THREAD=0   # daily games per thread (default 1000; limit = threads * this)
-SCRAPE_GUEST_RPM=0                # guest requests/minute (default 10)
-SCRAPE_USER_RPM=0                 # user requests/minute (default 60)
+SCRAPE_RPM_PER_THREAD=0           # requests/minute per thread (default 100; RPM = threads * this)
 
 # XP economy (registered-user threads come from the level ranks, not config)
 POINTS_TEXT_METADATA=0            # XP per approved text field (default 10)

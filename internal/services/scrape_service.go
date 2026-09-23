@@ -15,6 +15,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"neoassets/internal/models"
+	"neoassets/internal/progression"
 	"neoassets/internal/repository"
 	"neoassets/pkg/auth"
 )
@@ -24,8 +25,10 @@ var ErrQuotaExceeded = errors.New("daily scrape quota exceeded")
 
 // Default scrape limits, overridable from the environment.
 const (
-	defaultGuestRPM = 10
-	defaultUserRPM  = 60
+	// defaultRPMPerThread is the per-minute request budget granted per scrape
+	// thread: the effective RPM is threads * RPMPerThread (guest 2 -> 200,
+	// admin 16 -> 1600). Threads already scale the daily quota.
+	defaultRPMPerThread = 100
 
 	// maxGamesLimit is how many candidates a name search scans to pick the best
 	// single match.
@@ -53,10 +56,9 @@ type ScrapeService struct {
 	meta      *Service // catalog reads (systems/games) reused from the web service
 	jwtSecret string
 
-	guestThreads    int
-	guestRPM        int
-	userRPM         int
-	debugEnabled    bool
+	guestThreads int
+	rpmPerThread int
+	debugEnabled bool
 	requireVerified bool
 
 	mu       sync.Mutex
@@ -64,9 +66,11 @@ type ScrapeService struct {
 }
 
 // limiterEntry pairs a token bucket with its last access time so stale entries
-// can be evicted instead of resetting the whole map.
+// can be evicted instead of resetting the whole map. rpm is kept so a bucket is
+// rebuilt when a subject's thread count changes.
 type limiterEntry struct {
 	lim  *rate.Limiter
+	rpm  int
 	last time.Time
 }
 
@@ -74,23 +78,19 @@ type limiterEntry struct {
 // the defaults. The daily quota is per account and scales with the thread count
 // (threads * DailyGamesPerThread), so more threads also means a bigger daily
 // limit.
-func NewScrapeService(repo *repository.Repository, meta *Service, jwtSecret string, guestThreads, guestRPM, userRPM int, debugEnabled, requireVerified bool) *ScrapeService {
+func NewScrapeService(repo *repository.Repository, meta *Service, jwtSecret string, guestThreads, rpmPerThread int, debugEnabled, requireVerified bool) *ScrapeService {
 	if guestThreads <= 0 {
 		guestThreads = repository.GuestThreads
 	}
-	if guestRPM <= 0 {
-		guestRPM = defaultGuestRPM
-	}
-	if userRPM <= 0 {
-		userRPM = defaultUserRPM
+	if rpmPerThread <= 0 {
+		rpmPerThread = defaultRPMPerThread
 	}
 	return &ScrapeService{
 		repo:            repo,
 		meta:            meta,
 		jwtSecret:       jwtSecret,
 		guestThreads:    guestThreads,
-		guestRPM:        guestRPM,
-		userRPM:         userRPM,
+		rpmPerThread:    rpmPerThread,
 		debugEnabled:    debugEnabled,
 		requireVerified: requireVerified,
 		limiters:        map[string]*limiterEntry{},
@@ -124,10 +124,10 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		_ = s.repo.TouchDeveloperAppLastUsed(creds.ClientID)
 	}
 
-	// Enforce the per-minute rate limit before resolving the optional user
+	// Enforce a generous per-app rate limit before resolving the optional user
 	// credential, so a garbage user credential cannot force an unbounded DB
-	// lookup without any throttling.
-	if !s.allow(app.ClientID, true) {
+	// lookup without any throttling. The real per-subject limit is applied below.
+	if !s.limiterFor("pre:"+app.ClientID, s.preCheckRPM()).Allow() {
 		s.record(app.ID, resolveSoftwareName(creds.SoftwareName, app.Name), "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded"}
 	}
@@ -187,7 +187,7 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		s.record(app.ID, subject.SoftwareName, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded (debug)"}
 	}
-	if !s.allow(subject.ClientID, subject.IsGuest()) {
+	if !s.allowSubject(subject) {
 		s.record(app.ID, subject.SoftwareName, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded"}
 	}
@@ -266,19 +266,28 @@ func (s *ScrapeService) resolveUser(credential string) (*models.User, error) {
 	return user, nil
 }
 
-// allow applies the per-minute rate limit for a key (the developer app for
-// guests, the user for registered accounts).
-func (s *ScrapeService) allow(key string, isGuest bool) bool {
-	rpm := s.userRPM
-	if isGuest {
-		rpm = s.guestRPM
+// preCheckRPM is the generous per-app cap applied before the optional user
+// credential is resolved, bounding DB lookups from bogus credentials. It uses
+// the maximum thread count so it never throttles a legitimate user.
+func (s *ScrapeService) preCheckRPM() int {
+	return progression.MaxThreads() * s.rpmPerThread
+}
+
+// allowSubject applies the per-minute rate limit for the resolved subject:
+// registered users are keyed by user id and get threads * rpmPerThread, guests
+// are keyed by the developer app and get the guest thread count.
+func (s *ScrapeService) allowSubject(subject *auth.ScrapeSubject) bool {
+	key := "app:" + subject.ClientID
+	if !subject.IsGuest() {
+		key = "user:" + subject.UserID.String()
 	}
-	return s.limiterFor(key, rpm).Allow()
+	return s.limiterFor(key, subject.Threads*s.rpmPerThread).Allow()
 }
 
 // limiterFor returns (or lazily creates) the token-bucket limiter for a key.
 // Idle entries are evicted after 15 minutes so the map stays bounded without
-// ever wiping active buckets.
+// ever wiping active buckets. A bucket is rebuilt when its rpm changes (e.g. a
+// user's thread count changed with XP or a donation).
 func (s *ScrapeService) limiterFor(key string, rpm int) *rate.Limiter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -292,10 +301,12 @@ func (s *ScrapeService) limiterFor(key string, rpm int) *rate.Limiter {
 	}
 	if e, ok := s.limiters[key]; ok {
 		e.last = time.Now()
-		return e.lim
+		if e.rpm == rpm {
+			return e.lim
+		}
 	}
 	l := rate.NewLimiter(rate.Limit(float64(rpm)/60.0), rpm)
-	s.limiters[key] = &limiterEntry{lim: l, last: time.Now()}
+	s.limiters[key] = &limiterEntry{lim: l, rpm: rpm, last: time.Now()}
 	return l
 }
 

@@ -67,8 +67,7 @@ type Config struct {
 	PointsVideoMetadata                int
 	PointsSAPImage                     int
 	PointsNewGame                      int
-	ScrapeGuestRPM                     int
-	ScrapeUserRPM                      int
+	ScrapeRPMPerThread                 int
 	KofiVerificationToken              string
 	PatreonWebhookSecret               string
 	DonorSubscriptionGraceDays         int
@@ -159,7 +158,7 @@ func main() {
 	svc := services.NewService(repo, r2Client, cfg.R2PublicBase, cfg.JWTSecret, catalog)
 	userSvc := services.NewUserService(repo, mailer, cfg.JWTSecret, 30*24*time.Hour, cfg.ProtectedAdminEmail)
 	userSvc.SkipEmailVerification = cfg.SkipEmailVerification
-	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, cfg.ScrapeGuestRPM, cfg.ScrapeUserRPM, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
+	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, cfg.ScrapeRPMPerThread, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
 	devSvc := services.NewDeveloperService(repo)
 	donationSvc := services.NewDonationService(repo, mailer, cfg.KofiVerificationToken, cfg.PatreonWebhookSecret)
 	handler := handlers.NewHandler(svc, userSvc, scrapeSvc, devSvc, donationSvc, cfg.JWTSecret, cfg.SkipEmailVerification)
@@ -228,8 +227,8 @@ func loadConfig() *Config {
 		TranslateWorkerToken:  getEnvOrDefault("TRANSLATE_WORKER_TOKEN", ""),
 		// Zero means "use the service default" (guest threads = 2, admin threads = 16,
 		// donor bonuses: supporter +2 threads/+25% XP, monthly +4 threads/+50% XP,
-		// daily = threads * 1000, XP per contribution 10/40/100/5,
-		// guest 10 req/min, user 60 req/min).
+		// daily = threads * 1000, RPM = threads * 100, XP per contribution
+		// 10/40/100/5).
 		ScrapeGuestThreads:                 getEnvInt("SCRAPE_GUEST_THREADS", 0),
 		ScrapeAdminThreads:                 getEnvInt("SCRAPE_ADMIN_THREADS", 0),
 		ScrapeSupporterBonusThreads:        getEnvInt("SCRAPE_SUPPORTER_BONUS_THREADS", 0),
@@ -242,8 +241,7 @@ func loadConfig() *Config {
 		PointsVideoMetadata:                getEnvInt("POINTS_VIDEO_METADATA", 0),
 		PointsSAPImage:                     getEnvInt("POINTS_SAP_IMAGE", 0),
 		PointsNewGame:                      getEnvInt("POINTS_NEW_GAME", 0),
-		ScrapeGuestRPM:                     getEnvInt("SCRAPE_GUEST_RPM", 0),
-		ScrapeUserRPM:                      getEnvInt("SCRAPE_USER_RPM", 0),
+		ScrapeRPMPerThread:                 getEnvInt("SCRAPE_RPM_PER_THREAD", 0),
 		KofiVerificationToken:              getEnvOrDefault("KOFI_VERIFICATION_TOKEN", ""),
 		PatreonWebhookSecret:               getEnvOrDefault("PATREON_WEBHOOK_SECRET", ""),
 		DonorSubscriptionGraceDays:         getEnvInt("DONOR_SUBSCRIPTION_GRACE_DAYS", 0),
