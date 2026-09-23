@@ -449,7 +449,7 @@ func (s *ScrapeService) FindGames(q models.ScrapeGameQuery) (*models.ScrapeGame,
 	}
 	var candidates []models.Game
 	for _, systemID := range systemIDs {
-		found, _, err := s.meta.SearchGames(name, systemID, q.Type, "", maxGamesLimit, 0)
+		found, err := s.meta.SearchGameCandidates(name, systemID, q.Type, maxGamesLimit)
 		if err != nil {
 			return nil, "", err
 		}

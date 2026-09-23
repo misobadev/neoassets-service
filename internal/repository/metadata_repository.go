@@ -612,6 +612,51 @@ func (r *Repository) SearchGames(q, systemID, gtype, sort string, limit, offset 
 	return list, total, err
 }
 
+// SearchGamesLight resolves name candidates within one system without the COUNT
+// or the per-game cover/stats decoration. The scraping resolver only needs the
+// candidate id, name, type and rating before loading the winner, so this skips
+// the extra COUNT query and the ListGameStats lookup on every search.
+func (r *Repository) SearchGamesLight(q, systemID, gtype string, limit int) ([]models.Game, error) {
+	where := []string{"TRUE"}
+	args := []interface{}{}
+	for _, tok := range searchTokens(q) {
+		args = append(args, "%"+tok+"%")
+		n := len(args)
+		where = append(where, fmt.Sprintf(
+			"(regexp_replace(f_unaccent(lower(g.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR regexp_replace(f_unaccent(lower(g.short_name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR EXISTS (SELECT 1 FROM game_regions gr WHERE gr.game_id = g.id AND regexp_replace(f_unaccent(lower(gr.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d))",
+			n, n, n))
+	}
+	if systemID != "" {
+		args = append(args, systemID)
+		where = append(where, fmt.Sprintf("g.system_id = $%d", len(args)))
+	}
+	if gtype != "" {
+		args = append(args, gtype)
+		where = append(where, fmt.Sprintf("g.type = $%d", len(args)))
+	}
+	args = append(args, limit)
+	rows, err := r.db.Query(
+		`SELECT g.id, g.system_id, g.name, g.type, g.rating
+		 FROM games g
+		 WHERE `+strings.Join(where, " AND ")+`
+		 ORDER BY g.name ASC LIMIT $`+itoa(len(args)),
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search games: %w", err)
+	}
+	defer rows.Close()
+	out := []models.Game{}
+	for rows.Next() {
+		var g models.Game
+		if err := rows.Scan(&g.ID, &g.SystemID, &g.Name, &g.Type, &g.Rating); err != nil {
+			return nil, fmt.Errorf("failed to scan game: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
 // LookupGameByHash finds games matching any of the provided ROM hashes. When
 // systemID is non-empty the search is scoped to that system.
 func (r *Repository) LookupGameByHash(crc, md5, sha1, sha256, systemID string) ([]models.Game, error) {

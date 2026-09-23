@@ -90,6 +90,13 @@ func (s *Service) ListGamesBySystem(systemID string, limit, offset int, gtype, s
 	return list, total, nil
 }
 
+// SearchGameCandidates resolves light name candidates for the scraping
+// resolver: no total count and no per-game stats decoration, since it only
+// needs the id, name, type and rating to pick the best match.
+func (s *Service) SearchGameCandidates(q, systemID, gtype string, limit int) ([]models.Game, error) {
+	return s.repo.SearchGamesLight(q, systemID, gtype, limit)
+}
+
 // SearchGames searches the game catalog.
 func (s *Service) SearchGames(q, systemID, gtype, sort string, limit, offset int) ([]models.Game, int64, error) {
 	list, total, err := s.repo.SearchGames(q, systemID, gtype, sort, limit, offset)
