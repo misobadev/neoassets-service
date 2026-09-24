@@ -606,7 +606,7 @@ type MetadataSystem struct {
 	// "flycast" for arcade boards). Empty when the system belongs to none.
 	Group string `json:"group" db:"system_group"`
 	// Virtual systems own no games and aggregate their family/group instead
-	// (e.g. "arc" resolves to every arcade board).
+	// (e.g. "arcade" resolves to every arcade board).
 	Virtual   bool      `json:"virtual" db:"virtual"`
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`

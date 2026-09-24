@@ -534,8 +534,15 @@ func orderByClause(sort string) string {
 // ListGamesBySystem returns games for a system, newest first, with paging.
 // gtype filters by game type (base/hack/homebrew); sort orders the result.
 func (r *Repository) ListGamesBySystem(systemID string, limit, offset int, gtype, sort string) ([]models.Game, int64, error) {
-	where := []string{"g.system_id = $1"}
-	args := []interface{}{systemID}
+	return r.ListGamesBySystems([]string{systemID}, limit, offset, gtype, sort)
+}
+
+// ListGamesBySystems returns games for a set of systems, newest first, with
+// paging. It backs a virtual parent (the arcade aggregate) listing the games of
+// its whole family.
+func (r *Repository) ListGamesBySystems(systemIDs []string, limit, offset int, gtype, sort string) ([]models.Game, int64, error) {
+	where := []string{"g.system_id = ANY($1)"}
+	args := []interface{}{pq.Array(systemIDs)}
 	if gtype != "" {
 		args = append(args, gtype)
 		where = append(where, fmt.Sprintf("g.type = $%d", len(args)))
@@ -563,7 +570,7 @@ func (r *Repository) ListGamesBySystem(systemID string, limit, offset int, gtype
 
 // SearchGames searches games by case-insensitive name with an optional system
 // filter and game type (base/hack/homebrew).
-func (r *Repository) SearchGames(q, systemID, gtype, sort string, limit, offset int) ([]models.Game, int64, error) {
+func (r *Repository) SearchGames(q string, systemIDs []string, gtype, sort string, limit, offset int) ([]models.Game, int64, error) {
 	where := []string{"TRUE"}
 	args := []interface{}{}
 	// Accent- and punctuation-insensitive search: break the query into tokens
@@ -580,9 +587,9 @@ func (r *Repository) SearchGames(q, systemID, gtype, sort string, limit, offset 
 			"(regexp_replace(f_unaccent(lower(g.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR regexp_replace(f_unaccent(lower(g.short_name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR EXISTS (SELECT 1 FROM game_regions gr WHERE gr.game_id = g.id AND regexp_replace(f_unaccent(lower(gr.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d))",
 			n, n, n))
 	}
-	if systemID != "" {
-		args = append(args, systemID)
-		where = append(where, fmt.Sprintf("g.system_id = $%d", len(args)))
+	if len(systemIDs) > 0 {
+		args = append(args, pq.Array(systemIDs))
+		where = append(where, fmt.Sprintf("g.system_id = ANY($%d)", len(args)))
 	}
 	if gtype != "" {
 		args = append(args, gtype)
@@ -590,13 +597,12 @@ func (r *Repository) SearchGames(q, systemID, gtype, sort string, limit, offset 
 	}
 	cond := strings.Join(where, " AND ")
 
-	argsCount := append(args, limit, offset)
 	var total int64
 	if err := r.db.QueryRow(`SELECT COUNT(*) FROM games g WHERE `+cond, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	argsCount = append(args, limit, offset)
+	argsCount := append(args, limit, offset)
 	rows, err := r.db.Query(
 		`SELECT `+gameCols+` FROM games g
 		 LEFT JOIN metadata_systems s ON s.id = g.system_id

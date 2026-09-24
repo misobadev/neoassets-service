@@ -361,7 +361,7 @@ func (s *ScrapeService) resolveSystems(q models.ScrapeGameQuery) ([]string, erro
 			return nil, fmt.Errorf("unknown system_id %q", systemID)
 		}
 		// A virtual system owns no games: it resolves to its group (when set) or
-		// its family, so the catalog stays free of duplicated games (e.g. "arc"
+		// its family, so the catalog stays free of duplicated games (e.g. "arcade"
 		// covers every arcade board).
 		if sys.Virtual {
 			if g := strings.TrimSpace(sys.Group); g != "" {

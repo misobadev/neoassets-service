@@ -16,7 +16,7 @@ func TestValidateUploadRequestSystemID(t *testing.T) {
 
 	valid := []models.UploadRequest{
 		{FileName: "gba.webp", Kind: models.KindBackground, Size: 1, MimeType: "image/webp"},
-		{FileName: "arc.gif", Kind: models.KindBackground, Size: 1, MimeType: "image/gif"},
+		{FileName: "arcade.gif", Kind: models.KindBackground, Size: 1, MimeType: "image/gif"},
 		// The backend normalizes images on approval, so any common raster
 		// format is accepted from the client.
 		{FileName: "gba.png", Kind: models.KindBackground, Size: 1, MimeType: "image/png"},

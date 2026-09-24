@@ -50,9 +50,42 @@ var videoExts = map[string]bool{
 }
 
 // ListMetadataSystems returns the metadata system catalog (seeded by the DAT
-// importer), independent from the art-pack systems.
+// importer), independent from the art-pack systems. A virtual parent (the
+// arcade aggregate) owns no games, so its stats are the sum of its family so
+// the browse card shows the whole family.
 func (s *Service) ListMetadataSystems() ([]models.MetadataSystem, error) {
-	return s.repo.ListMetadataSystems()
+	list, err := s.repo.ListMetadataSystems()
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		if !list[i].Virtual {
+			continue
+		}
+		var games, base, hack, homebrew int
+		var textWeighted, mediaWeighted float64
+		for j := range list {
+			if list[j].Virtual || list[j].Family != list[i].Family {
+				continue
+			}
+			games += list[j].TotalGames
+			base += list[j].Base
+			hack += list[j].Hack
+			homebrew += list[j].Homebrew
+			textWeighted += list[j].TextPct * float64(list[j].TotalGames)
+			mediaWeighted += list[j].MediaPct * float64(list[j].TotalGames)
+		}
+		list[i].TotalGames = games
+		list[i].Base = base
+		list[i].Hack = hack
+		list[i].Homebrew = homebrew
+		if games > 0 {
+			list[i].TextPct = textWeighted / float64(games)
+			list[i].MediaPct = mediaWeighted / float64(games)
+			list[i].MetadataPct = (list[i].TextPct + list[i].MediaPct) / 2
+		}
+	}
+	return list, nil
 }
 
 // ListSystemIDsByFamily returns the ids of every system in a family (e.g.
@@ -80,7 +113,14 @@ func (s *Service) ListGroups() ([]models.MetadataGroup, error) {
 // ListGamesBySystem returns the games for a system with paging and optional
 // game-type filter (base/hack/homebrew) and sort order.
 func (s *Service) ListGamesBySystem(systemID string, limit, offset int, gtype, sort string) ([]models.Game, int64, error) {
-	list, total, err := s.repo.ListGamesBySystem(systemID, limit, offset, gtype, sort)
+	// A virtual parent (the arcade aggregate) lists every game of its family.
+	systemIDs := []string{systemID}
+	if sys, err := s.repo.GetMetadataSystem(systemID); err == nil && sys.Virtual {
+		if ids, err := s.repo.ListSystemIDsByFamily(sys.Family); err == nil && len(ids) > 0 {
+			systemIDs = ids
+		}
+	}
+	list, total, err := s.repo.ListGamesBySystems(systemIDs, limit, offset, gtype, sort)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -97,9 +137,19 @@ func (s *Service) SearchGameCandidates(q, systemID, gtype string, limit int) ([]
 	return s.repo.SearchGamesLight(q, systemID, gtype, limit)
 }
 
-// SearchGames searches the game catalog.
+// SearchGames searches the game catalog. A virtual parent (the arcade
+// aggregate) searches its whole family.
 func (s *Service) SearchGames(q, systemID, gtype, sort string, limit, offset int) ([]models.Game, int64, error) {
-	list, total, err := s.repo.SearchGames(q, systemID, gtype, sort, limit, offset)
+	var systemIDs []string
+	if systemID != "" {
+		systemIDs = []string{systemID}
+		if sys, err := s.repo.GetMetadataSystem(systemID); err == nil && sys.Virtual {
+			if ids, err := s.repo.ListSystemIDsByFamily(sys.Family); err == nil && len(ids) > 0 {
+				systemIDs = ids
+			}
+		}
+	}
+	list, total, err := s.repo.SearchGames(q, systemIDs, gtype, sort, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}

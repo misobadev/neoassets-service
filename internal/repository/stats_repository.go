@@ -27,10 +27,13 @@ func (r *Repository) CountApprovedPacks() (int, error) {
 	return n, nil
 }
 
-// CountMetadataSystems returns the number of systems in the metadata catalog.
+// CountMetadataSystems returns the number of real systems in the metadata
+// catalog. Virtual systems (e.g. the "arcade" aggregate) are excluded
+// because they own no games and are not browsable, so the dashboard count
+// matches the metadata browse page.
 func (r *Repository) CountMetadataSystems() (int, error) {
 	var n int
-	if err := r.db.QueryRow(`SELECT count(*) FROM metadata_systems`).Scan(&n); err != nil {
+	if err := r.db.QueryRow(`SELECT count(*) FROM metadata_systems WHERE NOT virtual`).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil

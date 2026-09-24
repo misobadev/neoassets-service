@@ -146,11 +146,13 @@ the user credential is optional and falls back to guest mode.
   `console`, `computer`, `handheld`, `virtual`) and `metadata_systems.system_group`
   is the emulator sub-set (`mame-fbneo`, `flycast`, `supermodel`, `dolphin`).
   `GET /scrape/families` and `GET /scrape/groups` list them (free); `family`/
-  `group` on `/scrape/games` expand to their systems. A **virtual** system
-  (`metadata_systems.virtual`, e.g. `arc`) owns no games and resolves to its
-  group (when set) or family, so `system_id=arc` covers every arcade board
-  without duplicating games. Seeded by the importer from
-  `neoassets_systems.json` (`syncSystemMeta`).
+  `group` on `/scrape/games` expand to their systems. A **virtual** parent
+  (`metadata_systems.virtual`, e.g. `arcade`) owns no games and resolves to its
+  group (when set) or family, so `system_id=arcade` covers every arcade board
+  without duplicating games. The metadata browse lists it too, and opening it
+  lists the whole family (`ListGamesBySystem`/`SearchGames` resolve a virtual
+  system to its family; the card stats are the family sum). Seeded by the
+  importer from `neoassets_systems.json` (`syncSystemMeta`).
 - `game_scrape_stats` (migration `041`) counts scrapes per game; every
   successful `/scrape/games` resolution bumps it and the count is returned as
   `game.scrapes`. `GET /scrape/popular` ranks games by that counter (free).
