@@ -356,10 +356,11 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 
 	// Per-IP limiters for the unauthenticated surfaces.
 	authLimiter := handlers.NewIPLimiter(10, 10)
-	metadataLimiter := handlers.NewIPLimiter(30, 30)
-	// The catalog list endpoints (web browse) get a stricter per-IP limit; the
-	// scraping API has its own quota and must NOT share this.
-	catalogLimiter := handlers.NewIPLimiter(20, 20)
+	// Browsing the catalog pages quickly (pagination, opening details) must not
+	// hit the limiter, so these are generous; the scraping API has its own quota
+	// and must NOT share them.
+	metadataLimiter := handlers.NewIPLimiter(240, 240)
+	catalogLimiter := handlers.NewIPLimiter(240, 240)
 	// Pack downloads are keyed by (IP, pack): a client may install a given pack
 	// up to ten times per minute, so download counters cannot be inflated by
 	// hammering the endpoint while legitimate installs still work.

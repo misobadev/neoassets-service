@@ -214,6 +214,39 @@ const gameColsLang = `g.id, g.system_id, g.name, COALESCE(gt.description, g.desc
       ` + primaryCoverUpdated + `,
       COALESCE((SELECT gs.scrapes FROM game_scrape_stats gs WHERE gs.game_id = g.id), 0) AS scrapes`
 
+// gameCompletionScore ranks how complete a game's curated metadata is: full text
+// (one point), translations, cover, logo, screenshot, fanart and video. It is
+// 0-7 and backs the "completion" sort so users can find the least complete games.
+// The fields match ListGameStats plus the cover column, and it needs
+// gameCompletionJoin to be present.
+const gameCompletionScore = `(
+      COALESCE(mp.media_score, 0) + COALESCE(tl.has_tr, 0)
+      + ((g.description <> '' AND g.genre <> '' AND g.developer <> '' AND g.publisher <> '' AND g.release_year IS NOT NULL AND g.rating > 0))::int
+    )`
+
+// gameCompletionJoin supplies the media and translation flags the completion
+// score needs. It is only added when sorting by completion so the regular browse
+// queries do not pay for the extra aggregation.
+const gameCompletionJoin = `
+      LEFT JOIN (
+        SELECT game_id,
+               bool_or(kind = 'cover')::int + bool_or(kind = 'logo')::int +
+               bool_or(kind = 'screenshot')::int + bool_or(kind = 'fanart')::int +
+               bool_or(kind = 'video')::int AS media_score
+        FROM media WHERE kind IN ('cover', 'logo', 'screenshot', 'fanart', 'video')
+        GROUP BY game_id
+      ) mp ON mp.game_id = g.id
+      LEFT JOIN (SELECT DISTINCT game_id, 1 AS has_tr FROM game_translations) tl ON tl.game_id = g.id`
+
+// completionSortJoin returns the extra joins a completion sort needs (empty for
+// any other sort).
+func completionSortJoin(sort string) string {
+	if sort == "completion_asc" || sort == "completion_desc" {
+		return gameCompletionJoin
+	}
+	return ""
+}
+
 func scanGame(row *sql.Row) (*models.Game, error) {
 	var g models.Game
 	err := row.Scan(
@@ -516,6 +549,10 @@ func orderByClause(sort string) string {
 		// Order by the joined counter, not the SELECT alias, so Postgres can use
 		// the join instead of running the correlated subquery for every game.
 		return "COALESCE(gs.scrapes, 0) DESC, g.name ASC"
+	case "completion_asc":
+		return gameCompletionScore + " ASC, g.name ASC"
+	case "completion_desc":
+		return gameCompletionScore + " DESC, g.name ASC"
 	case "name_desc":
 		return "g.name DESC"
 	case "rating_asc":
@@ -556,7 +593,7 @@ func (r *Repository) ListGamesBySystems(systemIDs []string, limit, offset int, g
 	rows, err := r.db.Query(
 		`SELECT `+gameCols+` FROM games g
 		 LEFT JOIN metadata_systems s ON s.id = g.system_id
-		 LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id
+		 LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id`+completionSortJoin(sort)+`
 		 WHERE `+cond+` ORDER BY `+orderByClause(sort)+` LIMIT $`+itoa(len(args)-1)+` OFFSET $`+itoa(len(args)),
 		args...,
 	)
@@ -606,7 +643,7 @@ func (r *Repository) SearchGames(q string, systemIDs []string, gtype, sort strin
 	rows, err := r.db.Query(
 		`SELECT `+gameCols+` FROM games g
 		 LEFT JOIN metadata_systems s ON s.id = g.system_id
-		 LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id
+		 LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id`+completionSortJoin(sort)+`
 		 WHERE `+cond+` ORDER BY `+orderByClause(sort)+` LIMIT $`+itoa(len(args)+1)+` OFFSET $`+itoa(len(args)+2),
 		argsCount...,
 	)
