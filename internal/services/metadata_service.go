@@ -738,6 +738,33 @@ func (s *Service) SubmitMetadataSubmission(submissionID, userID uuid.UUID) (*mod
 	return s.repo.SubmitMetadataSubmission(submissionID, userID)
 }
 
+// CancelMetadataSubmission deletes the user's own submission (while it is still
+// editable, pending review or rejected) together with its uploaded media, so a
+// mistake can be cleared and submitted again without waiting for a review.
+func (s *Service) CancelMetadataSubmission(submissionID, userID uuid.UUID) error {
+	sub, err := s.repo.GetMetadataSubmissionForUser(submissionID, userID)
+	if err != nil {
+		return fmt.Errorf("submission not found")
+	}
+	if sub.Status == models.MetadataApproved {
+		return fmt.Errorf("an approved submission cannot be cancelled")
+	}
+	files, err := s.repo.ListMetadataSubmissionFiles(submissionID)
+	if err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(files))
+	for _, f := range files {
+		keys = append(keys, f.ObjectKey)
+	}
+	if len(keys) > 0 {
+		if err := s.r2.DeleteObjects(context.Background(), keys); err != nil {
+			return fmt.Errorf("delete submission media: %w", err)
+		}
+	}
+	return s.repo.DeleteMetadataSubmission(submissionID)
+}
+
 // payloadHasText reports whether a submission payload carries a editable field.
 func payloadHasText(payload json.RawMessage) bool {
 	var p map[string]any

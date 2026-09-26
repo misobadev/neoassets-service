@@ -1267,6 +1267,15 @@ func (r *Repository) GetMetadataSubmissionForUser(id, userID uuid.UUID) (*models
 	return scanMS(r.db.QueryRow(`SELECT `+msCols+` FROM metadata_submissions WHERE id = $1 AND user_id = $2`, id, userID))
 }
 
+// DeleteMetadataSubmission removes a submission; its files are removed by the
+// ON DELETE CASCADE on metadata_submission_files.
+func (r *Repository) DeleteMetadataSubmission(id uuid.UUID) error {
+	if _, err := r.db.Exec(`DELETE FROM metadata_submissions WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("failed to delete metadata submission: %w", err)
+	}
+	return nil
+}
+
 // ListMetadataSubmissionsByUser lists a user's contributions, newest first.
 // status filters by review state: "review" returns only pending/approved/rejected,
 // an empty status returns everything (including drafts). When limit > 0 the

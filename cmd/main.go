@@ -479,6 +479,7 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 			r.Post("/metadata/submissions/upload-url", h.MetadataUploadURLPre)
 			r.Post("/metadata/submissions/{id}/upload", h.MetadataUploadURL)
 			r.Post("/metadata/submissions/{id}/submit", h.SubmitMetadataSubmission)
+			r.Delete("/metadata/submissions/{id}", h.CancelMetadataSubmission)
 		})
 
 		// Review (admin or reviewer role, re-checked against the DB)

@@ -245,6 +245,20 @@ func (h *Handler) SubmitMetadataSubmission(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, sub)
 }
 
+// CancelMetadataSubmission deletes the user's own metadata submission.
+func (h *Handler) CancelMetadataSubmission(w http.ResponseWriter, r *http.Request) {
+	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid submission id")
+		return
+	}
+	if err := h.svc.CancelMetadataSubmission(submissionID, userFromRequest(r)); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // ListMyMetadataSubmissions lists the user's contributions.
 func (h *Handler) ListMyMetadataSubmissions(w http.ResponseWriter, r *http.Request) {
 	limit, offset := parseUserListParams(r)

@@ -1356,8 +1356,11 @@ func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
-	if sub.Status != models.StatusCreated && sub.Status != models.StatusRejected {
-		return nil, fmt.Errorf("submission cannot be trashed")
+	// A user can clear their own submission while it is a draft, pending review
+	// or rejected, so a mistake does not have to wait for a review; only an
+	// approved (published) pack is protected.
+	if sub.Status == models.StatusApproved {
+		return nil, fmt.Errorf("an approved submission cannot be cancelled")
 	}
 
 	if err := s.deletePackOrphans(ctx, sub.PackID, submissionID); err != nil {
