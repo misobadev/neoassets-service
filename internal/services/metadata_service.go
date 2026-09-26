@@ -884,6 +884,10 @@ func (s *Service) enrichMetadataSubmissions(list []models.MetadataSubmission) er
 	if err != nil {
 		return err
 	}
+	files, err := s.repo.MetadataSubmissionFilesByIDs(subIDs)
+	if err != nil {
+		return err
+	}
 	kinds, err := s.repo.MetadataSubmissionFileKindsByIDs(subIDs)
 	if err != nil {
 		return err
@@ -896,6 +900,7 @@ func (s *Service) enrichMetadataSubmissions(list []models.MetadataSubmission) er
 	for i := range list {
 		list[i].PointsEarned = points[list[i].ID]
 		list[i].BasePointsEarned = metadataBasePoints(list[i].Payload, list[i].Kind, kinds[list[i].ID])
+		list[i].Files = files[list[i].ID]
 		if list[i].GameID != nil {
 			if g, ok := gameByID[*list[i].GameID]; ok {
 				list[i].GameName = g.Name

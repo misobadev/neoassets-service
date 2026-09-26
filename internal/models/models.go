@@ -783,6 +783,9 @@ type MetadataSubmission struct {
 	Cover        string   `json:"cover,omitempty" db:"-"`
 	CoverUpdated string   `json:"cover_updated,omitempty" db:"-"`
 	ChangeKinds  []string `json:"change_kinds,omitempty" db:"-"`
+	// Files are the uploaded media, populated on the review feed so the
+	// submitted media can be shown before the submission is approved.
+	Files []MetadataSubmissionFile `json:"files,omitempty" db:"-"`
 	// PointsEarned is the XP awarded for this contribution once approved.
 	PointsEarned int `json:"points_earned" db:"-"`
 	// BasePointsEarned is the same XP before the donor boost, so the UI can tell

@@ -1442,6 +1442,36 @@ func (r *Repository) ListMetadataSubmissionFiles(id uuid.UUID) ([]models.Metadat
 	return list, rows.Err()
 }
 
+// MetadataSubmissionFilesByIDs returns the files of several submissions in one
+// query, so the review feed can show a submission's submitted media before it is
+// approved.
+func (r *Repository) MetadataSubmissionFilesByIDs(ids []uuid.UUID) (map[uuid.UUID][]models.MetadataSubmissionFile, error) {
+	out := map[uuid.UUID][]models.MetadataSubmissionFile{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.Query(
+		`SELECT id, submission_id, kind, object_key, file_name, mime, size, region, is_delete, is_move, created_at,
+		        video_format, video_codec, width, height, fps, duration_sec
+		 FROM metadata_submission_files WHERE submission_id = ANY($1) ORDER BY submission_id, created_at`, pq.Array(ids),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list submission files: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var f models.MetadataSubmissionFile
+		var dur sql.NullFloat64
+		if err := rows.Scan(&f.ID, &f.SubmissionID, &f.Kind, &f.ObjectKey, &f.FileName, &f.Mime, &f.Size, &f.Region, &f.IsDelete, &f.IsMove, &f.CreatedAt,
+			&f.VideoFormat, &f.VideoCodec, &f.Width, &f.Height, &f.FPS, &dur); err != nil {
+			return nil, err
+		}
+		f.DurationSec = dur.Float64
+		out[f.SubmissionID] = append(out[f.SubmissionID], f)
+	}
+	return out, rows.Err()
+}
+
 // ListGamesByIDs returns games (with their system name and cover) for the given
 // ids in a single query, used to enrich the admin review list.
 func (r *Repository) ListGamesByIDs(ids []uuid.UUID) ([]models.Game, error) {
