@@ -411,6 +411,17 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 	if v, ok := req.Payload["delete"].(bool); ok && v {
 		deleting = true
 	}
+	// A whole-game deletion request (duplicate report) targets a game, points at
+	// the game to keep and must explain why.
+	if v, ok := req.Payload["delete_game"].(bool); ok && v {
+		if req.GameID == nil {
+			return nil, fmt.Errorf("a deletion request must target a game")
+		}
+		if link, _ := req.Payload["duplicate_of"].(string); strings.TrimSpace(link) == "" {
+			return nil, fmt.Errorf("a link to the duplicate game is required")
+		}
+		deleting = true
+	}
 	if deleting {
 		if note, _ := req.Payload["note"].(string); strings.TrimSpace(note) == "" {
 			return nil, fmt.Errorf("a reason is required when deleting")
@@ -575,7 +586,7 @@ func (s *Service) pendingSubmissionKeys(userID uuid.UUID, gameID *uuid.UUID, sys
 		var p map[string]any
 		if err := json.Unmarshal(sub.Payload, &p); err == nil {
 			for k := range p {
-				if k == "note" {
+				if k == "note" || k == "duplicate_of" {
 					continue
 				}
 				keys[k] = true
@@ -935,7 +946,7 @@ func (s *Service) enrichMetadataSubmissions(list []models.MetadataSubmission) er
 		var p map[string]any
 		if err := json.Unmarshal(list[i].Payload, &p); err == nil {
 			for k := range p {
-				if k == "note" || k == "release_month" || k == "regions" {
+				if k == "note" || k == "release_month" || k == "regions" || k == "duplicate_of" {
 					continue
 				}
 				set[k] = true
@@ -1130,6 +1141,14 @@ func (s *Service) ApproveMetadataSubmission(id, adminID uuid.UUID, comment strin
 	if sub.Status != models.MetadataPending {
 		return nil, fmt.Errorf("submission is not pending")
 	}
+	// A duplicate report asks for the whole game to be removed. On approval the
+	// game and its media are deleted instead of applying field/media changes.
+	if isDeleteGamePayload(sub.Payload) {
+		if err := s.deleteDuplicateGame(context.Background(), sub); err != nil {
+			return nil, err
+		}
+		return s.repo.SetMetadataStatusForAdmin(id, models.MetadataApproved, adminID, comment)
+	}
 	files, err := s.repo.ListMetadataSubmissionFiles(id)
 	if err != nil {
 		return nil, err
@@ -1197,6 +1216,40 @@ func (s *Service) ApproveMetadataSubmission(id, adminID uuid.UUID, comment strin
 		return nil, err
 	}
 	return updated, nil
+}
+
+// isDeleteGamePayload reports whether the submission asks for the whole game to
+// be removed (a duplicate report) rather than a field or media change.
+func isDeleteGamePayload(payload json.RawMessage) bool {
+	var p map[string]any
+	if json.Unmarshal(payload, &p) != nil {
+		return false
+	}
+	v, _ := p["delete_game"].(bool)
+	return v
+}
+
+// deleteDuplicateGame removes a game flagged as a duplicate: its media objects
+// in R2 and the game row (regions, roms, media and translations cascade). The
+// game's submissions are detached first so the review history survives.
+func (s *Service) deleteDuplicateGame(ctx context.Context, sub *models.MetadataSubmission) error {
+	if sub.GameID == nil {
+		return fmt.Errorf("deletion request has no game")
+	}
+	media, err := s.repo.ListMediaByGame(*sub.GameID)
+	if err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(media))
+	for _, m := range media {
+		keys = append(keys, m.ObjectKey)
+	}
+	if len(keys) > 0 {
+		if err := s.r2.DeleteObjects(ctx, keys); err != nil {
+			return fmt.Errorf("delete game media: %w", err)
+		}
+	}
+	return s.repo.DeleteGame(*sub.GameID)
 }
 
 // translateApprovedDescription calls the translate worker with the approved

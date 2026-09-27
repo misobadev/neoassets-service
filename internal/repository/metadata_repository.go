@@ -1276,6 +1276,19 @@ func (r *Repository) DeleteMetadataSubmission(id uuid.UUID) error {
 	return nil
 }
 
+// DeleteGame removes a game flagged as a duplicate. Its submissions are detached
+// first (game_id set to NULL) so the review history survives the cascade from
+// the other dependent tables (regions, roms, media, translations, stats).
+func (r *Repository) DeleteGame(id uuid.UUID) error {
+	if _, err := r.db.Exec(`UPDATE metadata_submissions SET game_id = NULL WHERE game_id = $1`, id); err != nil {
+		return fmt.Errorf("failed to detach game submissions: %w", err)
+	}
+	if _, err := r.db.Exec(`DELETE FROM games WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("failed to delete game: %w", err)
+	}
+	return nil
+}
+
 // ListMetadataSubmissionsByUser lists a user's contributions, newest first.
 // status filters by review state: "review" returns only pending/approved/rejected,
 // an empty status returns everything (including drafts). When limit > 0 the
