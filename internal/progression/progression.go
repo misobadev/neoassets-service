@@ -5,7 +5,8 @@ package progression
 
 import "math"
 
-// MaxLevel is the highest reachable level.
+// MaxLevel is the highest level band (the top rank). Levels keep growing past
+// it, but ranks, threads and the other benefits stop at the top band.
 const MaxLevel = 100
 
 // Rank is a level band that grants a thread count.
@@ -36,21 +37,31 @@ func MaxThreads() int { return Ranks[len(Ranks)-1].Threads }
 
 // XPForLevel returns the total XP required to reach the given level. Level 1 is
 // the starting level (0 XP); higher levels follow round(level^2.5 * 3), so the
-// curve is easy at first and steep near the top (level 100 = 300,000 XP).
+// curve is easy at first and steep near the top (level 100 = 300,000 XP). There
+// is no upper bound: the level keeps growing past the top rank.
 func XPForLevel(level int) int {
 	if level <= 1 {
 		return 0
 	}
-	if level > MaxLevel {
-		level = MaxLevel
-	}
 	return int(math.Round(math.Pow(float64(level), 2.5) * 3))
 }
 
-// LevelForXP returns the level (1..MaxLevel) for a total XP amount.
+// LevelForXP returns the level for a total XP amount. It is unbounded, so a user
+// keeps leveling up past MaxLevel (the benefits stop at the top rank instead).
 func LevelForXP(xp int) int {
-	level := 1
-	for level < MaxLevel && xp >= XPForLevel(level+1) {
+	if xp <= 0 {
+		return 1
+	}
+	// Invert the curve (level ~ (xp/3)^(1/2.5)) and correct the rounding both
+	// ways, so the loop stays constant-time for very large XP values.
+	level := int(math.Pow(float64(xp)/3.0, 1.0/2.5))
+	if level < 1 {
+		level = 1
+	}
+	for level > 1 && XPForLevel(level) > xp {
+		level--
+	}
+	for xp >= XPForLevel(level+1) {
 		level++
 	}
 	return level

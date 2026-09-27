@@ -31,6 +31,25 @@ func TestLevelForXPRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLevelForXPUnbounded(t *testing.T) {
+	// Past the top rank the level keeps growing while the benefits stay capped.
+	if got := LevelForXP(XPForLevel(101)); got != 101 {
+		t.Errorf("LevelForXP(XPForLevel(101)) = %d, want 101", got)
+	}
+	if got := LevelForXP(XPForLevel(150)); got != 150 {
+		t.Errorf("LevelForXP(XPForLevel(150)) = %d, want 150", got)
+	}
+	if got := ThreadsForLevel(101); got != MaxThreads() {
+		t.Errorf("ThreadsForLevel(101) = %d, want %d", got, MaxThreads())
+	}
+	if got := ThreadsForLevel(150); got != 16 {
+		t.Errorf("ThreadsForLevel(150) = %d, want 16", got)
+	}
+	if got := RankForLevel(150); got != "legend" {
+		t.Errorf("RankForLevel(150) = %q, want legend", got)
+	}
+}
+
 func TestThreadsForLevel(t *testing.T) {
 	cases := map[int]int{1: 4, 10: 4, 11: 5, 20: 5, 50: 8, 90: 14, 91: 16, 100: 16}
 	for level, want := range cases {

@@ -117,15 +117,13 @@ func (r *Repository) GetRewards(userID uuid.UUID) (*models.Rewards, error) {
 	rank := progression.RankForLevel(level)
 	threads := ThreadsForUser(u.Role, u.DonorStatus, u.XP)
 
+	// Progress toward the next level keeps working past MaxLevel; the level is
+	// unbounded, only the rank/thread benefits stop at the top band.
 	levelXP := progression.XPForLevel(level)
-	nextLevelXP := 0
+	nextLevelXP := progression.XPForLevel(level + 1)
 	progress := 100
-	if level < progression.MaxLevel {
-		nextLevelXP = progression.XPForLevel(level + 1)
-		span := nextLevelXP - levelXP
-		if span > 0 {
-			progress = int(float64(u.XP-levelXP) / float64(span) * 100)
-		}
+	if span := nextLevelXP - levelXP; span > 0 {
+		progress = int(float64(u.XP-levelXP) / float64(span) * 100)
 	}
 
 	return &models.Rewards{
