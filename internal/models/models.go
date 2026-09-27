@@ -611,10 +611,12 @@ type MetadataSystem struct {
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
 	// Catalog stats, populated on the systems list endpoint.
-	TotalGames int `json:"total_games" db:"total_games"`
-	Base       int `json:"base" db:"base"`
-	Hack       int `json:"hack" db:"hack"`
-	Homebrew   int `json:"homebrew" db:"homebrew"`
+	TotalGames  int `json:"total_games" db:"total_games"`
+	Base        int `json:"base" db:"base"`
+	Hack        int `json:"hack" db:"hack"`
+	Homebrew    int `json:"homebrew" db:"homebrew"`
+	Bootleg     int `json:"bootleg" db:"bootleg"`
+	Aftermarket int `json:"aftermarket" db:"aftermarket"`
 	// Completion percentages over all the system's games. MetadataPct is the
 	// combined score (average of TextPct and MediaPct); TextPct/MediaPct break
 	// it down into text metadata vs media coverage.
@@ -669,6 +671,21 @@ type GameRegion struct {
 	ReleaseYear  *int    `json:"release_year,omitempty"`
 	ReleaseMonth *int    `json:"release_month,omitempty"`
 	Media        []Media `json:"media,omitempty"`
+}
+
+// GameTypes are the valid game type values: base (original retail), homebrew
+// (community-made), hack (ROM hack), bootleg (unauthorized release) and
+// aftermarket (official re-release).
+var GameTypes = []string{"base", "homebrew", "hack", "bootleg", "aftermarket"}
+
+// ValidGameType reports whether t is a known game type.
+func ValidGameType(t string) bool {
+	for _, g := range GameTypes {
+		if g == t {
+			return true
+		}
+	}
+	return false
 }
 
 // Game is a single game in the metadata catalog.

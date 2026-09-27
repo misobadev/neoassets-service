@@ -33,9 +33,11 @@ func (r *Repository) ListMetadataSystems() ([]models.MetadataSystem, error) {
 		`SELECT s.id, s.name, s.short_name, s.region, s.description,
 		        s.family, s.system_group, s.virtual, s.created_at, s.updated_at,
 		        COUNT(g.id) AS total,
-		        COUNT(g.id) FILTER (WHERE g.type = 'base')     AS base,
-		        COUNT(g.id) FILTER (WHERE g.type = 'hack')     AS hack,
-		        COUNT(g.id) FILTER (WHERE g.type = 'homebrew') AS homebrew,
+		        COUNT(g.id) FILTER (WHERE g.type = 'base')        AS base,
+		        COUNT(g.id) FILTER (WHERE g.type = 'hack')        AS hack,
+		        COUNT(g.id) FILTER (WHERE g.type = 'homebrew')    AS homebrew,
+		        COUNT(g.id) FILTER (WHERE g.type = 'bootleg')     AS bootleg,
+		        COUNT(g.id) FILTER (WHERE g.type = 'aftermarket') AS aftermarket,
 		        COALESCE(SUM(
 		          (g.description <> '')::int + (g.genre <> '')::int + (g.developer <> '')::int +
 		          (g.publisher <> '')::int + (g.release_year IS NOT NULL)::int + (g.rating > 0)::int
@@ -66,7 +68,7 @@ func (r *Repository) ListMetadataSystems() ([]models.MetadataSystem, error) {
 		var textPoints, mediaPoints int
 		if err := rows.Scan(&s.ID, &s.Name, &s.ShortName, &s.Region, &s.Description,
 			&s.Family, &s.Group, &s.Virtual, &s.CreatedAt, &s.UpdatedAt,
-			&s.TotalGames, &s.Base, &s.Hack, &s.Homebrew, &textPoints, &mediaPoints); err != nil {
+			&s.TotalGames, &s.Base, &s.Hack, &s.Homebrew, &s.Bootleg, &s.Aftermarket, &textPoints, &mediaPoints); err != nil {
 			return nil, fmt.Errorf("failed to scan metadata system: %w", err)
 		}
 		if s.TotalGames > 0 {
@@ -1163,9 +1165,7 @@ func (r *Repository) CreateGameFromPayload(systemID string, payload map[string]a
 		return uuid.Nil, fmt.Errorf("game name is required")
 	}
 	gtype := str("type")
-	switch gtype {
-	case "base", "hack", "homebrew":
-	default:
+	if !models.ValidGameType(gtype) {
 		gtype = "base"
 	}
 	var year, month *int
@@ -1810,7 +1810,7 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 				return fmt.Errorf("failed to apply game rating: %w", err)
 			}
 		}
-		if v := str("type"); v == "base" || v == "homebrew" || v == "hack" {
+		if v := str("type"); models.ValidGameType(v) {
 			if _, err := r.db.Exec(`UPDATE games SET type=$1, updated_at=NOW() WHERE id=$2`, v, gid); err != nil {
 				return fmt.Errorf("failed to apply game type: %w", err)
 			}

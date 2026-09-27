@@ -203,20 +203,10 @@ func parseScrapeGameQuery(r *http.Request) (models.ScrapeGameQuery, error) {
 	if query.CRC == "" && query.MD5 == "" && query.SHA1 == "" && query.SHA256 == "" && query.Name == "" {
 		return query, fmt.Errorf("a selector is required: a ROM hash or name")
 	}
-	if query.Type != "" && !validGameType(query.Type) {
-		return query, fmt.Errorf("invalid type %q (base, hack or homebrew)", query.Type)
+	if query.Type != "" && !models.ValidGameType(query.Type) {
+		return query, fmt.Errorf("invalid type %q (%s)", query.Type, strings.Join(models.GameTypes, ", "))
 	}
 	return query, nil
-}
-
-// validGameType reports whether t is a known game type filter.
-func validGameType(t string) bool {
-	switch t {
-	case "base", "hack", "homebrew":
-		return true
-	default:
-		return false
-	}
 }
 
 // writeQuotaHeaders exposes the quota state on every scraping response.

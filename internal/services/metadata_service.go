@@ -62,7 +62,7 @@ func (s *Service) ListMetadataSystems() ([]models.MetadataSystem, error) {
 		if !list[i].Virtual {
 			continue
 		}
-		var games, base, hack, homebrew int
+		var games, base, hack, homebrew, bootleg, aftermarket int
 		var textWeighted, mediaWeighted float64
 		for j := range list {
 			if list[j].Virtual || list[j].Family != list[i].Family {
@@ -72,6 +72,8 @@ func (s *Service) ListMetadataSystems() ([]models.MetadataSystem, error) {
 			base += list[j].Base
 			hack += list[j].Hack
 			homebrew += list[j].Homebrew
+			bootleg += list[j].Bootleg
+			aftermarket += list[j].Aftermarket
 			textWeighted += list[j].TextPct * float64(list[j].TotalGames)
 			mediaWeighted += list[j].MediaPct * float64(list[j].TotalGames)
 		}
@@ -79,6 +81,8 @@ func (s *Service) ListMetadataSystems() ([]models.MetadataSystem, error) {
 		list[i].Base = base
 		list[i].Hack = hack
 		list[i].Homebrew = homebrew
+		list[i].Bootleg = bootleg
+		list[i].Aftermarket = aftermarket
 		if games > 0 {
 			list[i].TextPct = textWeighted / float64(games)
 			list[i].MediaPct = mediaWeighted / float64(games)
@@ -423,9 +427,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			return nil, fmt.Errorf("game name is required")
 		}
 		if v, ok := req.Payload["type"].(string); ok {
-			switch v {
-			case "base", "hack", "homebrew":
-			default:
+			if !models.ValidGameType(v) {
 				return nil, fmt.Errorf("invalid game type %q", v)
 			}
 		}
