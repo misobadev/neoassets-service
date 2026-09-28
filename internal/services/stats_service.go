@@ -47,15 +47,15 @@ func (s *Service) Dashboard() (*models.Dashboard, error) {
 	if err != nil {
 		return nil, err
 	}
-	recentPacks, err := s.repo.RecentApprovedPacks(3)
+	recentPacks, err := s.repo.RecentApprovedPacks(5)
 	if err != nil {
 		return nil, err
 	}
-	recentMetadata, err := s.repo.RecentApprovedMetadata(3)
+	recentMetadata, err := s.repo.RecentApprovedMetadata(5)
 	if err != nil {
 		return nil, err
 	}
-	return &models.Dashboard{
+	dash := &models.Dashboard{
 		TotalGames:         totalGames,
 		TotalPacks:         totalPacks,
 		TotalSystems:       totalSystems,
@@ -68,5 +68,11 @@ func (s *Service) Dashboard() (*models.Dashboard, error) {
 		TopSystems:         topSystems,
 		RecentPacks:        recentPacks,
 		RecentMetadata:     recentMetadata,
-	}, nil
+	}
+	// Only the total used space is exposed publicly (from the hourly cache); the
+	// media/DB breakdown stays behind the admin endpoint.
+	if u := s.GetCachedStorageUsage(); u != nil {
+		dash.Storage = &models.DashboardStorage{TotalBytes: u.TotalBytes}
+	}
+	return dash, nil
 }

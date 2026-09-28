@@ -192,7 +192,7 @@ func (r *Repository) RecentApprovedPacks(limit int) ([]models.RecentPack, error)
 func (r *Repository) RecentApprovedMetadata(limit int) ([]models.RecentMetadata, error) {
 	rows, err := r.db.Query(`
 		SELECT m.id, m.game_id, COALESCE(g.system_id,''), COALESCE(g.name,''), COALESCE(s.name,''),
-		       COALESCE(u.username,''), m.created_at
+		       COALESCE(u.username,''), `+primaryCover+`, `+primaryCoverUpdated+`, m.created_at
 		FROM metadata_submissions m
 		LEFT JOIN games g ON g.id = m.game_id
 		LEFT JOIN metadata_systems s ON s.id = COALESCE(m.system_id, g.system_id)
@@ -208,7 +208,7 @@ func (r *Repository) RecentApprovedMetadata(limit int) ([]models.RecentMetadata,
 	for rows.Next() {
 		var s models.RecentMetadata
 		var gameID *uuid.UUID
-		if err := rows.Scan(&s.ID, &gameID, &s.SystemID, &s.GameName, &s.SystemName, &s.SubmittedBy, &s.CreatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &gameID, &s.SystemID, &s.GameName, &s.SystemName, &s.SubmittedBy, &s.Cover, &s.CoverUpdated, &s.CreatedAt); err != nil {
 			return nil, err
 		}
 		s.GameID = gameID
