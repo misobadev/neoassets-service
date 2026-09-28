@@ -16,11 +16,12 @@ import (
 // ffprobeOutput is the subset of ffprobe JSON we consume.
 type ffprobeOutput struct {
 	Streams []struct {
-		CodecName  string `json:"codec_name"`
-		CodecType  string `json:"codec_type"`
-		Width      int    `json:"width"`
-		Height     int    `json:"height"`
-		RFrameRate string `json:"r_frame_rate"`
+		CodecName    string `json:"codec_name"`
+		CodecType    string `json:"codec_type"`
+		Width        int    `json:"width"`
+		Height       int    `json:"height"`
+		RFrameRate   string `json:"r_frame_rate"`
+		AvgFrameRate string `json:"avg_frame_rate"`
 	} `json:"streams"`
 	Format struct {
 		FormatName string `json:"format_name"`
@@ -44,6 +45,19 @@ func ParseFPS(r string) int {
 		return 0
 	}
 	return num / den
+}
+
+// streamFPS returns the best-effort frame rate for a stream: the higher of the
+// base (r_frame_rate) and average (avg_frame_rate) rates. For variable frame
+// rate content r_frame_rate can be misleadingly low while avg_frame_rate is the
+// meaningful value (and vice versa for some containers), so taking the max
+// avoids rejecting valid high-fps videos.
+func streamFPS(r, avg string) int {
+	rf, af := ParseFPS(r), ParseFPS(avg)
+	if af > rf {
+		return af
+	}
+	return rf
 }
 
 // ImageInfo describes an image's codec and pixel dimensions.
@@ -136,7 +150,7 @@ func Probe(ctx context.Context, data []byte) (*models.VideoMeta, error) {
 			meta.Codec = s.CodecName
 			meta.Width = s.Width
 			meta.Height = s.Height
-			meta.FPS = ParseFPS(s.RFrameRate)
+			meta.FPS = streamFPS(s.RFrameRate, s.AvgFrameRate)
 			break
 		}
 	}
@@ -282,14 +296,21 @@ func probeVideoFPS(ctx context.Context, path string) int {
 	out, err := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
-		"-show_entries", "stream=r_frame_rate",
-		"-of", "default=noprint_wrappers=1:nokey=1",
+		"-show_entries", "stream=r_frame_rate,avg_frame_rate",
+		"-of", "json",
 		path,
 	).Output()
 	if err != nil {
 		return 0
 	}
-	return ParseFPS(strings.TrimSpace(string(out)))
+	var parsed ffprobeOutput
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return 0
+	}
+	for _, s := range parsed.Streams {
+		return streamFPS(s.RFrameRate, s.AvgFrameRate)
+	}
+	return 0
 }
 
 // ImageSpec describes how an uploaded image must be normalized before it is

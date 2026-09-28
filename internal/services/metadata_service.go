@@ -491,6 +491,24 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 	if err != nil {
 		return nil, fmt.Errorf("invalid payload")
 	}
+	// Probe uploaded videos before creating the submission so a bad frame rate is
+	// rejected with the accurate ffprobe reading and no partial row is left
+	// behind. The measured metadata is reused when the file rows are inserted.
+	videoMeta := map[string]*models.VideoMeta{}
+	for _, f := range req.Files {
+		if f.Delete || f.Move || f.Kind != models.MediaVideo {
+			continue
+		}
+		vm, err := s.probeVideo(context.Background(), f.ObjectKey)
+		if err != nil {
+			return nil, fmt.Errorf("could not read the video, please upload it again")
+		}
+		if vm.FPS > 0 && vm.FPS < minVideoFPS {
+			return nil, fmt.Errorf("video must be at least %d fps, 60 recommended (detected %d fps)", minVideoFPS, vm.FPS)
+		}
+		videoMeta[f.ObjectKey] = vm
+	}
+
 	id, err := s.repo.CreateMetadataSubmission(req.GameID, req.SystemID, userID, kind, payload)
 	if err != nil {
 		return nil, err
@@ -555,12 +573,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 		}
 		var vmeta *models.VideoMeta
 		if f.Kind == models.MediaVideo {
-			vm, err := s.probeVideo(context.Background(), f.ObjectKey)
-			if err != nil {
-				log.Warn().Str("object", f.ObjectKey).Err(err).Msg("video probe failed")
-			} else {
-				vmeta = vm
-			}
+			vmeta = videoMeta[f.ObjectKey]
 		}
 		if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, mime, f.Region, f.Size, false, f.Move, vmeta); err != nil {
 			return nil, err
@@ -1079,6 +1092,11 @@ func (s *Service) decorateMetadataNames(list []models.MetadataSubmission) error 
 // above 60 fps, which are capped to 60 fps. Deletes and moves carry no new
 // content: their object key points at the existing media (which may already be
 // gone from R2), so they are skipped.
+// minVideoFPS is the minimum accepted source frame rate. It is enforced when a
+// submission is created (with the accurate ffprobe reading) and again on
+// approval as a backstop.
+const minVideoFPS = 23
+
 func (s *Service) validateApprovedMedia(ctx context.Context, files []models.MetadataSubmissionFile) error {
 	for _, f := range files {
 		if f.IsDelete || f.IsMove {
@@ -1093,8 +1111,8 @@ func (s *Service) validateApprovedMedia(ctx context.Context, files []models.Meta
 			if err != nil {
 				return fmt.Errorf("probe video: %w", err)
 			}
-			if meta.FPS < 23 {
-				return fmt.Errorf("video must be at least 23 fps, 60 recommended (detected %d fps)", meta.FPS)
+			if meta.FPS > 0 && meta.FPS < minVideoFPS {
+				return fmt.Errorf("video must be at least %d fps, 60 recommended (detected %d fps)", minVideoFPS, meta.FPS)
 			}
 			continue
 		}
