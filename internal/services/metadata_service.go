@@ -332,9 +332,9 @@ func validateHash(label, v string, n int) error {
 }
 
 // validateRoms validates the ROM dump changes carried in a payload. Each entry is
-// an add, edit or delete; a valid SHA1 is required for add/edit (it is the
-// per-game unique key).
-func (s *Service) validateRoms(gameID uuid.UUID, raw any) error {
+// an add, edit or delete. SHA1 is optional; when present it must be valid and
+// unique per game (skipped for a brand-new game, which has no row yet).
+func (s *Service) validateRoms(gameID *uuid.UUID, raw any) error {
 	list, ok := raw.([]any)
 	if !ok || len(list) == 0 {
 		return nil
@@ -389,16 +389,19 @@ func (s *Service) validateRoms(gameID uuid.UUID, raw any) error {
 				return fmt.Errorf("the same SHA1 appears twice in the submission")
 			}
 			seenSHA1[sha1] = true
-			exclude := uuid.Nil
-			if action == "edit" {
-				exclude, _ = uuid.Parse(str("id"))
-			}
-			exists, err := s.repo.RomSHA1Exists(gameID, sha1, exclude)
-			if err != nil {
-				return err
-			}
-			if exists {
-				return fmt.Errorf("a ROM dump with that SHA1 already exists for this game")
+			// Uniqueness is per game; a brand-new game has no row yet.
+			if gameID != nil {
+				exclude := uuid.Nil
+				if action == "edit" {
+					exclude, _ = uuid.Parse(str("id"))
+				}
+				exists, err := s.repo.RomSHA1Exists(*gameID, sha1, exclude)
+				if err != nil {
+					return err
+				}
+				if exists {
+					return fmt.Errorf("a ROM dump with that SHA1 already exists for this game")
+				}
 			}
 		}
 	}
@@ -503,12 +506,13 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			return nil, err
 		}
 	}
-	// ROM dump changes are only meaningful for an existing game.
+	// ROM dump changes are allowed on an existing game and on a brand-new game
+	// (applied right after the game row is created on approval).
 	if raw, ok := req.Payload["roms"]; ok {
-		if req.GameID == nil {
+		if req.GameID == nil && kind != "new_game" {
 			return nil, fmt.Errorf("ROM dumps can only be changed on a game")
 		}
-		if err := s.validateRoms(*req.GameID, raw); err != nil {
+		if err := s.validateRoms(req.GameID, raw); err != nil {
 			return nil, err
 		}
 	}
