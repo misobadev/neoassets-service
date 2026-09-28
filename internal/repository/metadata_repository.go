@@ -1090,16 +1090,21 @@ func (r *Repository) SetMetadataSubmissionGame(id, gameID uuid.UUID) error {
 // CreateGameFromPayload inserts a brand-new game for a system from an approved
 // contribution payload and returns its id. The games table has a unique
 // (system_id, name) constraint, so a duplicate name returns an error.
-// regionText is one per-region name/release entry of a new-game payload.
+// regionText is one per-region text entry of a payload: a set (upsert), a move
+// (name_from/release_from) or a delete (delete_name/delete_release).
 type regionText struct {
-	Region       string
-	Name         string
-	ReleaseYear  *int
-	ReleaseMonth *int
+	Region        string
+	Name          string
+	ReleaseYear   *int
+	ReleaseMonth  *int
+	NameFrom      string
+	ReleaseFrom   string
+	DeleteName    bool
+	DeleteRelease bool
 }
 
-// parseRegionText reads the per-region name/release list of a new-game payload.
-// Entries without a region are ignored.
+// parseRegionText reads the per-region text list of a payload. Entries without a
+// region are ignored.
 func parseRegionText(payload map[string]any) []regionText {
 	raw, ok := payload["regions"].([]any)
 	if !ok {
@@ -1120,6 +1125,18 @@ func parseRegionText(payload map[string]any) []regionText {
 		}
 		if s, ok := m["name"].(string); ok {
 			rt.Name = strings.TrimSpace(s)
+		}
+		if s, ok := m["name_from"].(string); ok {
+			rt.NameFrom = strings.TrimSpace(s)
+		}
+		if s, ok := m["release_from"].(string); ok {
+			rt.ReleaseFrom = strings.TrimSpace(s)
+		}
+		if b, ok := m["delete_name"].(bool); ok {
+			rt.DeleteName = b
+		}
+		if b, ok := m["delete_release"].(bool); ok {
+			rt.DeleteRelease = b
 		}
 		if n, ok := m["release_year"].(float64); ok && int(n) > 0 {
 			y := int(n)
@@ -1723,8 +1740,34 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 		regions := parseRegionText(p)
 		if len(regions) > 0 {
 			for _, rg := range regions {
-				if err := r.UpsertGameRegion(gid, rg.Region, rg.Name, rg.ReleaseYear, rg.ReleaseMonth); err != nil {
-					return err
+				// Deletes first, then moves (clear the source), then the upsert of
+				// the target region so a move lands on a clean row.
+				if rg.DeleteName {
+					if err := r.ClearGameRegion(gid, rg.Region, true, false); err != nil {
+						return err
+					}
+				}
+				if rg.DeleteRelease {
+					if err := r.ClearGameRegion(gid, rg.Region, false, true); err != nil {
+						return err
+					}
+				}
+				if rg.NameFrom != "" && rg.NameFrom != rg.Region {
+					if err := r.ClearGameRegion(gid, rg.NameFrom, true, false); err != nil {
+						return err
+					}
+				}
+				if rg.ReleaseFrom != "" && rg.ReleaseFrom != rg.Region {
+					if err := r.ClearGameRegion(gid, rg.ReleaseFrom, false, true); err != nil {
+						return err
+					}
+				}
+				// Only upsert when there is a value to set; a pure delete must not
+				// recreate an empty region row.
+				if rg.Name != "" || rg.ReleaseYear != nil {
+					if err := r.UpsertGameRegion(gid, rg.Region, rg.Name, rg.ReleaseYear, rg.ReleaseMonth); err != nil {
+						return err
+					}
 				}
 			}
 			if err := r.refreshGamePrimary(gid); err != nil {

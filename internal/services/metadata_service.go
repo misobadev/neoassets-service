@@ -389,9 +389,11 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			if !ok {
 				continue
 			}
-			if r, ok := m["region"].(string); ok {
-				if err := s.validateRegion(r); err != nil {
-					return nil, err
+			for _, key := range []string{"region", "name_from", "release_from"} {
+				if r, ok := m[key].(string); ok {
+					if err := s.validateRegion(r); err != nil {
+						return nil, err
+					}
 				}
 			}
 		}
@@ -472,10 +474,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 		if err != nil {
 			return nil, err
 		}
-		for k := range req.Payload {
-			if k == "note" {
-				continue
-			}
+		for k := range payloadFieldKeys(req.Payload) {
 			if pending[k] {
 				return nil, fmt.Errorf("you already have a pending submission for %q on this game", k)
 			}
@@ -582,6 +581,41 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 	return s.repo.GetMetadataSubmissionForUser(id, userID)
 }
 
+// payloadFieldKeys returns the editable payload field keys, normalizing the
+// multi-region "regions" list to the fields it changes (name, release_year) and
+// dropping control keys (region, region_from, field, delete, note, ...). This
+// keeps the pending-submission block consistent between the legacy single-region
+// shape and the multi-region shape.
+func payloadFieldKeys(p map[string]any) map[string]bool {
+	skip := map[string]bool{
+		"note": true, "duplicate_of": true, "region": true, "region_from": true,
+		"field": true, "delete": true, "regions": true, "release_month": true,
+		"name_from": true, "release_from": true, "delete_name": true, "delete_release": true,
+	}
+	keys := map[string]bool{}
+	for k := range p {
+		if skip[k] {
+			continue
+		}
+		keys[k] = true
+	}
+	if raw, ok := p["regions"].([]any); ok {
+		for _, item := range raw {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if m["name"] != nil || m["name_from"] != nil || m["delete_name"] == true {
+				keys["name"] = true
+			}
+			if m["release_year"] != nil || m["release_from"] != nil || m["delete_release"] == true {
+				keys["release_year"] = true
+			}
+		}
+	}
+	return keys
+}
+
 // pendingSubmissionKeys returns the set of payload fields and media kinds that
 // already have a pending submission for the given user and game/system.
 func (s *Service) pendingSubmissionKeys(userID uuid.UUID, gameID *uuid.UUID, systemID *string) (map[string]bool, error) {
@@ -605,10 +639,7 @@ func (s *Service) pendingSubmissionKeys(userID uuid.UUID, gameID *uuid.UUID, sys
 		}
 		var p map[string]any
 		if err := json.Unmarshal(sub.Payload, &p); err == nil {
-			for k := range p {
-				if k == "note" || k == "duplicate_of" {
-					continue
-				}
+			for k := range payloadFieldKeys(p) {
 				keys[k] = true
 			}
 		}
@@ -841,6 +872,24 @@ func payloadHasText(payload json.RawMessage) bool {
 			}
 		}
 	}
+	// A multi-region text submission carries its changes in the regions list.
+	if raw, ok := p["regions"].([]any); ok {
+		for _, item := range raw {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if s, _ := m["name"].(string); strings.TrimSpace(s) != "" {
+				return true
+			}
+			if n, ok := m["release_year"].(float64); ok && n > 0 {
+				return true
+			}
+			if m["delete_name"] == true || m["delete_release"] == true || m["name_from"] != nil || m["release_from"] != nil {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -990,10 +1039,7 @@ func (s *Service) enrichMetadataSubmissions(list []models.MetadataSubmission) er
 		set := map[string]bool{}
 		var p map[string]any
 		if err := json.Unmarshal(list[i].Payload, &p); err == nil {
-			for k := range p {
-				if k == "note" || k == "release_month" || k == "regions" || k == "duplicate_of" {
-					continue
-				}
+			for k := range payloadFieldKeys(p) {
 				set[k] = true
 			}
 		}
@@ -1163,21 +1209,36 @@ func (s *Service) ensureGameNameAvailable(gameID uuid.UUID, payload []byte) erro
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil
 	}
-	name, _ := p["name"].(string)
-	name = strings.TrimSpace(name)
-	if name == "" {
+	names := []string{}
+	if name, _ := p["name"].(string); strings.TrimSpace(name) != "" {
+		names = append(names, strings.TrimSpace(name))
+	}
+	// A multi-region submission carries the names in the regions list; any of
+	// them may become the canonical name, so all must be free.
+	if raw, ok := p["regions"].([]any); ok {
+		for _, item := range raw {
+			if m, ok := item.(map[string]any); ok {
+				if n, _ := m["name"].(string); strings.TrimSpace(n) != "" {
+					names = append(names, strings.TrimSpace(n))
+				}
+			}
+		}
+	}
+	if len(names) == 0 {
 		return nil
 	}
 	g, err := s.repo.GetGame(gameID, "")
 	if err != nil {
 		return nil
 	}
-	taken, err := s.repo.GameNameTaken(g.SystemID, name, gameID)
-	if err != nil {
-		return err
-	}
-	if taken {
-		return fmt.Errorf("another game in this system already has that name")
+	for _, name := range names {
+		taken, err := s.repo.GameNameTaken(g.SystemID, name, gameID)
+		if err != nil {
+			return err
+		}
+		if taken {
+			return fmt.Errorf("another game in this system already has that name")
+		}
 	}
 	return nil
 }
