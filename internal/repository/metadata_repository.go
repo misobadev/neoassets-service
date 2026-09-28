@@ -767,6 +767,53 @@ func (r *Repository) ListRomsByGame(gameID uuid.UUID) ([]models.Rom, error) {
 	return list, rows.Err()
 }
 
+// RomSHA1Exists reports whether the game already has a ROM dump with the given
+// SHA1, excluding one id (for edits).
+func (r *Repository) RomSHA1Exists(gameID uuid.UUID, sha1 string, excludeID uuid.UUID) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM roms WHERE game_id = $1 AND sha1 = $2 AND id <> $3)`,
+		gameID, sha1, excludeID,
+	).Scan(&exists)
+	return exists, err
+}
+
+// AddRom inserts a ROM dump for a game. The (game_id, sha1) unique constraint is
+// enforced by the database; callers should check RomSHA1Exists first.
+func (r *Repository) AddRom(gameID uuid.UUID, name string, size int64, crc, md5, sha1, sha256, region string) error {
+	_, err := r.db.Exec(
+		`INSERT INTO roms (game_id, name, size, crc, md5, sha1, sha256, region)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		gameID, name, size, crc, md5, sha1, sha256, region,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to add rom: %w", err)
+	}
+	return nil
+}
+
+// UpdateRom edits a ROM dump owned by the game.
+func (r *Repository) UpdateRom(gameID, id uuid.UUID, name string, size int64, crc, md5, sha1, sha256, region string) error {
+	_, err := r.db.Exec(
+		`UPDATE roms SET name = $1, size = $2, crc = $3, md5 = $4, sha1 = $5, sha256 = $6, region = $7
+		 WHERE id = $8 AND game_id = $9`,
+		name, size, crc, md5, sha1, sha256, region, id, gameID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update rom: %w", err)
+	}
+	return nil
+}
+
+// DeleteRom removes a ROM dump owned by the game.
+func (r *Repository) DeleteRom(gameID, id uuid.UUID) error {
+	_, err := r.db.Exec(`DELETE FROM roms WHERE id = $1 AND game_id = $2`, id, gameID)
+	if err != nil {
+		return fmt.Errorf("failed to delete rom: %w", err)
+	}
+	return nil
+}
+
 // ListGenres returns the canonical genre catalog ordered for display.
 func (r *Repository) ListGenres() ([]models.Genre, error) {
 	rows, err := r.db.Query(`SELECT id, name, sort_order FROM genres ORDER BY sort_order, name`)
@@ -1869,6 +1916,46 @@ func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
 		if v := str("type"); models.ValidGameType(v) {
 			if _, err := r.db.Exec(`UPDATE games SET type=$1, updated_at=NOW() WHERE id=$2`, v, gid); err != nil {
 				return fmt.Errorf("failed to apply game type: %w", err)
+			}
+		}
+		// ROM dump changes: add, edit or delete one dump per entry.
+		if raw, ok := p["roms"].([]any); ok {
+			for _, item := range raw {
+				m, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				action, _ := m["action"].(string)
+				field := func(k string) string {
+					s, _ := m[k].(string)
+					return strings.TrimSpace(s)
+				}
+				size := int64(0)
+				if n, ok := m["size"].(float64); ok && n > 0 {
+					size = int64(n)
+				}
+				switch action {
+				case "add":
+					if err := r.AddRom(gid, field("name"), size, field("crc"), field("md5"), field("sha1"), field("sha256"), field("region")); err != nil {
+						return err
+					}
+				case "edit":
+					id, err := uuid.Parse(field("id"))
+					if err != nil {
+						continue
+					}
+					if err := r.UpdateRom(gid, id, field("name"), size, field("crc"), field("md5"), field("sha1"), field("sha256"), field("region")); err != nil {
+						return err
+					}
+				case "delete":
+					id, err := uuid.Parse(field("id"))
+					if err != nil {
+						continue
+					}
+					if err := r.DeleteRom(gid, id); err != nil {
+						return err
+					}
+				}
 			}
 		}
 	} else if sub.SystemID != nil {

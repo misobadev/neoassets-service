@@ -305,6 +305,106 @@ func (s *Service) validateRegion(region string) error {
 	return nil
 }
 
+// isHexString reports whether s is a non-empty lowercase hex string.
+func isHexString(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// validateHash checks an optional hash value: empty is allowed, otherwise it must
+// be lowercase hex of the expected length.
+func validateHash(label, v string, n int) error {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	v = strings.ToLower(strings.TrimSpace(v))
+	if len(v) != n || !isHexString(v) {
+		return fmt.Errorf("invalid %s", label)
+	}
+	return nil
+}
+
+// validateRoms validates the ROM dump changes carried in a payload. Each entry is
+// an add, edit or delete; a valid SHA1 is required for add/edit (it is the
+// per-game unique key).
+func (s *Service) validateRoms(gameID uuid.UUID, raw any) error {
+	list, ok := raw.([]any)
+	if !ok || len(list) == 0 {
+		return nil
+	}
+	seenSHA1 := map[string]bool{}
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("invalid ROM entry")
+		}
+		str := func(k string) string {
+			v, _ := m[k].(string)
+			return strings.TrimSpace(v)
+		}
+		action, _ := m["action"].(string)
+		switch action {
+		case "add", "edit", "delete":
+		default:
+			return fmt.Errorf("invalid ROM action %q", action)
+		}
+		if action == "edit" || action == "delete" {
+			if _, err := uuid.Parse(str("id")); err != nil {
+				return fmt.Errorf("invalid ROM id")
+			}
+		}
+		if action == "delete" {
+			continue
+		}
+		if str("name") == "" {
+			return fmt.Errorf("a ROM dump name is required")
+		}
+		if err := validateHash("CRC", str("crc"), 8); err != nil {
+			return err
+		}
+		if err := validateHash("MD5", str("md5"), 32); err != nil {
+			return err
+		}
+		if err := validateHash("SHA256", str("sha256"), 64); err != nil {
+			return err
+		}
+		if err := s.validateRegion(str("region")); err != nil {
+			return err
+		}
+		// SHA1 is optional: arcade ZIP sets are contributed by name and size
+		// only. When present it must be valid and unique per game.
+		sha1 := strings.ToLower(str("sha1"))
+		if sha1 != "" {
+			if len(sha1) != 40 || !isHexString(sha1) {
+				return fmt.Errorf("invalid SHA1")
+			}
+			if seenSHA1[sha1] {
+				return fmt.Errorf("the same SHA1 appears twice in the submission")
+			}
+			seenSHA1[sha1] = true
+			exclude := uuid.Nil
+			if action == "edit" {
+				exclude, _ = uuid.Parse(str("id"))
+			}
+			exists, err := s.repo.RomSHA1Exists(gameID, sha1, exclude)
+			if err != nil {
+				return err
+			}
+			if exists {
+				return fmt.Errorf("a ROM dump with that SHA1 already exists for this game")
+			}
+		}
+	}
+	return nil
+}
+
 // LookupGame finds games by any of the given ROM hashes, optionally scoped to a
 // system (empty systemID searches all systems).
 func (s *Service) LookupGame(crc, md5, sha1, sha256, systemID string) ([]models.Game, error) {
@@ -403,6 +503,15 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			return nil, err
 		}
 	}
+	// ROM dump changes are only meaningful for an existing game.
+	if raw, ok := req.Payload["roms"]; ok {
+		if req.GameID == nil {
+			return nil, fmt.Errorf("ROM dumps can only be changed on a game")
+		}
+		if err := s.validateRoms(*req.GameID, raw); err != nil {
+			return nil, err
+		}
+	}
 	// A deletion must explain why (the region is being removed, not corrected).
 	deleting := false
 	for _, f := range req.Files {
@@ -412,6 +521,16 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 	}
 	if v, ok := req.Payload["delete"].(bool); ok && v {
 		deleting = true
+	}
+	// Deleting a ROM dump also needs a reason.
+	if raw, ok := req.Payload["roms"].([]any); ok {
+		for _, item := range raw {
+			if m, ok := item.(map[string]any); ok {
+				if a, _ := m["action"].(string); a == "delete" {
+					deleting = true
+				}
+			}
+		}
 	}
 	// A whole-game deletion request (duplicate report) targets a game, points at
 	// the game to keep and must explain why.
@@ -889,6 +1008,10 @@ func payloadHasText(payload json.RawMessage) bool {
 				return true
 			}
 		}
+	}
+	// ROM dump changes count as editable content.
+	if raw, ok := p["roms"].([]any); ok && len(raw) > 0 {
+		return true
 	}
 	return false
 }
@@ -1540,6 +1663,9 @@ func (s *Service) captureOldState(ctx context.Context, sub *models.MetadataSubmi
 				"release_month": g.ReleaseMonth,
 				"rating":        g.Rating,
 				"type":          g.Type,
+			}
+			if roms, rerr := s.repo.ListRomsByGame(*sub.GameID); rerr == nil {
+				oldPayload["roms"] = roms
 			}
 		}
 	} else if sub.SystemID != nil {
