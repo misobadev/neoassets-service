@@ -455,6 +455,9 @@ func (h *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set the httpOnly cookie for browser clients; the token is still returned
+	// for programmatic/admin clients that authenticate with the Bearer header.
+	setSessionCookie(w, r, auth.AdminCookie, admin.Token, h.svc.TokenTTL())
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"token":   admin.Token,
 		"email":   admin.Email,

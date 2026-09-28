@@ -91,6 +91,9 @@ func (s *UserService) Register(req models.RegisterRequest) (*models.AuthResult, 
 	if err != nil {
 		return nil, err
 	}
+	// Only the hash of the emailed token is stored; the plaintext exists only in
+	// the email link.
+	hashed := auth.HashToken(token)
 	now := time.Now()
 	expires := now.Add(verificationTokenTTL)
 
@@ -99,7 +102,7 @@ func (s *UserService) Register(req models.RegisterRequest) (*models.AuthResult, 
 		Email:                    req.Email,
 		PasswordHash:             hash,
 		EmailVerified:            false,
-		EmailVerificationToken:   &token,
+		EmailVerificationToken:   &hashed,
 		EmailVerificationExpires: &expires,
 	})
 	if err != nil {
@@ -139,7 +142,7 @@ func (s *UserService) Login(req models.UserLoginRequest) (*models.AuthResult, er
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
-	jwt, err := auth.GenerateUserToken(s.jwtSecret, user.ID, user.Email, user.Role, s.tokenTTL)
+	jwt, err := auth.GenerateUserToken(s.jwtSecret, user.ID, user.Email, user.Role, user.TokenVersion, s.tokenTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -157,9 +160,13 @@ func (s *UserService) Login(req models.UserLoginRequest) (*models.AuthResult, er
 	return result, nil
 }
 
+// TokenTTL is the lifetime of an issued user session token (used to size the
+// session cookie).
+func (s *UserService) TokenTTL() time.Duration { return s.tokenTTL }
+
 // VerifyEmail marks a user's email as verified using the emailed token.
 func (s *UserService) VerifyEmail(token string) error {
-	user, err := s.repo.GetUserByVerificationToken(token)
+	user, err := s.repo.GetUserByVerificationToken(auth.HashToken(token))
 	if err != nil {
 		return fmt.Errorf("invalid verification token")
 	}
@@ -215,7 +222,8 @@ func (s *UserService) ResendVerification(email string) error {
 		return err
 	}
 	expires := time.Now().Add(verificationTokenTTL)
-	user.EmailVerificationToken = &token
+	hashed := auth.HashToken(token)
+	user.EmailVerificationToken = &hashed
 	user.EmailVerificationExpires = &expires
 	if err := s.repo.UpdateUser(user); err != nil {
 		return err
@@ -251,7 +259,8 @@ func (s *UserService) ForgotPassword(email string) error {
 		return err
 	}
 	expires := time.Now().Add(resetTokenTTL)
-	user.PasswordResetToken = &token
+	hashed := auth.HashToken(token)
+	user.PasswordResetToken = &hashed
 	user.PasswordResetExpires = &expires
 	if err := s.repo.UpdateUser(user); err != nil {
 		return err
@@ -274,7 +283,7 @@ func (s *UserService) ResetPassword(token, newPassword string) error {
 		return fmt.Errorf("password must be at least 8 characters")
 	}
 
-	user, err := s.repo.GetUserByPasswordResetToken(token)
+	user, err := s.repo.GetUserByPasswordResetToken(auth.HashToken(token))
 	if err != nil {
 		return fmt.Errorf("invalid or expired reset token")
 	}
@@ -289,6 +298,8 @@ func (s *UserService) ResetPassword(token, newPassword string) error {
 	user.PasswordHash = hash
 	user.PasswordResetToken = nil
 	user.PasswordResetExpires = nil
+	// Revoke every previously issued token for this account.
+	user.TokenVersion++
 	if err := s.repo.UpdateUser(user); err != nil {
 		return err
 	}
@@ -304,23 +315,16 @@ func (s *UserService) GetUserByID(id uuid.UUID) (*models.User, error) {
 	return user, nil
 }
 
-// UserRole returns the user's current role from the database. It is used for
-// defense-in-depth authorization instead of trusting the token's role claim.
-func (s *UserService) UserRole(id uuid.UUID) (string, error) {
+// UserAuthState returns the user's current role, verification flag and token
+// version from the database in a single lookup. It backs the defense-in-depth
+// authorization checks so a stale token claim (role, or a token revoked by a
+// password change) can never be trusted.
+func (s *UserService) UserAuthState(id uuid.UUID) (role string, verified bool, tokenVersion int, err error) {
 	user, err := s.repo.GetUserByID(id)
 	if err != nil {
-		return "", err
+		return "", false, 0, err
 	}
-	return user.Role, nil
-}
-
-// UserEmailVerified reports whether the user's email is currently verified.
-func (s *UserService) UserEmailVerified(id uuid.UUID) (bool, error) {
-	user, err := s.repo.GetUserByID(id)
-	if err != nil {
-		return false, err
-	}
-	return user.EmailVerified, nil
+	return user.Role, user.EmailVerified, user.TokenVersion, nil
 }
 
 // SetDonorStatus updates a user's donor status (none | supporter | monthly_supporter).
@@ -419,8 +423,9 @@ func (s *UserService) UpdateProfile(id uuid.UUID, username, email string) (*mode
 				return nil, err
 			}
 			expires := time.Now().Add(verificationTokenTTL)
+			hashed := auth.HashToken(token)
 			user.EmailVerified = false
-			user.EmailVerificationToken = &token
+			user.EmailVerificationToken = &hashed
 			user.EmailVerificationExpires = &expires
 			if s.mailer != nil {
 				if err := s.mailer.SendVerificationEmail(user.Email, user.Username, token); err != nil {
@@ -452,6 +457,8 @@ func (s *UserService) ChangePassword(id uuid.UUID, currentPassword, newPassword 
 		return err
 	}
 	user.PasswordHash = hash
+	// Revoke every previously issued token for this account.
+	user.TokenVersion++
 	return s.repo.UpdateUser(user)
 }
 

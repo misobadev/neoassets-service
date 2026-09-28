@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -434,24 +433,18 @@ func parsePatreonTime(ts string) *time.Time {
 	return nil
 }
 
-// verifyPatreonSignature checks the X-Patreon-Signature header: an HMAC of the
-// raw request body keyed by the webhook secret. Patreon has used both MD5 and
-// SHA-256 historically, so either is accepted. An empty secret is rejected to
-// avoid the empty-key forgery class of bug.
+// verifyPatreonSignature checks the X-Patreon-Signature header: an HMAC-SHA256
+// of the raw request body keyed by the webhook secret. MD5 is no longer
+// accepted. An empty secret is rejected to avoid the empty-key forgery class of
+// bug.
 func verifyPatreonSignature(secret string, body []byte, signature string) bool {
 	if secret == "" || signature == "" {
 		return false
 	}
-	md5Mac := hmac.New(md5.New, []byte(secret))
-	md5Mac.Write(body)
-	md5Sum := hex.EncodeToString(md5Mac.Sum(nil))
-
-	shaMac := hmac.New(sha256.New, []byte(secret))
-	shaMac.Write(body)
-	shaSum := hex.EncodeToString(shaMac.Sum(nil))
-
-	return subtle.ConstantTimeCompare([]byte(signature), []byte(md5Sum)) == 1 ||
-		subtle.ConstantTimeCompare([]byte(signature), []byte(shaSum)) == 1
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	sum := hex.EncodeToString(mac.Sum(nil))
+	return subtle.ConstantTimeCompare([]byte(signature), []byte(sum)) == 1
 }
 
 // numericCode returns a random code of the given number of decimal digits.

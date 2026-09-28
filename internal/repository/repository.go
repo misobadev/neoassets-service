@@ -87,6 +87,18 @@ func (r *Repository) CreateSubmission(packID, name, author, description, donatio
 	return id, nil
 }
 
+// PackIDInUse reports whether any non-trashed submission already owns the given
+// pack id. It guards a brand-new pack from colliding with a pack namespace that
+// belongs to another (approved or in-review) submission.
+func (r *Repository) PackIDInUse(packID string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM submissions WHERE pack_id = $1 AND status <> 'trashed')`,
+		packID,
+	).Scan(&exists)
+	return exists, err
+}
+
 // GetSubmission returns a submission by ID.
 func (r *Repository) GetSubmission(id uuid.UUID) (*models.Submission, error) {
 	var s models.Submission

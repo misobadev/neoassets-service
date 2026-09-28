@@ -21,6 +21,23 @@ func actorID(r *http.Request) (uuid.UUID, bool) {
 	return uuid.Nil, false
 }
 
+// userTokenVersion returns the token version carried by a user token, and
+// whether the actor authenticated with a user token at all. Admin tokens carry
+// no per-user version, so revocation is only enforced for user tokens.
+func userTokenVersion(r *http.Request) (int, bool) {
+	if claims, ok := auth.UserFromContext(r.Context()); ok && claims != nil {
+		return claims.TokenVersion, true
+	}
+	return 0, false
+}
+
+// tokenRevoked reports whether a user token was invalidated (its version no
+// longer matches the account, e.g. after a password change).
+func tokenRevoked(r *http.Request, current int) bool {
+	v, isUser := userTokenVersion(r)
+	return isUser && v != current
+}
+
 // RequireAdmin is defense-in-depth on top of auth.Middleware: it re-checks the
 // actor's current role from the database so a stale or forged token claim can
 // never grant admin access.
@@ -31,8 +48,16 @@ func (h *Handler) RequireAdmin(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		role, err := h.userSvc.UserRole(id)
-		if err != nil || role != models.RoleAdmin {
+		role, _, tokenVersion, err := h.userSvc.UserAuthState(id)
+		if err != nil {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		if tokenRevoked(r, tokenVersion) {
+			writeError(w, http.StatusUnauthorized, "session expired")
+			return
+		}
+		if role != models.RoleAdmin {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return
 		}
@@ -51,9 +76,13 @@ func (h *Handler) RequireReviewer(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		role, err := h.userSvc.UserRole(id)
+		role, _, tokenVersion, err := h.userSvc.UserAuthState(id)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		if tokenRevoked(r, tokenVersion) {
+			writeError(w, http.StatusUnauthorized, "session expired")
 			return
 		}
 		if role != models.RoleAdmin && role != models.RoleReviewer {
@@ -73,9 +102,13 @@ func (h *Handler) RequireVerifiedUser(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		verified, err := h.userSvc.UserEmailVerified(id)
+		_, verified, tokenVersion, err := h.userSvc.UserAuthState(id)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		if tokenRevoked(r, tokenVersion) {
+			writeError(w, http.StatusUnauthorized, "session expired")
 			return
 		}
 		if !verified {

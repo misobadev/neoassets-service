@@ -10,7 +10,7 @@ import (
 
 const userColumns = `id, username, email, password_hash, role, hidden, xp, donor_status, avatar_key, email_verified,
 	email_verification_token, email_verification_expires_at,
-	password_reset_token, password_reset_expires_at, created_at, updated_at`
+	password_reset_token, password_reset_expires_at, token_version, created_at, updated_at`
 
 func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error) {
 	var u models.User
@@ -18,7 +18,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 		&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.Hidden, &u.XP, &u.DonorStatus, &u.AvatarKey, &u.EmailVerified,
 		&u.EmailVerificationToken, &u.EmailVerificationExpires,
 		&u.PasswordResetToken, &u.PasswordResetExpires,
-		&u.CreatedAt, &u.UpdatedAt,
+		&u.TokenVersion, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -128,11 +128,12 @@ func (r *Repository) UpdateUser(u *models.User) error {
 			username = $1, email = $2, password_hash = $3, role = $4, hidden = $5, xp = $6, donor_status = $7, email_verified = $8,
 			email_verification_token = $9, email_verification_expires_at = $10,
 			password_reset_token = $11, password_reset_expires_at = $12,
+			token_version = $13,
 			updated_at = NOW()
-		 WHERE id = $13`,
+		 WHERE id = $14`,
 		u.Username, u.Email, u.PasswordHash, u.Role, u.Hidden, u.XP, u.DonorStatus, u.EmailVerified,
 		u.EmailVerificationToken, u.EmailVerificationExpires,
-		u.PasswordResetToken, u.PasswordResetExpires, u.ID,
+		u.PasswordResetToken, u.PasswordResetExpires, u.TokenVersion, u.ID,
 	)
 	return err
 }

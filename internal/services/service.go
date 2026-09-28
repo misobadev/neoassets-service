@@ -83,6 +83,10 @@ func (s *Service) ListSystems() []systems.System {
 	return s.systems.List()
 }
 
+// TokenTTL is the lifetime of an issued admin session token (used to size the
+// session cookie).
+func (s *Service) TokenTTL() time.Duration { return s.tokenTTL }
+
 // Login validates admin credentials and returns a signed JWT.
 func (s *Service) Login(email, password string) (*models.LoginResult, error) {
 	admin, err := s.repo.GetAdminByEmail(email)
@@ -233,6 +237,20 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		packID = fmt.Sprintf("theme-%s", uuid.NewString()[:8])
 	}
 
+	// A brand-new pack must not reuse a pack id that already belongs to another
+	// submission (approved or in review): approving it would publish over that
+	// pack's canonical objects. Existing packs are extended via the contribution
+	// flow instead.
+	if !req.Contribution {
+		inUse, err := s.repo.PackIDInUse(packID)
+		if err != nil {
+			return nil, err
+		}
+		if inUse {
+			return nil, fmt.Errorf("a pack with that name already exists; contribute to it instead")
+		}
+	}
+
 	anonID := userID.String()
 	id, err := s.repo.CreateSubmission(
 		packID, strings.TrimSpace(req.Name), strings.TrimSpace(req.Author),
@@ -333,7 +351,8 @@ func (s *Service) SubmissionUploadURLPre(ctx context.Context, req models.Submiss
 	}
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, mime, s.uploadTTL)
 	if err != nil {
-		return nil, err
+		log.Error().Err(err).Msg("failed to sign upload URL")
+		return nil, fmt.Errorf("could not prepare upload")
 	}
 	return &models.UploadResponse{UploadURL: uploadURL, ObjectKey: objectKey, ExpiresAt: time.Now().Add(s.uploadTTL)}, nil
 }
@@ -486,7 +505,8 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, mimeType, s.uploadTTL)
 	if err != nil {
-		return nil, err
+		log.Error().Err(err).Msg("failed to sign upload URL")
+		return nil, fmt.Errorf("could not prepare upload")
 	}
 
 	systemID := ""
@@ -600,7 +620,8 @@ func (s *Service) RemoveSubmissionFile(ctx context.Context, submissionID, userID
 func (s *Service) ensureUploaded(ctx context.Context, objectKey, fileName string) error {
 	size, ok, err := s.r2.ObjectSize(ctx, objectKey)
 	if err != nil {
-		return fmt.Errorf("could not verify upload %q: %w", fileName, err)
+		log.Error().Err(err).Str("object", objectKey).Msg("failed to verify uploaded object")
+		return fmt.Errorf("could not verify upload %q", fileName)
 	}
 	if !ok {
 		return fmt.Errorf("upload for %q did not complete — try uploading again", fileName)
@@ -643,7 +664,8 @@ func (s *Service) AvatarUploadURL(ctx context.Context, userID uuid.UUID, mimeTyp
 	key := avatarKey(userID, ext)
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, key, mimeType, s.uploadTTL)
 	if err != nil {
-		return nil, err
+		log.Error().Err(err).Msg("failed to sign avatar upload URL")
+		return nil, fmt.Errorf("could not prepare upload")
 	}
 	return &models.UploadResponse{UploadURL: uploadURL, ObjectKey: key, ExpiresAt: time.Now().Add(s.uploadTTL)}, nil
 }
@@ -953,6 +975,22 @@ func (s *Service) GetUserSubmissionDetail(ctx context.Context, submissionID uuid
 
 // Approve marks a submission as approved, auto-assigning its pack version
 // (1.0 for the first approved revision, then 1.1, 1.2, ...).
+// blockSelfReview prevents a reviewer (non-admin) from approving or rejecting
+// their own submission. Full admins are trusted to review their own content.
+func (s *Service) blockSelfReview(ownerID *uuid.UUID, actorID uuid.UUID) error {
+	if ownerID == nil || *ownerID == uuid.Nil || *ownerID != actorID {
+		return nil
+	}
+	user, err := s.repo.GetUserByID(actorID)
+	if err != nil {
+		return nil // actor is an admin-table account, not the submission owner
+	}
+	if user.Role == models.RoleAdmin {
+		return nil
+	}
+	return fmt.Errorf("you cannot review your own submission")
+}
+
 func (s *Service) Approve(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, _, comment string) (*models.Submission, error) {
 	sub, err := s.repo.GetSubmission(submissionID)
 	if err != nil {
@@ -960,6 +998,9 @@ func (s *Service) Approve(ctx context.Context, submissionID uuid.UUID, adminID u
 	}
 	if sub.Status != models.StatusPending {
 		return nil, fmt.Errorf("submission is not pending")
+	}
+	if err := s.blockSelfReview(sub.UserID, adminID); err != nil {
+		return nil, err
 	}
 
 	n, err := s.repo.CountApprovedByPack(sub.PackID, sub.ID)
@@ -1153,6 +1194,9 @@ func (s *Service) Reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 	}
 	if sub.Status != models.StatusPending {
 		return nil, fmt.Errorf("submission is not pending")
+	}
+	if err := s.blockSelfReview(sub.UserID, adminID); err != nil {
+		return nil, err
 	}
 
 	files, err := s.repo.ListFiles(submissionID)

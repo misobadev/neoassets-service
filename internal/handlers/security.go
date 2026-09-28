@@ -3,6 +3,7 @@ package handlers
 import (
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -89,25 +90,48 @@ func (l *IPLimiter) KeyedHandler(keyFn func(r *http.Request) string) func(http.H
 	}
 }
 
+// trustProxyHeadersAlways is set by TRUST_PROXY_HEADERS=always for deployments
+// where the proxy itself has a public address (e.g. direct Cloudflare without a
+// private Traefik hop). Otherwise proxy headers are only honored from a private
+// or loopback peer.
+var trustProxyHeadersAlways = strings.EqualFold(os.Getenv("TRUST_PROXY_HEADERS"), "always")
+
 // ClientIP returns the real client IP. The API sits behind Cloudflare and
 // Traefik, so RemoteAddr is a proxy address: prefer Cloudflare's
 // CF-Connecting-IP, then the first X-Forwarded-For entry, and only fall back to
-// RemoteAddr. The origin is firewalled to the proxy, so these headers are
-// trusted; without this the per-IP limiters would key on the proxy address.
+// RemoteAddr. Proxy headers are trusted only when the direct peer is a private
+// or loopback address (a real proxy on our network); a direct public peer is
+// treated as the client so a spoofed CF-Connecting-IP / X-Forwarded-For cannot
+// bypass the per-IP limiters.
 func ClientIP(r *http.Request) string {
-	if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); ip != "" {
-		return ip
-	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
-			return first
-		}
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if trustedProxyPeer(host) {
+		if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); ip != "" {
+			return ip
+		}
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+				return first
+			}
+		}
 	}
 	return host
+}
+
+// trustedProxyPeer reports whether the direct peer address is a proxy we can
+// trust to set client-IP headers.
+func trustedProxyPeer(host string) bool {
+	if trustProxyHeadersAlways {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
 }
 
 // maxRequestBody caps the size of any request body (2 MiB), enough for JSON
@@ -133,6 +157,9 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
+		// HSTS: TLS terminates at the edge (Cloudflare/Traefik), so instruct the
+		// browser to only use HTTPS for this host from now on.
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		next.ServeHTTP(w, r)
 	})
 }

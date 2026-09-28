@@ -538,6 +538,13 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			if f.ObjectKey == "" {
 				return nil, fmt.Errorf("object_key required")
 			}
+			// Only the uploader's own staging objects are accepted. This blocks
+			// referencing canonical/published objects (media/games, media/systems,
+			// packs, history, rejected), which could otherwise be deleted or
+			// overwritten via cancel/reject/approve.
+			if !isOwnStagingKey(f.ObjectKey, userID) {
+				return nil, fmt.Errorf("invalid upload reference")
+			}
 			if err := s.ensureUploaded(context.Background(), f.ObjectKey, f.FileName); err != nil {
 				return nil, err
 			}
@@ -622,7 +629,7 @@ func (s *Service) PendingMetadataKeys(userID, gameID uuid.UUID) ([]string, error
 // (media/staging/...) before any submission row exists. On approval the file is
 // moved to an immutable canonical key, so unapproved uploads are never public
 // and replaced assets always get a brand-new URL (no cache invalidation).
-func (s *Service) MetadataUploadURLPre(ctx context.Context, req models.MetadataUploadURLRequest) (*models.UploadResponse, error) {
+func (s *Service) MetadataUploadURLPre(ctx context.Context, userID uuid.UUID, req models.MetadataUploadURLRequest) (*models.UploadResponse, error) {
 	if req.GameID == nil && req.SystemID == nil {
 		return nil, fmt.Errorf("a game or system must be provided")
 	}
@@ -645,10 +652,11 @@ func (s *Service) MetadataUploadURLPre(ctx context.Context, req models.MetadataU
 			return nil, fmt.Errorf("system not found")
 		}
 	}
-	objectKey := stagingMediaKey(req.Kind, req.FileName)
+	objectKey := stagingMediaKey(userID, req.Kind, req.FileName)
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, req.MimeType, s.uploadTTL)
 	if err != nil {
-		return nil, err
+		log.Error().Err(err).Msg("failed to sign metadata upload URL")
+		return nil, fmt.Errorf("could not prepare upload")
 	}
 	return &models.UploadResponse{
 		UploadURL: uploadURL,
@@ -662,13 +670,28 @@ func (s *Service) MetadataUploadURLPre(ctx context.Context, req models.MetadataU
 // can be cached aggressively at the edge and in the browser.
 const mediaCacheControl = "public, max-age=31536000, immutable"
 
-// stagingMediaKey builds a temporary upload key under media/staging/.
-func stagingMediaKey(kind, fileName string) string {
+// stagingMediaKey builds a temporary upload key under media/staging/, namespaced
+// by the uploader so a submission can only ever reference its owner's uploads.
+func stagingMediaKey(userID uuid.UUID, kind, fileName string) string {
 	name := filepath.Base(fileName)
 	if name == "" || name == "." {
 		name = kind
 	}
-	return fmt.Sprintf("media/staging/%s/%s/%s", uuid.NewString(), kind, name)
+	return fmt.Sprintf("media/staging/%s/%s/%s/%s", userID, uuid.NewString(), kind, name)
+}
+
+// isOwnStagingKey reports whether objectKey is a staging upload owned by the
+// given user. Metadata submissions may only reference their uploader's own
+// staging objects; canonical keys (media/games, media/systems, packs, history,
+// rejected) must never be accepted from a client.
+func isOwnStagingKey(objectKey string, userID uuid.UUID) bool {
+	return strings.HasPrefix(objectKey, "media/staging/"+userID.String()+"/")
+}
+
+// isSubmissionMediaKey reports whether objectKey belongs to the given metadata
+// submission's own upload namespace.
+func isSubmissionMediaKey(objectKey string, submissionID uuid.UUID) bool {
+	return strings.HasPrefix(objectKey, "media/submissions/"+submissionID.String()+"/")
 }
 
 // immutableMediaKey builds a fresh, immutable canonical key for approved media:
@@ -722,7 +745,8 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 	objectKey := fmt.Sprintf("media/submissions/%s/%s/%s", submissionID, req.Kind, filepath.Base(req.FileName))
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, req.MimeType, s.uploadTTL)
 	if err != nil {
-		return nil, err
+		log.Error().Err(err).Msg("failed to sign metadata upload URL")
+		return nil, fmt.Errorf("could not prepare upload")
 	}
 	if err := s.repo.AddMetadataSubmissionFile(submissionID, req.Kind, objectKey, req.FileName, req.MimeType, req.Region, req.Size, false, false, nil); err != nil {
 		return nil, err
@@ -766,9 +790,17 @@ func (s *Service) CancelMetadataSubmission(submissionID, userID uuid.UUID) error
 	if err != nil {
 		return err
 	}
+	// Only delete objects this submission actually owns (its own staging or
+	// submission namespace). Move/delete entries reference existing canonical
+	// media that must never be removed here.
 	keys := make([]string, 0, len(files))
 	for _, f := range files {
-		keys = append(keys, f.ObjectKey)
+		if f.IsMove || f.IsDelete {
+			continue
+		}
+		if isOwnStagingKey(f.ObjectKey, userID) || isSubmissionMediaKey(f.ObjectKey, submissionID) {
+			keys = append(keys, f.ObjectKey)
+		}
 	}
 	if len(keys) > 0 {
 		if err := s.r2.DeleteObjects(context.Background(), keys); err != nil {
@@ -1140,6 +1172,9 @@ func (s *Service) ApproveMetadataSubmission(id, adminID uuid.UUID, comment strin
 	}
 	if sub.Status != models.MetadataPending {
 		return nil, fmt.Errorf("submission is not pending")
+	}
+	if err := s.blockSelfReview(&sub.UserID, adminID); err != nil {
+		return nil, err
 	}
 	// A duplicate report asks for the whole game to be removed. On approval the
 	// game and its media are deleted instead of applying field/media changes.
@@ -1634,6 +1669,9 @@ func (s *Service) RejectMetadataSubmission(ctx context.Context, id, adminID uuid
 	}
 	if sub.Status != models.MetadataPending {
 		return nil, fmt.Errorf("submission is not pending")
+	}
+	if err := s.blockSelfReview(&sub.UserID, adminID); err != nil {
+		return nil, err
 	}
 	files, err := s.repo.ListMetadataSubmissionFiles(id)
 	if err != nil {

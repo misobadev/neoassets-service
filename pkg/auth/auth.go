@@ -19,6 +19,22 @@ const (
 	TokenTypeUser  = "user"
 )
 
+// Session cookie names. The browser session is carried in httpOnly cookies so
+// the JWT is never readable by JavaScript (mitigating XSS token theft). The
+// Authorization: Bearer header is still accepted for non-browser API clients.
+const (
+	UserCookie  = "ns_user"
+	AdminCookie = "ns_admin"
+)
+
+// cookieToken returns the value of the named cookie, or "" when absent.
+func cookieToken(r *http.Request, name string) string {
+	if c, err := r.Cookie(name); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
 // AdminClaims is the JWT payload for an authenticated administrator.
 type AdminClaims struct {
 	Type    string    `json:"typ"`
@@ -33,6 +49,9 @@ type UserClaims struct {
 	UserID uuid.UUID `json:"user_id"`
 	Email  string    `json:"email"`
 	Role   string    `json:"role"`
+	// TokenVersion must match the user's current token_version; a password
+	// change bumps it and thereby revokes every previously issued token.
+	TokenVersion int `json:"ver"`
 	jwt.RegisteredClaims
 }
 
@@ -95,13 +114,14 @@ func ParseToken(secret, tokenString string) (*AdminClaims, error) {
 }
 
 // GenerateUserToken creates a signed JWT for an authenticated user.
-func GenerateUserToken(secret string, userID uuid.UUID, email, role string, ttl time.Duration) (string, error) {
+func GenerateUserToken(secret string, userID uuid.UUID, email, role string, tokenVersion int, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := UserClaims{
-		Type:   TokenTypeUser,
-		UserID: userID,
-		Email:  email,
-		Role:   role,
+		Type:         TokenTypeUser,
+		UserID:       userID,
+		Email:        email,
+		Role:         role,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -159,6 +179,9 @@ func Middleware(secret string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString := bearer(r)
 			if tokenString == "" {
+				tokenString = cookieToken(r, AdminCookie)
+			}
+			if tokenString == "" {
 				writeAuthError(w, http.StatusUnauthorized, "Authorization header required")
 				return
 			}
@@ -184,6 +207,12 @@ func ReviewMiddleware(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString := bearer(r)
+			if tokenString == "" {
+				tokenString = cookieToken(r, AdminCookie)
+			}
+			if tokenString == "" {
+				tokenString = cookieToken(r, UserCookie)
+			}
 			if tokenString == "" {
 				writeAuthError(w, http.StatusUnauthorized, "Authorization header required")
 				return
@@ -244,6 +273,9 @@ func UserMiddleware(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString := bearer(r)
+			if tokenString == "" {
+				tokenString = cookieToken(r, UserCookie)
+			}
 			if tokenString == "" {
 				writeAuthError(w, http.StatusUnauthorized, "Authorization header required")
 				return

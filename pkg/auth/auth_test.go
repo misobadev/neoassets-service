@@ -13,7 +13,7 @@ func TestTokenTypeConfusionPrevented(t *testing.T) {
 	userID := uuid.New()
 	adminID := uuid.New()
 
-	userToken, err := GenerateUserToken(secret, userID, "u@example.com", "user", time.Hour)
+	userToken, err := GenerateUserToken(secret, userID, "u@example.com", "user", 0, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

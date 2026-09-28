@@ -222,7 +222,7 @@ func (h *Handler) MetadataUploadURLPre(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	resp, err := h.svc.MetadataUploadURLPre(r.Context(), req)
+	resp, err := h.svc.MetadataUploadURLPre(r.Context(), userFromRequest(r), req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

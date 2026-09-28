@@ -176,6 +176,14 @@ the user credential is optional and falls back to guest mode.
   token, login checks verification before the password, authenticated routes and
   scrape user credentials enforce it (unless `SKIP_EMAIL_VERIFICATION=true` for
   local dev). Changing email resets verification.
+- Browser sessions are **httpOnly cookies** (`ns_user`, `ns_admin`;
+  `SameSite=Lax`, `Secure` over HTTPS) so the JWT is never exposed to JavaScript.
+  `Authorization: Bearer` is still accepted for non-browser API clients. Login
+  and `/admin/login` set the cookies and no longer return the raw JWT;
+  `POST /api/v1/logout` clears them. JWTs carry a `ver` (`token_version`) claim:
+  changing or resetting the password bumps `users.token_version` and revokes every
+  outstanding token immediately. Email-verification and password-reset tokens are
+  stored as SHA-256 hashes, never plaintext.
 - Because R2 is public and `/api/v1/metadata/*` stays open (per-IP rate limited),
   quota is an anti-abuse contract, not a hard boundary.
 

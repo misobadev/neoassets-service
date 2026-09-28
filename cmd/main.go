@@ -156,7 +156,9 @@ func main() {
 	}
 
 	svc := services.NewService(repo, r2Client, cfg.R2PublicBase, cfg.JWTSecret, catalog)
-	userSvc := services.NewUserService(repo, mailer, cfg.JWTSecret, 30*24*time.Hour, cfg.ProtectedAdminEmail)
+	// User sessions live 7 days; a password change bumps token_version and
+	// revokes every outstanding token immediately.
+	userSvc := services.NewUserService(repo, mailer, cfg.JWTSecret, 7*24*time.Hour, cfg.ProtectedAdminEmail)
 	userSvc.SkipEmailVerification = cfg.SkipEmailVerification
 	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, cfg.ScrapeRPMPerThread, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
 	devSvc := services.NewDeveloperService(repo)
@@ -350,12 +352,19 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 			// Quota state, readable from browser clients.
 			"X-Quota-Limit", "X-Quota-Remaining", "X-Quota-Reset",
 		},
-		AllowCredentials: false,
+		// The browser session is an httpOnly cookie, so credentialed requests
+		// must be allowed. AllowedOrigins is an explicit allow-list (never "*").
+		AllowCredentials: true,
 		MaxAge:           300,
 	}))
 
 	// Per-IP limiters for the unauthenticated surfaces.
 	authLimiter := handlers.NewIPLimiter(10, 10)
+	// The dashboard is public and runs several aggregate queries per request,
+	// so it gets its own (generous but bounded) per-IP limiter.
+	dashboardLimiter := handlers.NewIPLimiter(60, 30)
+	// Donation webhooks are unauthenticated; limit them to bound abuse churn.
+	webhookLimiter := handlers.NewIPLimiter(60, 30)
 	// Browsing the catalog pages quickly (pagination, opening details) must not
 	// hit the limiter, so these are generous; the scraping API has its own quota
 	// and must NOT share them.
@@ -377,15 +386,17 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 		})).Get("/packs/{packID}/download", h.DownloadPack)
 		r.Get("/systems", h.ListSystems)
 		r.Get("/config", h.GetConfig)
+		// Clears the httpOnly session cookies. Public and side-effect free.
+		r.Post("/logout", h.Logout)
 		// Community dashboard (leaderboards + recent content) is public so
 		// guests can browse it; personal rewards/submissions stay behind auth.
-		r.Get("/dashboard", h.DashStats)
+		r.With(dashboardLimiter.Handler).Get("/dashboard", h.DashStats)
 
 		// Donation webhooks (Ko-fi). Unauthenticated by nature; the shared
 		// verification token inside the payload is checked in constant time.
-		r.Post("/webhooks/kofi", h.KofiWebhook)
+		r.With(webhookLimiter.Handler).Post("/webhooks/kofi", h.KofiWebhook)
 		// Patreon member webhooks, verified via the X-Patreon-Signature HMAC.
-		r.Post("/webhooks/patreon", h.PatreonWebhook)
+		r.With(webhookLimiter.Handler).Post("/webhooks/patreon", h.PatreonWebhook)
 
 		// Metadata catalog (public browse + lookup, per-IP rate limited). The list
 		// endpoints get a stricter limiter; no edge cache is used so the catalog
@@ -483,7 +494,7 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 		})
 
 		// Review (admin or reviewer role, re-checked against the DB)
-		r.Post("/admin/login", h.AdminLogin)
+		r.With(authLimiter.Handler).Post("/admin/login", h.AdminLogin)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.ReviewMiddleware(cfg.JWTSecret))
 			r.Use(h.RequireReviewer)

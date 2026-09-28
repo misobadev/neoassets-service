@@ -41,6 +41,16 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set httpOnly session cookies for the browser. The tokens are still returned
+	// in the body for programmatic clients (e.g. developer self-service); the web
+	// app ignores them and relies on the cookies.
+	ttl := h.userSvc.TokenTTL()
+	setSessionCookie(w, r, auth.UserCookie, result.Token, ttl)
+	if result.IsAdmin && result.AdminToken != "" {
+		setSessionCookie(w, r, auth.AdminCookie, result.AdminToken, ttl)
+	} else {
+		clearSessionCookie(w, r, auth.AdminCookie)
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 

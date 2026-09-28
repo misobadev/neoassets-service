@@ -1,0 +1,2 @@
+-- Irreversible: SHA-256 hashes cannot be reverted to the original tokens.
+-- (Nothing to do.)

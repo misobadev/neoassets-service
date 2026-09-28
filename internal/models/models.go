@@ -177,8 +177,11 @@ type User struct {
 	EmailVerificationExpires *time.Time `json:"-" db:"email_verification_expires_at"`
 	PasswordResetToken       *string    `json:"-" db:"password_reset_token"`
 	PasswordResetExpires     *time.Time `json:"-" db:"password_reset_expires_at"`
-	CreatedAt                time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt                time.Time  `json:"updated_at" db:"updated_at"`
+	// TokenVersion is embedded in issued JWTs; bumping it invalidates every
+	// previously issued token for the user (on password change/reset).
+	TokenVersion int       `json:"-" db:"token_version"`
+	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // UserCountStat is a leaderboard row counting submissions.
@@ -211,24 +214,36 @@ type RecentMetadata struct {
 	GameName    string     `json:"game_name" db:"game_name"`
 	SystemName  string     `json:"system_name" db:"system_name"`
 	SubmittedBy string     `json:"submitted_by,omitempty" db:"submitted_by"`
-	CreatedAt   time.Time  `json:"created_at" db:"created_at"`
+	// Cover is the game's primary cover object key, used as the dashboard
+	// thumbnail. CoverUpdated busts the CDN cache when the cover changes.
+	Cover        string    `json:"cover,omitempty" db:"cover"`
+	CoverUpdated string    `json:"cover_updated,omitempty" db:"cover_updated"`
+	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+}
+
+// DashboardStorage is the single public storage figure shown on the community
+// dashboard: only the total used space, never the internal media/DB breakdown
+// (which stays behind the admin endpoint).
+type DashboardStorage struct {
+	TotalBytes int64 `json:"total_bytes"`
 }
 
 // Dashboard is the app home payload: catalog totals, leaderboards and recent
 // published content (SAP + game metadata).
 type Dashboard struct {
-	TotalGames         int              `json:"total_games"`
-	TotalPacks         int              `json:"total_packs"`
-	TotalSystems       int              `json:"total_systems"`
-	TotalUsers         int              `json:"total_users"`
-	TotalContributions int              `json:"total_contributions"`
-	TopContributions   []UserCountStat  `json:"top_contributions"`
-	TopApprovedWeek    []UserCountStat  `json:"top_approved_week"`
-	TopLevels          []LevelStat      `json:"top_levels"`
-	TopGames           []PopularGame    `json:"top_games"`
-	TopSystems         []PopularSystem  `json:"top_systems"`
-	RecentPacks        []RecentPack     `json:"recent_packs"`
-	RecentMetadata     []RecentMetadata `json:"recent_metadata"`
+	TotalGames         int               `json:"total_games"`
+	TotalPacks         int               `json:"total_packs"`
+	TotalSystems       int               `json:"total_systems"`
+	TotalUsers         int               `json:"total_users"`
+	TotalContributions int               `json:"total_contributions"`
+	TopContributions   []UserCountStat   `json:"top_contributions"`
+	TopApprovedWeek    []UserCountStat   `json:"top_approved_week"`
+	TopLevels          []LevelStat       `json:"top_levels"`
+	TopGames           []PopularGame     `json:"top_games"`
+	TopSystems         []PopularSystem   `json:"top_systems"`
+	RecentPacks        []RecentPack      `json:"recent_packs"`
+	RecentMetadata     []RecentMetadata  `json:"recent_metadata"`
+	Storage            *DashboardStorage `json:"storage,omitempty"`
 }
 
 // LevelStat is a dashboard leaderboard row for the XP level ranking.
