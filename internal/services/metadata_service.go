@@ -1195,9 +1195,13 @@ func (s *Service) GetMetadataSubmissionDetail(id uuid.UUID) (*models.MetadataSub
 	if err != nil {
 		return nil, err
 	}
-	if err := s.decorateMetadataNames([]models.MetadataSubmission{*sub}); err != nil {
+	// decorateMetadataNames mutates the slice elements, so pass a slice holding a
+	// copy and write the decorated value back to sub.
+	decorated := []models.MetadataSubmission{*sub}
+	if err := s.decorateMetadataNames(decorated); err != nil {
 		return nil, err
 	}
+	*sub = decorated[0]
 	detail := &models.MetadataSubmissionDetail{Submission: sub, Files: files, Media: []models.Media{}}
 	switch {
 	case sub.Kind == "new_game" && sub.SystemID != nil:
