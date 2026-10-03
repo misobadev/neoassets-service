@@ -1286,6 +1286,24 @@ func (r *Repository) GameExistsByName(systemID, name string) (bool, error) {
 	return exists, nil
 }
 
+// ConflictingGameID returns the id of another game in the system that already
+// has the given name (exact, matching the unique constraint), or uuid.Nil when
+// the name is free. The game being renamed is excluded via excludeID.
+func (r *Repository) ConflictingGameID(systemID, name string, excludeID uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := r.db.QueryRow(
+		`SELECT id FROM games WHERE system_id = $1 AND name = $2 AND id <> $3 LIMIT 1`,
+		systemID, strings.TrimSpace(name), excludeID,
+	).Scan(&id)
+	if err == sql.ErrNoRows {
+		return uuid.Nil, nil
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to check game name: %w", err)
+	}
+	return id, nil
+}
+
 // GameNameTaken reports whether a system already has another game with the given
 // name (exact, matching the unique constraint). The game being renamed is
 // excluded via excludeID.

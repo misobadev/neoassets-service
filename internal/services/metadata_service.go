@@ -451,12 +451,12 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 		if name, ok := req.Payload["name"].(string); ok {
 			name = strings.TrimSpace(name)
 			if name != "" {
-				taken, err := s.repo.GameNameTaken(targetGame.SystemID, name, targetGame.ID)
+				conflictID, err := s.repo.ConflictingGameID(targetGame.SystemID, name, targetGame.ID)
 				if err != nil {
 					return nil, err
 				}
-				if taken {
-					return nil, fmt.Errorf("another game in this system already has that name")
+				if conflictID != uuid.Nil {
+					return nil, &GameNameConflictError{GameID: conflictID, SystemID: targetGame.SystemID, Name: name}
 				}
 			}
 		}
@@ -1332,6 +1332,19 @@ func (s *Service) resolveSubmissionMediaRegions(sub *models.MetadataSubmission) 
 	return nil
 }
 
+// GameNameConflictError reports a rename that collides with an existing game in
+// the same system. It carries the conflicting game so the review UI can link to
+// it.
+type GameNameConflictError struct {
+	GameID   uuid.UUID
+	SystemID string
+	Name     string
+}
+
+func (e *GameNameConflictError) Error() string {
+	return "another game in this system already has that name"
+}
+
 // ensureGameNameAvailable rejects a rename whose target name already belongs to
 // another game in the same system, so approval fails with a clear message
 // instead of a unique-constraint error.
@@ -1363,12 +1376,12 @@ func (s *Service) ensureGameNameAvailable(gameID uuid.UUID, payload []byte) erro
 		return nil
 	}
 	for _, name := range names {
-		taken, err := s.repo.GameNameTaken(g.SystemID, name, gameID)
+		conflictID, err := s.repo.ConflictingGameID(g.SystemID, name, gameID)
 		if err != nil {
 			return err
 		}
-		if taken {
-			return fmt.Errorf("another game in this system already has that name")
+		if conflictID != uuid.Nil {
+			return &GameNameConflictError{GameID: conflictID, SystemID: g.SystemID, Name: name}
 		}
 	}
 	return nil

@@ -188,7 +188,7 @@ func (h *Handler) CreateMetadataSubmission(w http.ResponseWriter, r *http.Reques
 	}
 	sub, err := h.svc.CreateMetadataSubmission(userFromRequest(r), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeActionError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, sub)
@@ -328,7 +328,7 @@ func (h *Handler) ApproveMetadataSubmission(w http.ResponseWriter, r *http.Reque
 	adminID := actorIDFromContext(r.Context())
 	sub, err := h.svc.ApproveMetadataSubmission(id, adminID, req.Comment)
 	if err != nil {
-		writeServerError(w, http.StatusBadRequest, "failed to approve submission", err)
+		writeActionError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sub)
@@ -347,7 +347,7 @@ func (h *Handler) RejectMetadataSubmission(w http.ResponseWriter, r *http.Reques
 	adminID := actorIDFromContext(r.Context())
 	sub, err := h.svc.RejectMetadataSubmission(r.Context(), id, adminID, req.Comment)
 	if err != nil {
-		writeServerError(w, http.StatusBadRequest, "failed to reject submission", err)
+		writeActionError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sub)

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -50,6 +51,29 @@ func writeServerError(w http.ResponseWriter, status int, message string, err err
 		log.Error().Err(err).Msg(message)
 	}
 	writeError(w, status, message)
+}
+
+// writeActionError logs the real error and returns it to the caller. It is used
+// by admin review actions, whose errors are user-facing business validations
+// (a name collision, an invalid video, ...) that the reviewer must see. A name
+// conflict also returns the conflicting game so the UI can link to it.
+func writeActionError(w http.ResponseWriter, status int, err error) {
+	if err != nil {
+		log.Error().Err(err).Msg("review action failed")
+	}
+	var conflict *services.GameNameConflictError
+	if errors.As(err, &conflict) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": err.Error(),
+			"conflict": map[string]string{
+				"game_id":   conflict.GameID.String(),
+				"system_id": conflict.SystemID,
+				"name":      conflict.Name,
+			},
+		})
+		return
+	}
+	writeError(w, status, err.Error())
 }
 
 // HealthCheck returns service liveness.
@@ -507,7 +531,7 @@ func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Approve(r.Context(), submissionID, actorIDFromContext(r.Context()), req.Version, req.Comment)
 	if err != nil {
-		writeServerError(w, http.StatusBadRequest, "failed to approve submission", err)
+		writeActionError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -528,7 +552,7 @@ func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Reject(r.Context(), submissionID, actorIDFromContext(r.Context()), req.Comment)
 	if err != nil {
-		writeServerError(w, http.StatusBadRequest, "failed to reject submission", err)
+		writeActionError(w, http.StatusBadRequest, err)
 		return
 	}
 
