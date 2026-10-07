@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"neoassets/internal/models"
+	"neoassets/pkg/r2"
 	"neoassets/pkg/video"
 )
 
@@ -861,6 +862,19 @@ func isSubmissionMediaKey(objectKey string, submissionID uuid.UUID) bool {
 	return strings.HasPrefix(objectKey, "media/submissions/"+submissionID.String()+"/")
 }
 
+// ownedSubmissionUpload reports whether f is a file the submission itself
+// uploaded: not a move/delete entry, and stored in the submitter's staging
+// namespace or the submission's own one. Only these may be removed when a
+// submission is cancelled or rejected. Move entries reference the game's
+// published media and delete entries don't reference an upload, so neither
+// names an object the submission owns.
+func ownedSubmissionUpload(f models.MetadataSubmissionFile, sub *models.MetadataSubmission) bool {
+	if f.IsMove || f.IsDelete {
+		return false
+	}
+	return isOwnStagingKey(f.ObjectKey, sub.UserID) || isSubmissionMediaKey(f.ObjectKey, sub.ID)
+}
+
 // immutableMediaKey builds a fresh, immutable canonical key for approved media:
 // the UUID is random so each replacement gets a new URL.
 func immutableMediaKey(sub *models.MetadataSubmission, systemID, kind, ext string) string {
@@ -962,10 +976,7 @@ func (s *Service) CancelMetadataSubmission(submissionID, userID uuid.UUID) error
 	// media that must never be removed here.
 	keys := make([]string, 0, len(files))
 	for _, f := range files {
-		if f.IsMove || f.IsDelete {
-			continue
-		}
-		if isOwnStagingKey(f.ObjectKey, userID) || isSubmissionMediaKey(f.ObjectKey, submissionID) {
+		if ownedSubmissionUpload(f, sub) {
 			keys = append(keys, f.ObjectKey)
 		}
 	}
@@ -1886,8 +1897,8 @@ func (s *Service) convertVideoToCanonical(ctx context.Context, f models.Metadata
 	return nil
 }
 
-// RejectMetadataSubmission rejects a pending contribution and deletes its media
-// files from R2.
+// RejectMetadataSubmission rejects a pending contribution, preserving the files
+// it uploaded under rejected/.
 func (s *Service) RejectMetadataSubmission(ctx context.Context, id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
 	sub, err := s.repo.GetMetadataSubmission(id)
 	if err != nil {
@@ -1903,18 +1914,31 @@ func (s *Service) RejectMetadataSubmission(ctx context.Context, id, adminID uuid
 	if err != nil {
 		return nil, err
 	}
-	// Rejected uploads are preserved under rejected/ (not deleted) so the review
-	// history keeps the submitted art; each file row is updated to the new key.
-	for _, f := range files {
-		newKey, err := preserveRejectedFile(ctx, s.r2, f.ObjectKey)
-		if err != nil {
-			return nil, fmt.Errorf("preserve rejected file %s: %w", f.ObjectKey, err)
-		}
-		if err := s.repo.UpdateMetadataSubmissionFileObjectKey(f.ID, newKey); err != nil {
-			return nil, err
-		}
+	if err := preserveRejectedSubmissionFiles(ctx, s.r2, sub, files, s.repo.UpdateMetadataSubmissionFileObjectKey); err != nil {
+		return nil, err
 	}
 	return s.repo.SetMetadataStatusForAdmin(id, models.MetadataRejected, adminID, comment)
+}
+
+// preserveRejectedSubmissionFiles moves the files a rejected submission
+// uploaded to rejected/ (not deleted, so the review history keeps the
+// submitted art) and records each new key with setKey. Everything else is left
+// where it is: move and delete entries don't name an upload of this
+// submission, and rejecting must never touch published objects.
+func preserveRejectedSubmissionFiles(ctx context.Context, r2c r2.Client, sub *models.MetadataSubmission, files []models.MetadataSubmissionFile, setKey func(fileID uuid.UUID, objectKey string) error) error {
+	for _, f := range files {
+		if !ownedSubmissionUpload(f, sub) {
+			continue
+		}
+		newKey, err := preserveRejectedFile(ctx, r2c, f.ObjectKey)
+		if err != nil {
+			return fmt.Errorf("preserve rejected file %s: %w", f.ObjectKey, err)
+		}
+		if err := setKey(f.ID, newKey); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validMediaKind(kind string) bool {
