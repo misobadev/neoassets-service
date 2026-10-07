@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"testing"
 
 	"neoassets/internal/models"
@@ -110,6 +111,18 @@ func TestObjectKeyNormalizesImagesToWebp(t *testing.T) {
 	for _, c := range cases {
 		if got := svc.ObjectKey("mypack", c.kind, c.fileName); got != c.want {
 			t.Errorf("ObjectKey(%s, %s) = %q, want %q", c.kind, c.fileName, got, c.want)
+		}
+	}
+}
+
+func TestDonorClaimCodeLength(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		code, err := numericCode(donorClaimCodeDigits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(code) != 8 || strings.Trim(code, "0123456789") != "" {
+			t.Fatalf("code %q is not 8 digits", code)
 		}
 	}
 }

@@ -86,8 +86,9 @@ func (h *Handler) ImportDonations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"imported": imported, "linked": linked, "skipped": skipped})
 }
 
-// DonorClaim starts a claim for donations made with another email by sending a
-// verification code to that address.
+// DonorClaim starts a claim for donations made with another email. A code is
+// emailed to that address if it has unclaimed donations; the response is the
+// same either way.
 func (h *Handler) DonorClaim(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email string `json:"email"`
@@ -101,7 +102,7 @@ func (h *Handler) DonorClaim(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "claim code sent"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "if donations were made with that email, a claim code has been sent to it"})
 }
 
 // DonorClaimVerify confirms the claim code and links the donations.

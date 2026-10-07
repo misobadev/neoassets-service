@@ -25,7 +25,16 @@ import (
 )
 
 // donorClaimTTL is how long a donor claim code stays valid.
-const donorClaimTTL = 15 * time.Minute
+const (
+	donorClaimTTL = 15 * time.Minute
+	// donorClaimCooldown is the minimum time between two claim codes for a user.
+	donorClaimCooldown = time.Minute
+	// donorClaimMaxAttempts is how many codes can be tried against one claim;
+	// after that a new code has to be requested.
+	donorClaimMaxAttempts = 5
+	// donorClaimCodeDigits is the length of a claim code.
+	donorClaimCodeDigits = 8
+)
 
 // DonationService ingests Ko-fi/Patreon payments and maps them to donor status.
 type DonationService struct {
@@ -275,38 +284,48 @@ func parseImportTime(ts string) *time.Time {
 	return nil
 }
 
-// ClaimStart emails a code that proves ownership of the donation email when it
-// differs from the account email.
+// ClaimStart starts a claim for donations made with another email: a code
+// emailed to that address proves the user owns it. The answer is the same whether or not the
+// address has unclaimed donations: a claim is stored either way (and counts
+// toward the cooldown), but the code is only emailed when there is something
+// to claim.
 func (s *DonationService) ClaimStart(userID uuid.UUID, email string) error {
 	email = normalizeEmail(email)
 	if email == "" {
 		return fmt.Errorf("invalid email address")
 	}
+	if s.mailer == nil {
+		return fmt.Errorf("email delivery is not configured")
+	}
 	pending, err := s.repo.HasPendingDonationsForEmail(email)
 	if err != nil {
 		return err
-	}
-	if !pending {
-		return fmt.Errorf("no donations found for that email")
 	}
 	user, err := s.repo.GetUserByID(userID)
 	if err != nil {
 		return fmt.Errorf("user not found")
 	}
-	code, err := numericCode(6)
+	code, err := numericCode(donorClaimCodeDigits)
 	if err != nil {
 		return err
 	}
-	if err := s.repo.UpsertDonorClaim(userID, email, auth.HashToken(code), time.Now().Add(donorClaimTTL)); err != nil {
+	stored, err := s.repo.UpsertDonorClaim(userID, email, auth.HashToken(code), time.Now().Add(donorClaimTTL), donorClaimCooldown)
+	if err != nil {
 		return err
 	}
-	if s.mailer == nil {
-		return fmt.Errorf("email delivery is not configured")
+	if !stored {
+		return fmt.Errorf("please wait a minute before requesting another code")
 	}
-	if err := s.mailer.SendDonorClaimEmail(email, user.Username, code); err != nil {
-		log.Error().Err(err).Str("user_id", userID.String()).Msg("failed to send donor claim email")
-		return fmt.Errorf("could not send the verification email")
+	if !pending {
+		return nil
 	}
+	// Sent in the background and only logged on failure, so the answer (and how
+	// long it takes) is the same whether or not the address has donations.
+	go func() {
+		if err := s.mailer.SendDonorClaimEmail(email, user.Username, code); err != nil {
+			log.Error().Err(err).Str("user_id", userID.String()).Msg("failed to send donor claim email")
+		}
+	}()
 	return nil
 }
 
@@ -314,9 +333,14 @@ func (s *DonationService) ClaimStart(userID uuid.UUID, email string) error {
 // the user and refreshes the donor status. Returns the number of events linked.
 func (s *DonationService) ClaimVerify(userID uuid.UUID, email, code string) (int64, error) {
 	email = normalizeEmail(email)
-	claimEmail, hash, expires, err := s.repo.GetDonorClaim(userID)
+	// Every check uses up one of the claim's attempts, whatever its outcome.
+	claimEmail, hash, expires, ok, err := s.repo.UseDonorClaimAttempt(userID, donorClaimMaxAttempts)
 	if err != nil {
-		return 0, fmt.Errorf("no claim in progress")
+		log.Error().Err(err).Str("user_id", userID.String()).Msg("failed to check donor claim")
+		return 0, fmt.Errorf("could not check the claim code, please try again")
+	}
+	if !ok {
+		return 0, fmt.Errorf("no claim in progress, or too many attempts: request a new code")
 	}
 	if !strings.EqualFold(claimEmail, email) {
 		return 0, fmt.Errorf("email does not match the pending claim")
