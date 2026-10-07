@@ -244,6 +244,10 @@ go test ./...
 docker compose --env-file .env up -d --build
 ```
 
+The repository tests in `internal/repository/user_updates_test.go` run against a real PostgreSQL when
+`NEOASSETS_TEST_DATABASE_URL` is set (skipped otherwise). They drop and re-migrate its `public` schema, so point it at
+a throwaway database whose name contains `test`.
+
 ## Env (.env)
 
 See `README.md` and `.env.example`. `R2_*` tools/certs only need object read +
