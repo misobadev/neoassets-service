@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -616,12 +617,21 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 	// Probe uploaded videos before creating the submission so a bad frame rate is
 	// rejected with the accurate ffprobe reading and no partial row is left
 	// behind. The measured metadata is reused when the file rows are inserted.
+	// Probing downloads the video, so the entries are checked first.
+	if err := s.checkVideoEntries(context.Background(), userID, req.Files); err != nil {
+		return nil, err
+	}
 	videoMeta := map[string]*models.VideoMeta{}
 	for _, f := range req.Files {
 		if f.Delete || f.Move || f.Kind != models.MediaVideo {
 			continue
 		}
-		vm, err := s.probeVideo(context.Background(), f.ObjectKey)
+		ctx, cancel := context.WithTimeout(context.Background(), videoProbeTimeout)
+		vm, err := s.probeVideo(ctx, f.ObjectKey)
+		cancel()
+		if errors.Is(err, errVideoBusy) {
+			return nil, err
+		}
 		if err != nil {
 			return nil, fmt.Errorf("could not read the video, please upload it again")
 		}
@@ -1279,23 +1289,39 @@ func (s *Service) validateApprovedMedia(ctx context.Context, files []models.Meta
 		if f.IsDelete || f.IsMove {
 			continue
 		}
-		data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
+		if err := s.validateApprovedFile(ctx, f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateApprovedFile downloads and probes one submitted file for
+// validateApprovedMedia; a video holds a review slot while it is in memory.
+func (s *Service) validateApprovedFile(ctx context.Context, f models.MetadataSubmissionFile) error {
+	if f.Kind == models.MediaVideo {
+		release, err := acquireVideoSlot(ctx, reviewSlots)
 		if err != nil {
-			return fmt.Errorf("download %s: %w", f.Kind, err)
+			return err
 		}
-		if f.Kind == models.MediaVideo {
-			meta, err := video.Probe(ctx, data)
-			if err != nil {
-				return fmt.Errorf("probe video: %w", err)
-			}
-			if meta.FPS > 0 && meta.FPS < minVideoFPS {
-				return fmt.Errorf("video must be at least %d fps, 60 recommended (detected %d fps)", minVideoFPS, meta.FPS)
-			}
-			continue
+		defer release()
+	}
+	data, err := s.r2.DownloadObject(ctx, f.ObjectKey, maxUploadSize(f.Kind, f.FileName))
+	if err != nil {
+		return fmt.Errorf("download %s: %w", f.Kind, err)
+	}
+	if f.Kind == models.MediaVideo {
+		meta, err := video.Probe(ctx, data)
+		if err != nil {
+			return fmt.Errorf("probe video: %w", err)
 		}
-		if _, err := video.ProbeImage(ctx, data); err != nil {
-			return fmt.Errorf("probe %s image: %w", f.Kind, err)
+		if meta.FPS > 0 && meta.FPS < minVideoFPS {
+			return fmt.Errorf("video must be at least %d fps, 60 recommended (detected %d fps)", minVideoFPS, meta.FPS)
 		}
+		return nil
+	}
+	if _, err := video.ProbeImage(ctx, data); err != nil {
+		return fmt.Errorf("probe %s image: %w", f.Kind, err)
 	}
 	return nil
 }
@@ -1792,7 +1818,7 @@ func (s *Service) moveSubmissionMediaToCanonical(ctx context.Context, id uuid.UU
 		// client conversion can never publish a non-WebP asset. The canonical
 		// object is always .webp with a random immutable key, so no cache
 		// invalidation is needed (the old object is deleted above).
-		data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
+		data, err := s.r2.DownloadObject(ctx, f.ObjectKey, maxUploadSize(f.Kind, f.FileName))
 		if err != nil {
 			return fmt.Errorf("download %s %s: %w", f.Kind, f.ObjectKey, err)
 		}
@@ -1846,9 +1872,63 @@ func (s *Service) deleteReplacedMediaObjects(ctx context.Context, sub *models.Me
 	}
 }
 
+// videoProbeTimeout bounds the create-time download and probe of a video.
+const videoProbeTimeout = 2 * time.Minute
+
+// Videos are held in memory while they are probed or converted, so only a few
+// are handled at once. Contributors' create-time probes and reviewers'
+// approvals use separate slots, so neither can hold up the other.
+var (
+	probeSlots  = make(chan struct{}, 2)
+	reviewSlots = make(chan struct{}, 2)
+)
+
+// errVideoBusy is returned when no video slot frees up before the deadline.
+var errVideoBusy = errors.New("the server is busy processing other videos, please try again in a few minutes")
+
+// acquireVideoSlot waits for a free slot in slots; the returned func releases it.
+func acquireVideoSlot(ctx context.Context, slots chan struct{}) (func(), error) {
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, nil
+	case <-ctx.Done():
+		return nil, errVideoBusy
+	}
+}
+
+// checkVideoEntries checks a submission's video entries before anything is
+// downloaded: at most one video, with a video extension, uploaded by this user
+// to their own staging area, and within maxVideoSize (by HEAD).
+func (s *Service) checkVideoEntries(ctx context.Context, userID uuid.UUID, files []models.MetadataUploadRequest) error {
+	videos := 0
+	for _, f := range files {
+		if f.Delete || f.Move || f.Kind != models.MediaVideo {
+			continue
+		}
+		if videos++; videos > 1 {
+			return fmt.Errorf("only one video can be submitted at a time")
+		}
+		if ext := strings.ToLower(getExt(f.FileName)); !validMediaExt(f.Kind, ext) {
+			return fmt.Errorf("unsupported %s extension %q", mediaExtLabel(f.Kind), ext)
+		}
+		if !isOwnStagingKey(f.ObjectKey, userID) {
+			return fmt.Errorf("invalid upload reference")
+		}
+		if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // probeVideo downloads a submission video from R2 and inspects it with ffprobe.
 func (s *Service) probeVideo(ctx context.Context, objectKey string) (*models.VideoMeta, error) {
-	data, err := s.r2.DownloadObject(ctx, objectKey)
+	release, err := acquireVideoSlot(ctx, probeSlots)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	data, err := s.r2.DownloadObject(ctx, objectKey, maxVideoSize)
 	if err != nil {
 		return nil, err
 	}
@@ -1860,7 +1940,12 @@ func (s *Service) probeVideo(ctx context.Context, objectKey string) (*models.Vid
 // and uploads it to the canonical media/games or media/systems key as .mp4.
 // The submission's original object is removed and the file row is updated.
 func (s *Service) convertVideoToCanonical(ctx context.Context, f models.MetadataSubmissionFile, sub *models.MetadataSubmission, systemID string) error {
-	data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
+	release, err := acquireVideoSlot(ctx, reviewSlots)
+	if err != nil {
+		return err
+	}
+	defer release()
+	data, err := s.r2.DownloadObject(ctx, f.ObjectKey, maxVideoSize)
 	if err != nil {
 		return fmt.Errorf("download video %s: %w", f.ObjectKey, err)
 	}
