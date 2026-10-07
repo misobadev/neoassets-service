@@ -47,7 +47,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	ttl := h.userSvc.TokenTTL()
 	setSessionCookie(w, r, auth.UserCookie, result.Token, ttl)
 	if result.IsAdmin && result.AdminToken != "" {
-		setSessionCookie(w, r, auth.AdminCookie, result.AdminToken, ttl)
+		setSessionCookie(w, r, auth.AdminCookie, result.AdminToken, auth.AdminTokenTTL)
 	} else {
 		clearSessionCookie(w, r, auth.AdminCookie)
 	}

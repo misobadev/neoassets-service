@@ -256,12 +256,30 @@ func loadConfig() *Config {
 // secret. A publicly known JWT secret lets anyone forge admin tokens, so a
 // misconfigured deployment must not start.
 func validateSecrets(cfg *Config) {
-	if len(cfg.JWTSecret) < 32 || cfg.JWTSecret == "change-me" {
-		log.Fatal().Msg("JWT_SECRET must be set to a random value of at least 32 characters")
+	if err := checkSecrets(cfg); err != nil {
+		log.Fatal().Msg(err.Error())
 	}
-	if cfg.AdminEmail != "" && (cfg.AdminPassword == "" || cfg.AdminPassword == "change-me") {
-		log.Fatal().Msg("ADMIN_SEED_PASSWORD must be set when ADMIN_SEED_EMAIL is configured")
+}
+
+// checkSecrets rejects a short JWT_SECRET and any value still carrying the
+// "change-me" placeholder from .env.example, whatever its length.
+func checkSecrets(cfg *Config) error {
+	if len(cfg.JWTSecret) < 32 || isPlaceholder(cfg.JWTSecret) {
+		return fmt.Errorf("JWT_SECRET is unset, shorter than 32 characters, or still the .env.example placeholder: " +
+			"set a random value, e.g. `openssl rand -base64 48`")
 	}
+	if cfg.AdminEmail != "" && (cfg.AdminPassword == "" || isPlaceholder(cfg.AdminPassword)) {
+		return fmt.Errorf("ADMIN_SEED_PASSWORD is unset or still the .env.example placeholder: set a strong password, " +
+			"or unset ADMIN_SEED_EMAIL once the admin account exists")
+	}
+	return nil
+}
+
+// isPlaceholder reports whether a secret still contains the example value's
+// "change-me" marker (in any case, with or without the hyphen).
+func isPlaceholder(secret string) bool {
+	s := strings.ToLower(secret)
+	return strings.Contains(s, "change-me") || strings.Contains(s, "changeme")
 }
 
 // csvEnv splits a comma-separated environment value into a slice, falling back

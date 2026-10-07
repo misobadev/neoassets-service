@@ -182,7 +182,8 @@ the user credential is optional and falls back to guest mode.
   and `/admin/login` set the cookies and no longer return the raw JWT;
   `POST /api/v1/logout` clears them. JWTs carry a `ver` (`token_version`) claim:
   changing or resetting the password bumps `users.token_version` and revokes every
-  outstanding token immediately. Email-verification and password-reset tokens are
+  outstanding token immediately, admin tokens included. Admin tokens (and the
+  `ns_admin` cookie) last 12 h (`auth.AdminTokenTTL`), whichever login issued them. Email-verification and password-reset tokens are
   stored as SHA-256 hashes, never plaintext.
 - Because R2 is public and `/api/v1/metadata/*` stays open (per-IP rate limited),
   quota is an anti-abuse contract, not a hard boundary.

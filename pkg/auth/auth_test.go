@@ -17,7 +17,7 @@ func TestTokenTypeConfusionPrevented(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adminToken, err := GenerateToken(secret, adminID, "a@example.com", time.Hour)
+	adminToken, err := GenerateToken(secret, adminID, "a@example.com", 0, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,4 +60,24 @@ func newUnsafeToken(t *testing.T, claims UserClaims) string {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// Admin tokens carry the account's token version, like user tokens, so a
+// password change or reset can revoke them.
+func TestAdminTokenCarriesTokenVersion(t *testing.T) {
+	secret := "super-secret-test-value-0123456789abcdef"
+	token, err := GenerateToken(secret, uuid.New(), "a@example.com", 3, AdminTokenTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := ParseToken(secret, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.TokenVersion != 3 {
+		t.Fatalf("token version: got %d, want 3", claims.TokenVersion)
+	}
+	if ttl := claims.ExpiresAt.Sub(claims.IssuedAt.Time); ttl != 12*time.Hour {
+		t.Fatalf("admin token lifetime: got %v, want 12h", ttl)
+	}
 }

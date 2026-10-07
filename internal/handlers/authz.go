@@ -21,21 +21,24 @@ func actorID(r *http.Request) (uuid.UUID, bool) {
 	return uuid.Nil, false
 }
 
-// userTokenVersion returns the token version carried by a user token, and
-// whether the actor authenticated with a user token at all. Admin tokens carry
-// no per-user version, so revocation is only enforced for user tokens.
-func userTokenVersion(r *http.Request) (int, bool) {
+// tokenVersion returns the token version carried by the request's admin or
+// user token, and whether there was one.
+func tokenVersion(r *http.Request) (int, bool) {
+	if claims, ok := auth.AdminFromContext(r.Context()); ok && claims != nil {
+		return claims.TokenVersion, true
+	}
 	if claims, ok := auth.UserFromContext(r.Context()); ok && claims != nil {
 		return claims.TokenVersion, true
 	}
 	return 0, false
 }
 
-// tokenRevoked reports whether a user token was invalidated (its version no
-// longer matches the account, e.g. after a password change).
+// tokenRevoked reports whether the request's admin or user token was
+// invalidated (its version no longer matches the account, e.g. after a
+// password change).
 func tokenRevoked(r *http.Request, current int) bool {
-	v, isUser := userTokenVersion(r)
-	return isUser && v != current
+	v, ok := tokenVersion(r)
+	return ok && v != current
 }
 
 // RequireAdmin is defense-in-depth on top of auth.Middleware: it re-checks the

@@ -176,3 +176,15 @@ func TestBestMatchHashPrefersBase(t *testing.T) {
 		t.Fatalf("bestMatch = %+v, want the base game", got)
 	}
 }
+
+// The scrape API takes the same user tokens as the website, so a token revoked
+// by a password change must stop working there too.
+func TestUserTokenCurrent(t *testing.T) {
+	user := &models.User{TokenVersion: 2}
+	if userTokenCurrent(&auth.UserClaims{TokenVersion: 1}, user) {
+		t.Error("a token from before the password change was accepted")
+	}
+	if !userTokenCurrent(&auth.UserClaims{TokenVersion: 2}, user) {
+		t.Error("a current token was rejected")
+	}
+}

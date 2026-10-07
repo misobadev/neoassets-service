@@ -257,13 +257,19 @@ func (s *ScrapeService) resolveUser(credential string) (*models.User, error) {
 		return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user credential"}
 	}
 	user, err := s.repo.GetUserByID(claims.UserID)
-	if err != nil {
+	if err != nil || !userTokenCurrent(claims, user) {
 		return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user credential"}
 	}
 	if s.requireVerified && !user.EmailVerified {
 		return nil, &auth.AuthError{Status: http.StatusForbidden, Message: "email not verified"}
 	}
 	return user, nil
+}
+
+// userTokenCurrent reports whether a user token was issued for the account's
+// current token version (a password change or reset revokes older tokens).
+func userTokenCurrent(claims *auth.UserClaims, user *models.User) bool {
+	return claims.TokenVersion == user.TokenVersion
 }
 
 // preCheckRPM is the generous per-app cap applied before the optional user
