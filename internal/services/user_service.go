@@ -149,7 +149,7 @@ func (s *UserService) Login(req models.UserLoginRequest) (*models.AuthResult, er
 
 	result := &models.AuthResult{User: *user, Token: jwt}
 	if user.Role == models.RoleAdmin {
-		adminToken, err := auth.GenerateToken(s.jwtSecret, user.ID, user.Email, s.tokenTTL)
+		adminToken, err := auth.GenerateToken(s.jwtSecret, user.ID, user.Email, user.TokenVersion, auth.AdminTokenTTL)
 		if err != nil {
 			return nil, err
 		}

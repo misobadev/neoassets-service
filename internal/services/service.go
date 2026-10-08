@@ -66,7 +66,7 @@ func NewService(repo *repository.Repository, r2Client r2.Client, publicBase, jwt
 			".jpeg": true,
 		},
 		jwtSecret: jwtSecret,
-		tokenTTL:  12 * time.Hour,
+		tokenTTL:  auth.AdminTokenTTL,
 		systems:   systems,
 		translator: NewTranslator(
 			os.Getenv("TRANSLATE_WORKER_URL"),
@@ -100,7 +100,7 @@ func (s *Service) Login(email, password string) (*models.LoginResult, error) {
 	}
 
 	expiresAt := time.Now().Add(s.tokenTTL)
-	token, err := auth.GenerateToken(s.jwtSecret, admin.ID, admin.Email, s.tokenTTL)
+	token, err := auth.GenerateToken(s.jwtSecret, admin.ID, admin.Email, admin.TokenVersion, s.tokenTTL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}

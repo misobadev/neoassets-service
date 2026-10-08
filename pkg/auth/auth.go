@@ -35,11 +35,17 @@ func cookieToken(r *http.Request, name string) string {
 	return ""
 }
 
+// AdminTokenTTL is the lifetime of an admin token, whichever login issued it.
+const AdminTokenTTL = 12 * time.Hour
+
 // AdminClaims is the JWT payload for an authenticated administrator.
 type AdminClaims struct {
 	Type    string    `json:"typ"`
 	AdminID uuid.UUID `json:"admin_id"`
 	Email   string    `json:"email"`
+	// TokenVersion must match the account's current token_version, as for
+	// user tokens, so a password change or reset revokes admin sessions too.
+	TokenVersion int `json:"ver"`
 	jwt.RegisteredClaims
 }
 
@@ -70,12 +76,13 @@ func CheckPassword(hash, password string) bool {
 }
 
 // GenerateToken creates a signed JWT for an admin.
-func GenerateToken(secret string, adminID uuid.UUID, email string, ttl time.Duration) (string, error) {
+func GenerateToken(secret string, adminID uuid.UUID, email string, tokenVersion int, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := AdminClaims{
-		Type:    TokenTypeAdmin,
-		AdminID: adminID,
-		Email:   email,
+		Type:         TokenTypeAdmin,
+		AdminID:      adminID,
+		Email:        email,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   adminID.String(),
 			IssuedAt:  jwt.NewNumericDate(now),
