@@ -365,6 +365,24 @@ const maxGIFSize = 5 << 20
 // on approval, so the raw upload only needs to be reasonable in size.
 const maxImageSize = 25 << 20
 
+// maxVideoSize caps a gameplay video upload. Videos are downloaded and probed
+// when the submission is created and re-encoded (to 45 s) on approval, both in
+// memory, so the source has to stay within what the service can hold.
+const maxVideoSize = 200 << 20
+
+// maxUploadSize is the largest object the service downloads for an upload of
+// this kind and file name: the same caps ensureUploaded applies, enforced again
+// on the download itself because the object can be replaced after that check.
+func maxUploadSize(kind, fileName string) int64 {
+	if kind == models.MediaVideo || videoExts[strings.ToLower(getExt(fileName))] {
+		return maxVideoSize
+	}
+	if strings.ToLower(getExt(fileName)) == ".gif" {
+		return maxGIFSize
+	}
+	return maxImageSize
+}
+
 // ValidateUploadRequest checks a single file upload request against the
 // allowed kinds, extensions, and (for backgrounds) system ids.
 func (s *Service) ValidateUploadRequest(req models.UploadRequest) error {
@@ -614,9 +632,9 @@ func (s *Service) RemoveSubmissionFile(ctx context.Context, submissionID, userID
 	return s.repo.DeleteSubmissionFile(file.ID)
 }
 
-// ensureUploaded verifies a submitted object actually exists in R2 (and that a
-// GIF does not exceed the size cap) so a failed or oversized browser upload is
-// never registered.
+// ensureUploaded verifies a submitted object actually exists in R2 and is within
+// the size cap for its type (GIF, image or video), so a failed or oversized
+// browser upload is never registered.
 func (s *Service) ensureUploaded(ctx context.Context, objectKey, fileName string) error {
 	size, ok, err := s.r2.ObjectSize(ctx, objectKey)
 	if err != nil {
@@ -635,6 +653,10 @@ func (s *Service) ensureUploaded(ctx context.Context, objectKey, fileName string
 	case s.imageExts[ext]:
 		if size > maxImageSize {
 			return fmt.Errorf("image %q is too large (max %d MB)", fileName, maxImageSize>>20)
+		}
+	case videoExts[ext]:
+		if size > maxVideoSize {
+			return fmt.Errorf("video %q is too large (max %d MB)", fileName, maxVideoSize>>20)
 		}
 	}
 	return nil
@@ -1074,7 +1096,10 @@ func (s *Service) publishSubmissionFile(ctx context.Context, packID string, subm
 		return s.copySubmissionFileToCanonical(ctx, packID, submissionID, f, canonical)
 	}
 
-	data, err := s.r2.DownloadObject(ctx, f.ObjectKey)
+	data, err := s.r2.DownloadObject(ctx, f.ObjectKey, maxUploadSize(f.Kind, f.FileName))
+	if errors.Is(err, r2.ErrObjectTooLarge) {
+		return fmt.Errorf("download %s: %w", f.ObjectKey, err)
+	}
 	if err != nil {
 		// A missing source upload (404 NoSuchKey) means the object never made it
 		// to R2; drop that stale file row and keep going rather than failing the

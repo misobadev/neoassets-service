@@ -1,6 +1,7 @@
 package r2
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -25,7 +26,7 @@ type Client interface {
 	UploadFileCached(ctx context.Context, objectName, contentType, cacheControl string, reader io.Reader) error
 	CopyObject(ctx context.Context, sourceKey, destKey string) error
 	CopyObjectCached(ctx context.Context, sourceKey, destKey, cacheControl string) error
-	DownloadObject(ctx context.Context, objectName string) ([]byte, error)
+	DownloadObject(ctx context.Context, objectName string, maxSize int64) ([]byte, error)
 	ListKeys(ctx context.Context, prefix string) ([]string, error)
 	ListKeysWithSize(ctx context.Context, prefix string) ([]ObjectInfo, error)
 	DeleteObjects(ctx context.Context, keys []string) error
@@ -162,9 +163,9 @@ func (c *clientImpl) CopyObjectCached(ctx context.Context, sourceKey, destKey, c
 	return nil
 }
 
-// DownloadObject reads the full contents of an object (used to fetch a user's
-// uploaded video before converting it with ffmpeg).
-func (c *clientImpl) DownloadObject(ctx context.Context, objectName string) ([]byte, error) {
+// DownloadObject reads an object into memory (an upload to probe, convert or
+// normalize), refusing one larger than maxSize with ErrObjectTooLarge.
+func (c *clientImpl) DownloadObject(ctx context.Context, objectName string, maxSize int64) ([]byte, error) {
 	out, err := c.s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.bucketName),
 		Key:    aws.String(objectName),
@@ -173,11 +174,37 @@ func (c *clientImpl) DownloadObject(ctx context.Context, objectName string) ([]b
 		return nil, fmt.Errorf("failed to download object %s: %w", objectName, err)
 	}
 	defer out.Body.Close()
-	data, err := io.ReadAll(out.Body)
+	data, err := readBounded(out.Body, out.ContentLength, maxSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read object %s: %w", objectName, err)
 	}
 	return data, nil
+}
+
+// ErrObjectTooLarge is returned by DownloadObject for an object over the
+// caller's size limit.
+var ErrObjectTooLarge = errors.New("object too large")
+
+// readBounded reads at most maxSize bytes of an object body. An object whose
+// reported length is already over the limit is refused without being read, and
+// the read stops at the limit anyway, since the object may have been replaced
+// after any earlier size check.
+func readBounded(body io.Reader, contentLength *int64, maxSize int64) ([]byte, error) {
+	if contentLength != nil && *contentLength > maxSize {
+		return nil, ErrObjectTooLarge
+	}
+	var buf bytes.Buffer
+	if contentLength != nil && *contentLength > 0 {
+		// The extra MinRead keeps the final, empty read from doubling the buffer.
+		buf.Grow(int(*contentLength) + bytes.MinRead)
+	}
+	if _, err := io.Copy(&buf, io.LimitReader(body, maxSize+1)); err != nil {
+		return nil, err
+	}
+	if int64(buf.Len()) > maxSize {
+		return nil, ErrObjectTooLarge
+	}
+	return buf.Bytes(), nil
 }
 
 // ListKeys returns all object keys under a prefix (used to clean up orphaned
