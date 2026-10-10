@@ -642,6 +642,17 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 		videoMeta[f.ObjectKey] = vm
 	}
 
+	// An upload is stored with the type it was signed with: refuse a type its
+	// kind can't be before anything is written.
+	for _, f := range req.Files {
+		if f.Delete || f.Move {
+			continue
+		}
+		if _, err := uploadContentType(f.Kind, f.MimeType); err != nil {
+			return nil, err
+		}
+	}
+
 	id, err := s.repo.CreateMetadataSubmission(req.GameID, req.SystemID, userID, kind, payload)
 	if err != nil {
 		return nil, err
@@ -700,15 +711,19 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 				return nil, err
 			}
 		}
-		mime := f.MimeType
-		if mime == "" {
-			mime = "application/octet-stream"
+		// A moved media isn't an upload: it keeps the type it is stored with.
+		contentType := f.MimeType
+		if !f.Move {
+			contentType, _ = uploadContentType(f.Kind, f.MimeType) // checked above
+		}
+		if contentType == "" {
+			contentType = "application/octet-stream"
 		}
 		var vmeta *models.VideoMeta
 		if f.Kind == models.MediaVideo {
 			vmeta = videoMeta[f.ObjectKey]
 		}
-		if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, mime, f.Region, f.Size, false, f.Move, vmeta); err != nil {
+		if err := s.repo.AddMetadataSubmissionFile(id, f.Kind, f.ObjectKey, f.FileName, contentType, f.Region, f.Size, false, f.Move, vmeta); err != nil {
 			return nil, err
 		}
 	}
@@ -818,8 +833,9 @@ func (s *Service) MetadataUploadURLPre(ctx context.Context, userID uuid.UUID, re
 	if !validMediaExt(req.Kind, ext) {
 		return nil, fmt.Errorf("unsupported %s extension %q", mediaExtLabel(req.Kind), ext)
 	}
-	if req.MimeType == "" {
-		req.MimeType = "application/octet-stream"
+	contentType, err := uploadContentType(req.Kind, req.MimeType)
+	if err != nil {
+		return nil, err
 	}
 	if req.GameID != nil {
 		if _, err := s.repo.GetGame(*req.GameID, ""); err != nil {
@@ -831,7 +847,7 @@ func (s *Service) MetadataUploadURLPre(ctx context.Context, userID uuid.UUID, re
 		}
 	}
 	objectKey := stagingMediaKey(userID, req.Kind, req.FileName)
-	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, req.MimeType, s.uploadTTL)
+	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign metadata upload URL")
 		return nil, fmt.Errorf("could not prepare upload")
@@ -929,17 +945,18 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 	if !validMediaExt(req.Kind, ext) {
 		return nil, fmt.Errorf("unsupported %s extension %q", mediaExtLabel(req.Kind), ext)
 	}
-	if req.MimeType == "" {
-		req.MimeType = "application/octet-stream"
+	contentType, err := uploadContentType(req.Kind, req.MimeType)
+	if err != nil {
+		return nil, err
 	}
 
 	objectKey := fmt.Sprintf("media/submissions/%s/%s/%s", submissionID, req.Kind, filepath.Base(req.FileName))
-	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, req.MimeType, s.uploadTTL)
+	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign metadata upload URL")
 		return nil, fmt.Errorf("could not prepare upload")
 	}
-	if err := s.repo.AddMetadataSubmissionFile(submissionID, req.Kind, objectKey, req.FileName, req.MimeType, req.Region, req.Size, false, false, nil); err != nil {
+	if err := s.repo.AddMetadataSubmissionFile(submissionID, req.Kind, objectKey, req.FileName, contentType, req.Region, req.Size, false, false, nil); err != nil {
 		return nil, err
 	}
 	return &models.UploadResponse{

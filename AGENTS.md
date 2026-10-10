@@ -72,6 +72,13 @@ constraint (migrations `008` + `009`). Array of statuses differs from older docs
 - `POST /api/v1/submissions`                  create (status pending). With
   `contribution=true` + `pack_id`, it creates a contribution to an approved
   pack (name/author/donation/ai copied from the pack; description optional).
+  A contribution never changes them: saving a draft keeps them, and approving
+  it re-copies them from the pack. The pack's `submitted_by` stays the user who
+  submitted the pack itself. So a pack's identity can't change after its first
+  approval (there is no owner/admin edit path yet). A new pack's `donation_url`
+  must be an https web address (`ko-fi.com/x` and `http://` are upgraded to
+  https); pack responses upgrade a stored value the same way and omit one that
+  can't be.
 - `PUT /api/v1/submissions/{id}`              save draft (only when created/rejected)
 - `POST /api/v1/submissions/{id}/upload`      presign + `AddFile` + log
 - `POST /api/v1/submissions/{id}/submit`      created/rejected -> pending
@@ -223,6 +230,14 @@ the user credential is optional and falls back to guest mode.
   needed to read them.
 - **Bucket CORS** must allow `PUT` + request headers, otherwise the browser
   preflight fails during direct uploads. Configure it on the bucket, not in code.
+- **Upload Content-Type:** a presigned upload is signed with the client's
+  `mime_type` only if it fits the kind (`uploadContentType`: images
+  `image/png|jpeg|webp|gif`, videos `video/*`, themes `application/json`, or
+  `application/octet-stream`); anything else (HTML, SVG, text) is refused,
+  because uploads are served from the public bucket as stored. Approval writes
+  every published pack object itself with a server-chosen type (WebP, GIF, or a
+  theme checked with `json.Valid`, max 1 MiB) — never `CopyObject`, which keeps
+  the uploader's metadata.
 - Object keys: `packs/{packId}/backgrounds/{system}.webp|gif`,
   `packs/{packId}/theme.json`. A pack has no dedicated preview image; its public
   thumbnail is the background of a popular system (snes, ps1, gba, genesis,
