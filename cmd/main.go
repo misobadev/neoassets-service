@@ -73,6 +73,8 @@ type Config struct {
 	DonorSubscriptionGraceDays         int
 	EnableDebugMode                    bool
 	CORSOrigins                        []string
+	CDNIPRanges                        string
+	CDNClientIPHeader                  string
 }
 
 func main() {
@@ -81,6 +83,10 @@ func main() {
 
 	cfg := loadConfig()
 	validateSecrets(cfg)
+	// The CDN whose client-address header the per-IP rate limits trust.
+	if err := handlers.ConfigureCDN(cfg.CDNIPRanges, cfg.CDNClientIPHeader); err != nil {
+		log.Fatal().Err(err).Msg("Invalid CDN configuration")
+	}
 
 	// Apply the rewards/scrape economy before any service or repository reads it.
 	repository.ConfigureThreads(cfg.ScrapeAdminThreads, cfg.ScrapeGuestThreads, cfg.ScrapeSupporterBonusThreads, cfg.ScrapeMonthlySupporterBonusThreads)
@@ -249,6 +255,8 @@ func loadConfig() *Config {
 		DonorSubscriptionGraceDays:         getEnvInt("DONOR_SUBSCRIPTION_GRACE_DAYS", 0),
 		EnableDebugMode:                    getEnvOrDefault("ENABLE_DEBUG_MODE", "false") == "true",
 		CORSOrigins:                        csvEnv("CORS_ORIGINS", "http://localhost:5173,http://localhost:8091"),
+		CDNIPRanges:                        getEnvOrDefault("CDN_IP_RANGES", ""),
+		CDNClientIPHeader:                  getEnvOrDefault("CDN_CLIENT_IP_HEADER", ""),
 	}
 }
 
@@ -400,7 +408,7 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 		r.With(metadataLimiter.Handler).Get("/packs", h.ListPacks)
 		r.With(metadataLimiter.Handler).Get("/packs/{packID}", h.GetPack)
 		r.With(metadataLimiter.Handler, downloadLimiter.KeyedHandler(func(r *http.Request) string {
-			return handlers.ClientIP(r) + "|" + chi.URLParam(r, "packID")
+			return handlers.ClientKey(r) + "|" + chi.URLParam(r, "packID")
 		})).Get("/packs/{packID}/download", h.DownloadPack)
 		r.Get("/systems", h.ListSystems)
 		r.Get("/config", h.GetConfig)

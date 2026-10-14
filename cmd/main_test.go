@@ -29,3 +29,12 @@ func TestCheckSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestCDNSettingsAreRead(t *testing.T) {
+	t.Setenv("CDN_IP_RANGES", "151.101.0.0/16")
+	t.Setenv("CDN_CLIENT_IP_HEADER", "Fastly-Client-IP")
+	cfg := loadConfig()
+	if cfg.CDNIPRanges != "151.101.0.0/16" || cfg.CDNClientIPHeader != "Fastly-Client-IP" {
+		t.Fatalf("CDN settings: %q, %q", cfg.CDNIPRanges, cfg.CDNClientIPHeader)
+	}
+}

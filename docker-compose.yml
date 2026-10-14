@@ -7,8 +7,11 @@ services:
     build: .
     container_name: neoassets-service
     restart: unless-stopped
+    # Reachable only from this host (local development). In production the
+    # service is reached through Traefik on dokploy-network; publishing the port
+    # on every interface would let clients bypass the CDN and Traefik.
     ports:
-      - "${PORT:-8090}:8090"
+      - "127.0.0.1:${PORT:-8090}:8090"
     environment:
       PORT: 8090
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
@@ -54,6 +57,10 @@ services:
       DONOR_SUBSCRIPTION_GRACE_DAYS: ${DONOR_SUBSCRIPTION_GRACE_DAYS:-0}
       ENABLE_DEBUG_MODE: ${ENABLE_DEBUG_MODE:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8091}
+      # Client IP for the rate limits (see .env.example).
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-}
+      CDN_IP_RANGES: ${CDN_IP_RANGES:-}
+      CDN_CLIENT_IP_HEADER: ${CDN_CLIENT_IP_HEADER:-}
     volumes:
       - ./migrations:/app/migrations
     networks:
