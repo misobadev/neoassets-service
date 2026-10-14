@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -63,6 +64,10 @@ type ScrapeService struct {
 
 	mu       sync.Mutex
 	limiters map[string]*limiterEntry
+
+	// refused counts rate-limited requests in memory; they are written in
+	// batches so a stream of refused requests doesn't cost database writes.
+	refused refusalBatch
 }
 
 // limiterEntry pairs a token bucket with its last access time so stale entries
@@ -85,7 +90,7 @@ func NewScrapeService(repo *repository.Repository, meta *Service, jwtSecret stri
 	if rpmPerThread <= 0 {
 		rpmPerThread = defaultRPMPerThread
 	}
-	return &ScrapeService{
+	s := &ScrapeService{
 		repo:            repo,
 		meta:            meta,
 		jwtSecret:       jwtSecret,
@@ -95,6 +100,7 @@ func NewScrapeService(repo *repository.Repository, meta *Service, jwtSecret stri
 		requireVerified: requireVerified,
 		limiters:        map[string]*limiterEntry{},
 	}
+	return s
 }
 
 // AuthenticateScrape resolves the two credential layers into a scrape subject.
@@ -128,7 +134,7 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 	// credential, so a garbage user credential cannot force an unbounded DB
 	// lookup without any throttling. The real per-subject limit is applied below.
 	if !s.limiterFor("pre:"+app.ClientID, s.preCheckRPM()).Allow() {
-		s.record(app.ID, resolveSoftwareName(creds.SoftwareName, app.Name), "rate_limited")
+		s.record(app.ID, resolveSoftwareName(creds.SoftwareName, app.Name), app.Name, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded"}
 	}
 
@@ -169,11 +175,11 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 			return nil, &auth.AuthError{Status: http.StatusInternalServerError, Message: "debug mode unavailable"}
 		}
 		if used > maxDebugCallsPerDay {
-			s.record(app.ID, subject.SoftwareName, "rate_limited")
+			s.record(app.ID, subject.SoftwareName, app.Name, "rate_limited")
 			return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "debug daily limit exceeded"}
 		}
 		_ = s.repo.IncrementDebugCalls(app.ID)
-		_ = s.repo.RecordSoftwareOutcome(app.ID, subject.SoftwareName, "debug")
+		_ = s.repo.RecordSoftwareOutcome(app.ID, subject.SoftwareName, app.Name, "debug", 1)
 		subject.Debug = true
 		subject.ForceUsed = creds.ForceUsed
 		subject.ForceRateLimit = creds.ForceRateLimit
@@ -184,23 +190,33 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 	}
 
 	if subject.Debug && subject.ForceRateLimit {
-		s.record(app.ID, subject.SoftwareName, "rate_limited")
+		s.record(app.ID, subject.SoftwareName, app.Name, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded (debug)"}
 	}
 	if !s.allowSubject(subject) {
-		s.record(app.ID, subject.SoftwareName, "rate_limited")
+		s.record(app.ID, subject.SoftwareName, app.Name, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded"}
 	}
 	return subject, nil
 }
 
 // record persists a scrape outcome for the developer dashboard (per app and per
-// software). Failures are logged but never break the request.
-func (s *ScrapeService) record(appID uuid.UUID, software, outcome string) {
-	if err := s.repo.RecordScrapeOutcome(appID, outcome); err != nil {
+// software; fallback is the app's name, used when the software name can't get
+// its own row). Rate-limited requests are only counted here and written by the
+// next batch. Failures are logged but never break the request.
+func (s *ScrapeService) record(appID uuid.UUID, software, fallback, outcome string) {
+	if outcome == "rate_limited" {
+		s.refused.add(appID, software, fallback)
+		return
+	}
+	s.write(appID, software, fallback, outcome, 1)
+}
+
+func (s *ScrapeService) write(appID uuid.UUID, software, fallback, outcome string, n int64) {
+	if err := s.repo.RecordScrapeOutcome(appID, outcome, n); err != nil {
 		log.Warn().Err(err).Str("outcome", outcome).Msg("failed to record scrape outcome")
 	}
-	if err := s.repo.RecordSoftwareOutcome(appID, software, outcome); err != nil {
+	if err := s.repo.RecordSoftwareOutcome(appID, software, fallback, outcome, n); err != nil {
 		log.Warn().Err(err).Str("outcome", outcome).Msg("failed to record software outcome")
 	}
 }
@@ -210,19 +226,114 @@ func (s *ScrapeService) RecordOutcome(subject *auth.ScrapeSubject, outcome strin
 	if subject == nil || subject.ClientDBID == uuid.Nil {
 		return
 	}
-	s.record(subject.ClientDBID, subject.SoftwareName, outcome)
+	s.record(subject.ClientDBID, subject.SoftwareName, subject.ClientName, outcome)
 }
 
+// refusalFlushInterval is how often batched rate-limited counts are written.
+const refusalFlushInterval = 10 * time.Second
+
+// maxPendingSoftwarePerApp caps the distinct software names one app can hold in
+// the refusal batch between writes; further names are counted under the app's
+// own name.
+const maxPendingSoftwarePerApp = 50
+
+type refusalKey struct {
+	app      uuid.UUID
+	software string
+}
+
+type refusal struct {
+	app                uuid.UUID
+	software, fallback string
+	count              int64
+}
+
+// refusalBatch counts rate-limited requests per app and software until they
+// are written. Only authenticated apps reach it, so the apps are bounded by the
+// registered ones and the names per app by maxPendingSoftwarePerApp.
+type refusalBatch struct {
+	mu      sync.Mutex
+	pending map[refusalKey]*refusal
+	perApp  map[uuid.UUID]int
+}
+
+func (b *refusalBatch) add(app uuid.UUID, software, fallback string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pending == nil {
+		b.pending = map[refusalKey]*refusal{}
+		b.perApp = map[uuid.UUID]int{}
+	}
+	k := refusalKey{app, software}
+	if r, ok := b.pending[k]; ok {
+		r.count++
+		return
+	}
+	if b.perApp[app] >= maxPendingSoftwarePerApp {
+		k.software = fallback
+		if r, ok := b.pending[k]; ok {
+			r.count++
+			return
+		}
+	}
+	b.pending[k] = &refusal{app: app, software: k.software, fallback: fallback, count: 1}
+	b.perApp[app]++
+}
+
+// drain returns the pending counts and empties the batch.
+func (b *refusalBatch) drain() []refusal {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]refusal, 0, len(b.pending))
+	for _, r := range b.pending {
+		out = append(out, *r)
+	}
+	b.pending, b.perApp = nil, nil
+	return out
+}
+
+// StartRefusalFlush writes the batched rate-limited counts every
+// refusalFlushInterval until ctx is done. Call FlushRefusals once more on
+// shutdown so the last counts aren't lost.
+func (s *ScrapeService) StartRefusalFlush(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(refusalFlushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.FlushRefusals()
+			}
+		}
+	}()
+}
+
+// FlushRefusals writes the batched rate-limited counts now.
+func (s *ScrapeService) FlushRefusals() {
+	for _, r := range s.refused.drain() {
+		s.write(r.app, r.software, r.fallback, "rate_limited", r.count)
+	}
+}
+
+// maxSoftwareNameBytes caps a software name.
+const maxSoftwareNameBytes = 120
+
 // resolveSoftwareName uses the client-supplied softname, falling back to the
-// developer app's name. It is trimmed and capped to keep the stats dimension
-// bounded.
+// developer app's name. It is trimmed and capped (on a character boundary, so
+// the stored name stays valid UTF-8) to keep the stats dimension bounded.
 func resolveSoftwareName(name, fallback string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = fallback
 	}
-	if len(name) > 120 {
-		name = name[:120]
+	if len(name) > maxSoftwareNameBytes {
+		cut := maxSoftwareNameBytes
+		for cut > 0 && !utf8.RuneStart(name[cut]) {
+			cut--
+		}
+		name = name[:cut]
 	}
 	return name
 }
@@ -417,7 +528,7 @@ func (s *ScrapeService) resolveSystems(q models.ScrapeGameQuery) ([]string, erro
 // does not match and a name is present the search falls back to the name. It
 // returns the game (nil when nothing matched) and how it was matched ("hash" or
 // "name").
-func (s *ScrapeService) FindGames(q models.ScrapeGameQuery) (*models.ScrapeGame, string, error) {
+func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery) (*models.ScrapeGame, string, error) {
 	systemIDs, err := s.resolveSystems(q)
 	if err != nil {
 		return nil, "", err
@@ -453,13 +564,13 @@ func (s *ScrapeService) FindGames(q models.ScrapeGameQuery) (*models.ScrapeGame,
 	if name == "" {
 		return nil, "", fmt.Errorf("name is required")
 	}
-	var candidates []models.Game
-	for _, systemID := range systemIDs {
-		found, err := s.meta.SearchGameCandidates(name, systemID, q.Type, maxGamesLimit)
-		if err != nil {
-			return nil, "", err
-		}
-		candidates = append(candidates, found...)
+	// One query for every system of the selector (up to maxGamesLimit
+	// candidates each) rather than one per system: a family or group lookup is
+	// charged a single quota unit, so its database cost shouldn't grow with
+	// the number of systems it covers.
+	candidates, err := s.meta.SearchGameCandidates(ctx, name, systemIDs, q.Type, maxGamesLimit)
+	if err != nil {
+		return nil, "", err
 	}
 	best := bestMatch(candidates, name)
 	if best == nil {

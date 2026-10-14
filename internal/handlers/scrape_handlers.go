@@ -68,7 +68,7 @@ func (h *Handler) ScrapeGames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	game, matchedBy, err := h.scrapeSvc.FindGames(query)
+	game, matchedBy, err := h.scrapeSvc.FindGames(r.Context(), query)
 	if err != nil {
 		writeServerError(w, http.StatusBadRequest, "failed to resolve game", err)
 		return

@@ -232,29 +232,30 @@ func (r *Repository) GetScrapeUsage(day time.Time, subjectType, subjectID string
 	return count, nil
 }
 
-// RecordScrapeOutcome bumps a developer app's lifetime counters. Every outcome
-// counts as an API call; specific outcomes also bump their own counter.
-func (r *Repository) RecordScrapeOutcome(appID uuid.UUID, outcome string) error {
+// RecordScrapeOutcome bumps a developer app's lifetime counters by n (refused
+// requests are recorded in batches). Every outcome counts as an API call;
+// specific outcomes also bump their own counter.
+func (r *Repository) RecordScrapeOutcome(appID uuid.UUID, outcome string, n int64) error {
 	var query string
 	switch outcome {
 	case "not_found":
 		query = `UPDATE developer_apps
-		         SET api_calls = api_calls + 1, ko_scraps = ko_scraps + 1, last_scrape_at = NOW()
+		         SET api_calls = api_calls + $2, ko_scraps = ko_scraps + $2, last_scrape_at = NOW()
 		         WHERE id = $1`
 	case "rate_limited":
 		query = `UPDATE developer_apps
-		         SET api_calls = api_calls + 1, rate_limited = rate_limited + 1, last_scrape_at = NOW()
+		         SET api_calls = api_calls + $2, rate_limited = rate_limited + $2, last_scrape_at = NOW()
 		         WHERE id = $1`
 	case "quota_exceeded":
 		query = `UPDATE developer_apps
-		         SET api_calls = api_calls + 1, quota_exceeded = quota_exceeded + 1, last_scrape_at = NOW()
+		         SET api_calls = api_calls + $2, quota_exceeded = quota_exceeded + $2, last_scrape_at = NOW()
 		         WHERE id = $1`
 	default:
 		query = `UPDATE developer_apps
-		         SET api_calls = api_calls + 1, last_scrape_at = NOW()
+		         SET api_calls = api_calls + $2, last_scrape_at = NOW()
 		         WHERE id = $1`
 	}
-	if _, err := r.db.Exec(query, appID); err != nil {
+	if _, err := r.db.Exec(query, appID, n); err != nil {
 		return fmt.Errorf("failed to record scrape outcome: %w", err)
 	}
 	return nil
@@ -284,23 +285,38 @@ func (r *Repository) IncrementDebugCalls(appID uuid.UUID) error {
 	return err
 }
 
-// RecordSoftwareOutcome bumps the per-software counters for an app. Debug calls
-// are counted separately and do not increment api_calls.
-func (r *Repository) RecordSoftwareOutcome(appID uuid.UUID, name, outcome string) error {
-	api, ko, rl, qe, dbg := 1, 0, 0, 0, 0
+// maxSoftwareNamesPerApp caps the per-software rows one app can have. The name
+// is client-supplied, so without a cap every distinct value would add a row;
+// past the cap, new names are counted under the app's own name. (Concurrent
+// first uses of new names can go slightly past it.)
+const maxSoftwareNamesPerApp = 50
+
+// RecordSoftwareOutcome adds n outcomes to an app's per-software counters, under
+// name (or fallback, the app's name, when name is empty or the app already has
+// maxSoftwareNamesPerApp names). Debug calls are counted separately and do not
+// increment api_calls.
+func (r *Repository) RecordSoftwareOutcome(appID uuid.UUID, name, fallback, outcome string, n int64) error {
+	if name == "" {
+		name = fallback
+	}
+	api, ko, rl, qe, dbg := n, int64(0), int64(0), int64(0), int64(0)
 	switch outcome {
 	case "not_found":
-		ko = 1
+		ko = n
 	case "rate_limited":
-		rl = 1
+		rl = n
 	case "quota_exceeded":
-		qe = 1
+		qe = n
 	case "debug":
-		api, dbg = 0, 1
+		api, dbg = 0, n
 	}
 	_, err := r.db.Exec(
 		`INSERT INTO app_software_stats (app_id, name, api_calls, ko_scraps, rate_limited, quota_exceeded, debug_calls, last_scrape_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		 SELECT $1,
+		        CASE WHEN EXISTS (SELECT 1 FROM app_software_stats WHERE app_id = $1 AND name = $2)
+		               OR (SELECT count(*) FROM app_software_stats WHERE app_id = $1) < $9
+		             THEN $2 ELSE $3 END,
+		        $4, $5, $6, $7, $8, NOW()
 		 ON CONFLICT (app_id, name) DO UPDATE SET
 		   api_calls = app_software_stats.api_calls + EXCLUDED.api_calls,
 		   ko_scraps = app_software_stats.ko_scraps + EXCLUDED.ko_scraps,
@@ -308,7 +324,7 @@ func (r *Repository) RecordSoftwareOutcome(appID uuid.UUID, name, outcome string
 		   quota_exceeded = app_software_stats.quota_exceeded + EXCLUDED.quota_exceeded,
 		   debug_calls = app_software_stats.debug_calls + EXCLUDED.debug_calls,
 		   last_scrape_at = NOW()`,
-		appID, name, api, ko, rl, qe, dbg,
+		appID, name, fallback, api, ko, rl, qe, dbg, maxSoftwareNamesPerApp,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to record software outcome: %w", err)

@@ -87,7 +87,7 @@ func (h *Handler) SearchGames(w http.ResponseWriter, r *http.Request) {
 	gtype := r.URL.Query().Get("type")
 	sort := r.URL.Query().Get("sort")
 	limit, offset := parseLimitOffset(r)
-	list, total, err := h.svc.SearchGames(q, systemID, gtype, sort, limit, offset)
+	list, total, err := h.svc.SearchGames(r.Context(), q, systemID, gtype, sort, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to search games")
 		return

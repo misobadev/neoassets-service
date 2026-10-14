@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -35,6 +37,8 @@ import (
 type Config struct {
 	Port                               string
 	DatabaseURL                        string
+	DBMaxOpenConns                     int
+	DBStatementTimeout                 time.Duration
 	JWTSecret                          string
 	R2AccountID                        string
 	R2AccessKey                        string
@@ -88,15 +92,17 @@ func main() {
 	repository.ConfigureDonations(cfg.DonorSubscriptionGraceDays)
 	services.ConfigurePoints(cfg.PointsTextMetadata, cfg.PointsImageMetadata, cfg.PointsVideoMetadata, cfg.PointsSAPImage, cfg.PointsNewGame)
 
-	db, err := initDatabase(cfg.DatabaseURL)
+	// Migrations run on their own connection, without the statement timeout:
+	// a data migration may legitimately take longer than any request should.
+	if err := runMigrations(cfg.DatabaseURL); err != nil {
+		log.Fatal().Err(err).Msg("Failed to run migrations")
+	}
+
+	db, err := openDatabase(cfg.DatabaseURL, cfg.DBStatementTimeout, cfg.DBMaxOpenConns)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize database")
 	}
 	defer db.Close()
-
-	if err := runMigrations(db); err != nil {
-		log.Fatal().Err(err).Msg("Failed to run migrations")
-	}
 
 	repo := repository.NewRepository(db)
 
@@ -169,6 +175,8 @@ func main() {
 	svc.StartStorageRefresh(context.Background())
 	// Downgrade monthly supporters whose Ko-fi subscription stopped paying.
 	donationSvc.StartExpiryJob(context.Background())
+	// Write the batched counts of rate-limited scrape requests.
+	scrapeSvc.StartRefusalFlush(context.Background())
 
 	r := setupRouter(handler, scrapeSvc, cfg)
 
@@ -199,6 +207,7 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Server forced to shutdown")
 	}
+	scrapeSvc.FlushRefusals()
 
 	log.Info().Msg("Server exited")
 }
@@ -207,6 +216,8 @@ func loadConfig() *Config {
 	return &Config{
 		Port:                  getEnvOrDefault("PORT", "8090"),
 		DatabaseURL:           getEnvOrDefault("DATABASE_URL", "postgres://user:password@localhost/neoassets?sslmode=disable"),
+		DBMaxOpenConns:        getEnvInt("DB_MAX_OPEN_CONNS", 20),
+		DBStatementTimeout:    time.Duration(getEnvInt("DB_STATEMENT_TIMEOUT_SECONDS", 30)) * time.Second,
 		JWTSecret:             getEnvOrDefault("JWT_SECRET", "change-me"),
 		R2AccountID:           getEnvOrDefault("R2_ACCOUNT_ID", ""),
 		R2AccessKey:           getEnvOrDefault("R2_ACCESS_KEY", ""),
@@ -315,20 +326,82 @@ func getEnvInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
-func initDatabase(databaseURL string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", databaseURL)
+// openDatabase opens the service's connection pool. It holds at most maxOpen
+// connections, so a burst of slow requests waits for a connection instead of
+// using up the database server's slots, and every statement runs under
+// statementTimeout, which Postgres enforces itself, so a query whose HTTP
+// request has already gone doesn't run on (0 disables either limit).
+func openDatabase(databaseURL string, statementTimeout time.Duration, maxOpen int) (*sql.DB, error) {
+	db, err := sql.Open("postgres", databaseDSN(databaseURL, statementTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	configurePool(db, maxOpen)
 
 	if err := db.Ping(); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	return db, nil
 }
 
-func runMigrations(db *sql.DB) error {
+// databaseDSN adds a statement_timeout to the connection string, unless the
+// operator already set one there. lib/pq sends keys it doesn't know to the
+// server as session settings, so every pooled connection gets it.
+func databaseDSN(raw string, timeout time.Duration) string {
+	if timeout <= 0 {
+		return raw
+	}
+	ms := strconv.FormatInt(timeout.Milliseconds(), 10)
+	if strings.HasPrefix(raw, "postgres://") || strings.HasPrefix(raw, "postgresql://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			// sql.Open reports the malformed URL itself.
+			return raw
+		}
+		q := u.Query()
+		if q.Has("statement_timeout") || strings.Contains(q.Get("options"), "statement_timeout") {
+			return raw
+		}
+		base, fragment, hasFragment := strings.Cut(raw, "#")
+		sep := "?"
+		if strings.Contains(base, "?") {
+			sep = "&"
+		}
+		out := base + sep + "statement_timeout=" + ms
+		if hasFragment {
+			out += "#" + fragment
+		}
+		return out
+	}
+	if dsnSetsStatementTimeout.MatchString(raw) {
+		return raw
+	}
+	return strings.TrimSpace(raw) + " statement_timeout=" + ms
+}
+
+// dsnSetsStatementTimeout matches a key/value connection string that already
+// sets a statement timeout, directly or through options='-c ...'.
+var dsnSetsStatementTimeout = regexp.MustCompile(`statement_timeout\s*=`)
+
+// configurePool bounds the connection pool (0 leaves it unbounded).
+func configurePool(db *sql.DB, maxOpen int) {
+	if maxOpen <= 0 {
+		return
+	}
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxOpen)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+}
+
+func runMigrations(databaseURL string) error {
+	db, err := sql.Open("postgres", databaseURL)
+	if err != nil {
+		return fmt.Errorf("failed to open database for migrations: %w", err)
+	}
+	defer db.Close()
+
 	driver, err := postgres.WithInstance(db, &postgres.Config{})
 	if err != nil {
 		return fmt.Errorf("failed to create migration driver: %w", err)
@@ -338,6 +411,7 @@ func runMigrations(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("failed to create migrate instance: %w", err)
 	}
+	defer m.Close()
 
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
 		return fmt.Errorf("failed to run migrations: %w", err)

@@ -167,6 +167,11 @@ the user credential is optional and falls back to guest mode.
 - Per-version stats live in `app_software_stats` (migration `040`). The client
   may send `softname` (query param or `X-Software-Name` header) to distinguish
   versions; absent, the app name is used. Quota/rate limits stay per app/user.
+  An app keeps at most 50 software names (later ones count under the app name),
+  and rate-limited requests are counted in memory and written every 10 s, so
+  refused traffic doesn't cost a database write each.
+- A family/group selector searches all its systems in one query (up to 25
+  candidates per system), and a search matches on at most 8 words.
 - Debug mode: each app has an owner-only `debug_password`, stored hashed
   (migration `039` column holds the hash). Passing `X-Debug-Password` enables
   `forcerequestok` / `forcethreads` / `forceratelimit`, capped at 100/day in
@@ -246,6 +251,12 @@ docker compose --env-file .env up -d --build
 ```
 
 ## Env (.env)
+
+`DB_MAX_OPEN_CONNS` (default 20) bounds the connection pool and
+`DB_STATEMENT_TIMEOUT_SECONDS` (default 30) is sent to Postgres as
+`statement_timeout`, so a slow query stops even after its request has gone;
+migrations run on a separate connection without it (behind PgBouncer, set it on
+the role and use 0). Search and scrape queries take the request context.
 
 See `README.md` and `.env.example`. `R2_*` tools/certs only need object read +
 write; bucket-level ops (e.g. setting CORS via S3) require an admin-permission
