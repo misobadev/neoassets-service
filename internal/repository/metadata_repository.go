@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -608,8 +609,9 @@ func (r *Repository) ListGamesBySystems(systemIDs []string, limit, offset int, g
 }
 
 // SearchGames searches games by case-insensitive name with an optional system
-// filter and game type (base/hack/homebrew).
-func (r *Repository) SearchGames(q string, systemIDs []string, gtype, sort string, limit, offset int) ([]models.Game, int64, error) {
+// filter and game type (base/hack/homebrew). Both queries run with ctx, so they
+// stop when the request does.
+func (r *Repository) SearchGames(ctx context.Context, q string, systemIDs []string, gtype, sort string, limit, offset int) ([]models.Game, int64, error) {
 	where := []string{"TRUE"}
 	args := []interface{}{}
 	// Accent- and punctuation-insensitive search: break the query into tokens
@@ -637,12 +639,12 @@ func (r *Repository) SearchGames(q string, systemIDs []string, gtype, sort strin
 	cond := strings.Join(where, " AND ")
 
 	var total int64
-	if err := r.db.QueryRow(`SELECT COUNT(*) FROM games g WHERE `+cond, args...).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM games g WHERE `+cond, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	argsCount := append(args, limit, offset)
-	rows, err := r.db.Query(
+	rows, err := r.db.QueryContext(ctx,
 		`SELECT `+gameCols+` FROM games g
 		 LEFT JOIN metadata_systems s ON s.id = g.system_id
 		 LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id`+completionSortJoin(sort)+`
@@ -657,11 +659,15 @@ func (r *Repository) SearchGames(q string, systemIDs []string, gtype, sort strin
 	return list, total, err
 }
 
-// SearchGamesLight resolves name candidates within one system without the COUNT
-// or the per-game cover/stats decoration. The scraping resolver only needs the
-// candidate id, name, type and rating before loading the winner, so this skips
-// the extra COUNT query and the ListGameStats lookup on every search.
-func (r *Repository) SearchGamesLight(q, systemID, gtype string, limit int) ([]models.Game, error) {
+// SearchGamesLight resolves name candidates without the COUNT or the per-game
+// cover/stats decoration. The scraping resolver only needs the candidate id,
+// name, type and rating before loading the winner, so this skips the extra
+// COUNT query and the ListGameStats lookup on every search. With systemIDs it
+// returns up to limit candidates from each system (by name, systems in the
+// order given) in one query — a LATERAL join, so each system's search still
+// stops at limit — and a family or group selector doesn't make a round trip per
+// system; without, up to limit overall.
+func (r *Repository) SearchGamesLight(ctx context.Context, q string, systemIDs []string, gtype string, limit int) ([]models.Game, error) {
 	where := []string{"TRUE"}
 	args := []interface{}{}
 	for _, tok := range searchTokens(q) {
@@ -671,22 +677,33 @@ func (r *Repository) SearchGamesLight(q, systemID, gtype string, limit int) ([]m
 			"(regexp_replace(f_unaccent(lower(g.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR regexp_replace(f_unaccent(lower(g.short_name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR EXISTS (SELECT 1 FROM game_regions gr WHERE gr.game_id = g.id AND regexp_replace(f_unaccent(lower(gr.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d))",
 			n, n, n))
 	}
-	if systemID != "" {
-		args = append(args, systemID)
-		where = append(where, fmt.Sprintf("g.system_id = $%d", len(args)))
+	systems := 0
+	if len(systemIDs) > 0 {
+		args = append(args, pq.Array(systemIDs))
+		systems = len(args)
+		where = append(where, "g.system_id = s.id")
 	}
 	if gtype != "" {
 		args = append(args, gtype)
 		where = append(where, fmt.Sprintf("g.type = $%d", len(args)))
 	}
 	args = append(args, limit)
-	rows, err := r.db.Query(
-		`SELECT g.id, g.system_id, g.name, g.type, g.rating
+	query := `SELECT g.id, g.system_id, g.name, g.type, g.rating
 		 FROM games g
-		 WHERE `+strings.Join(where, " AND ")+`
-		 ORDER BY g.name ASC LIMIT $`+itoa(len(args)),
-		args...,
-	)
+		 WHERE ` + strings.Join(where, " AND ") + `
+		 ORDER BY g.name ASC LIMIT $` + itoa(len(args))
+	if systems > 0 {
+		query = `SELECT c.id, c.system_id, c.name, c.type, c.rating
+		 FROM unnest($` + itoa(systems) + `::text[]) WITH ORDINALITY AS s(id, pos)
+		 CROSS JOIN LATERAL (
+		   SELECT g.id, g.system_id, g.name, g.type, g.rating
+		   FROM games g
+		   WHERE ` + strings.Join(where, " AND ") + `
+		   ORDER BY g.name ASC LIMIT $` + itoa(len(args)) + `
+		 ) c
+		 ORDER BY s.pos, c.name ASC`
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search games: %w", err)
 	}
@@ -1996,8 +2013,13 @@ func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
+// maxSearchTokens caps the words a search matches on. Each word adds three
+// pattern matches per game, so a long query would otherwise multiply the cost
+// of a public, unauthenticated search; titles rarely need more.
+const maxSearchTokens = 8
+
 // searchTokens lowercases, de-accents and splits a search query into the words
-// that must all appear in the normalized game name.
+// that must all appear in the normalized game name (the first maxSearchTokens).
 func searchTokens(q string) []string {
 	q = deaccent(strings.ToLower(strings.TrimSpace(q)))
 	fields := strings.FieldsFunc(q, func(r rune) bool {
@@ -2009,6 +2031,9 @@ func searchTokens(q string) []string {
 		if f != "" && !seen[f] {
 			seen[f] = true
 			out = append(out, f)
+			if len(out) == maxSearchTokens {
+				break
+			}
 		}
 	}
 	return out
