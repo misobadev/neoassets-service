@@ -65,7 +65,7 @@ func writeActionError(w http.ResponseWriter, status int, err error) {
 		})
 		return
 	}
-	writeError(w, status, err.Error())
+	writeClientError(w, status, err)
 }
 
 // HealthCheck returns service liveness.
@@ -141,7 +141,7 @@ func (h *Handler) CreateSubmission(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.CreateSubmission(r.Context(), req, userFromRequest(r))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -157,7 +157,7 @@ func (h *Handler) SubmissionUploadURLPre(w http.ResponseWriter, r *http.Request)
 	}
 	resp, err := h.svc.SubmissionUploadURLPre(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -177,7 +177,7 @@ func (h *Handler) GetUploadURL(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.svc.GetUploadURL(r.Context(), submissionID, userFromRequest(r), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -196,7 +196,7 @@ func (h *Handler) UpdateSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 	sub, err := h.svc.UpdateSubmission(r.Context(), submissionID, userFromRequest(r), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sub)
@@ -217,7 +217,7 @@ func (h *Handler) AddSubmissionFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	sub, err := h.svc.AddSubmissionFiles(r.Context(), submissionID, userFromRequest(r), req.Files)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sub)
@@ -233,7 +233,7 @@ func (h *Handler) RemoveSubmissionFile(w http.ResponseWriter, r *http.Request) {
 	}
 	objectKey := r.URL.Query().Get("object_key")
 	if err := h.svc.RemoveSubmissionFile(r.Context(), submissionID, userFromRequest(r), objectKey); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -269,7 +269,7 @@ func (h *Handler) PublicProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := h.svc.PublicProfile(username, requester)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeClientError(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
@@ -278,7 +278,7 @@ func (h *Handler) PublicProfile(w http.ResponseWriter, r *http.Request) {
 // Follow makes the authenticated user follow a user.
 func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Follow(userFromRequest(r), chi.URLParam(r, "username")); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"following": true})
@@ -287,7 +287,7 @@ func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
 // Unfollow removes a follow relationship.
 func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Unfollow(userFromRequest(r), chi.URLParam(r, "username")); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"following": false})
@@ -297,7 +297,7 @@ func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Followers(w http.ResponseWriter, r *http.Request) {
 	list, err := h.svc.Followers(chi.URLParam(r, "username"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeClientError(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string][]string{"usernames": list})
@@ -307,7 +307,7 @@ func (h *Handler) Followers(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Following(w http.ResponseWriter, r *http.Request) {
 	list, err := h.svc.Following(chi.URLParam(r, "username"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeClientError(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string][]string{"usernames": list})
@@ -317,7 +317,7 @@ func (h *Handler) Following(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) UserSubmissions(w http.ResponseWriter, r *http.Request) {
 	list, err := h.svc.RecentSubmissions(chi.URLParam(r, "username"), 10)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeClientError(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string][]models.UserSubmissionItem{"submissions": list})
@@ -347,7 +347,7 @@ func (h *Handler) SetUserRole(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := h.userSvc.SetUserRole(id, body.Role)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
@@ -368,7 +368,7 @@ func (h *Handler) SetDonorStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := h.userSvc.SetDonorStatus(id, body.Status)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
@@ -383,7 +383,7 @@ func (h *Handler) SubmitSubmission(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.SubmitForReview(r.Context(), submissionID, userFromRequest(r))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -399,7 +399,7 @@ func (h *Handler) TrashSubmission(w http.ResponseWriter, r *http.Request) {
 
 	sub, err := h.svc.Trash(r.Context(), submissionID, userFromRequest(r))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -427,7 +427,7 @@ func (h *Handler) GetUserSubmission(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := h.svc.GetUserSubmissionDetail(r.Context(), submissionID, userFromRequest(r))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeClientError(w, http.StatusNotFound, err)
 		return
 	}
 
@@ -484,7 +484,7 @@ func (h *Handler) GetSubmission(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := h.svc.GetSubmissionDetail(r.Context(), submissionID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeClientError(w, http.StatusNotFound, err)
 		return
 	}
 

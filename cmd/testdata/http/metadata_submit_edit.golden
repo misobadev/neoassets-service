@@ -1,4 +1,4 @@
 400
 {
-  "error": "sql: no rows in result set"
+  "error": "not found"
 }

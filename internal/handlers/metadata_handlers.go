@@ -203,7 +203,7 @@ func (h *Handler) MetadataUploadURL(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.MetadataUploadURL(r.Context(), submissionID, userFromRequest(r), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -218,7 +218,7 @@ func (h *Handler) MetadataUploadURLPre(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.MetadataUploadURLPre(r.Context(), userFromRequest(r), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -232,7 +232,7 @@ func (h *Handler) SubmitMetadataSubmission(w http.ResponseWriter, r *http.Reques
 	}
 	sub, err := h.svc.SubmitMetadataSubmission(submissionID, userFromRequest(r))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sub)
@@ -245,7 +245,7 @@ func (h *Handler) CancelMetadataSubmission(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := h.svc.CancelMetadataSubmission(submissionID, userFromRequest(r)); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -354,7 +354,7 @@ func (h *Handler) RetranslateGame(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := h.svc.RetranslateGame(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"translations": n})
@@ -364,7 +364,7 @@ func (h *Handler) RetranslateGame(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RetranslateSystem(w http.ResponseWriter, r *http.Request) {
 	n, err := h.svc.RetranslateSystem(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"translations": n})

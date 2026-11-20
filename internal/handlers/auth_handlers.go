@@ -19,7 +19,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.userSvc.Register(req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -35,7 +35,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.userSvc.Login(req)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+		writeClientError(w, http.StatusUnauthorized, err)
 		return
 	}
 
@@ -60,7 +60,7 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.userSvc.VerifyEmail(req.Token); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -77,7 +77,7 @@ func (h *Handler) VerifyEmailByLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.userSvc.VerifyEmail(token); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -92,7 +92,7 @@ func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.userSvc.ResendVerification(req.Email); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -108,7 +108,7 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.userSvc.ForgotPassword(req.Email); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeClientError(w, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -123,7 +123,7 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.userSvc.ResetPassword(req.Token, req.NewPassword); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -140,7 +140,7 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.userSvc.GetUserByID(claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeClientError(w, http.StatusNotFound, err)
 		return
 	}
 
@@ -163,7 +163,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := h.userSvc.UpdateProfile(claims.UserID, req.Username, req.Email)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
@@ -184,7 +184,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.userSvc.ChangePassword(claims.UserID, req.CurrentPassword, req.NewPassword); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "password updated"})
@@ -201,7 +201,7 @@ func (h *Handler) AvatarUploadURL(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.AvatarUploadURL(r.Context(), userFromRequest(r), req.MimeType, req.Size)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -217,7 +217,7 @@ func (h *Handler) SetAvatar(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := h.svc.SetAvatar(r.Context(), userFromRequest(r), req.ObjectKey)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
@@ -227,7 +227,7 @@ func (h *Handler) SetAvatar(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RemoveAvatar(w http.ResponseWriter, r *http.Request) {
 	user, err := h.svc.RemoveAvatar(r.Context(), userFromRequest(r))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)

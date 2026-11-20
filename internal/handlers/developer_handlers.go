@@ -32,7 +32,7 @@ func (h *Handler) CreateDeveloperApp(w http.ResponseWriter, r *http.Request) {
 	}
 	app, err := h.devSvc.CreateApp(userFromRequest(r), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, app)
@@ -49,7 +49,7 @@ func (h *Handler) RevokeDeveloperApp(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "developer app not found")
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
@@ -68,7 +68,7 @@ func (h *Handler) RotateDeveloperApp(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "developer app not found")
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, app)
@@ -97,7 +97,7 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	key, err := h.devSvc.CreateAPIKey(userFromRequest(r), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, key)
@@ -114,7 +114,7 @@ func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "API key not found")
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})

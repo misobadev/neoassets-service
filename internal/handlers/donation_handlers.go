@@ -97,7 +97,7 @@ func (h *Handler) DonorClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.donationSvc.ClaimStart(userFromRequest(r), body.Email); err != nil {
 		log.Warn().Err(err).Str("email", body.Email).Msg("donor claim failed")
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "if donations were made with that email, a claim code has been sent to it"})
@@ -115,7 +115,7 @@ func (h *Handler) DonorClaimVerify(w http.ResponseWriter, r *http.Request) {
 	n, err := h.donationSvc.ClaimVerify(userFromRequest(r), body.Email, body.Code)
 	if err != nil {
 		log.Warn().Err(err).Str("email", body.Email).Msg("donor claim verify failed")
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"linked": n})
