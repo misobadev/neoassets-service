@@ -129,8 +129,10 @@ the user credential is optional and falls back to guest mode.
   membership state); `donor_claims` holds a hashed email-claim code. Matching is
   by email: a webhook for a registered email applies the status immediately;
   unmatched events stay pending and are linked on email verification or via the
-  claim flow (`POST /api/v1/auth/donor/claim` sends a code to the donation
-  email, `.../claim/verify` links it). `users.donor_source` (`none|auto|admin`)
+  claim flow (`POST /api/v1/auth/donor/claim` emails an 8-digit code to the
+  donation email if it has unclaimed donations — the answer is the same either
+  way — and `.../claim/verify` links them). A code allows 5 checks, a new one
+  can be requested once a minute, and both routes are rate limited per account. `users.donor_source` (`none|auto|admin`)
   protects admin overrides from recomputation. Ko-fi has no subscription-end
   event, so the background job downgrades auto monthly supporters whose last
   subscription payment is older than `DONOR_SUBSCRIPTION_GRACE_DAYS` (40);

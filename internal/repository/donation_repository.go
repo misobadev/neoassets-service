@@ -160,34 +160,47 @@ func (r *Repository) StaleSubscriptionUserIDs() ([]uuid.UUID, error) {
 	return ids, rows.Err()
 }
 
-// UpsertDonorClaim stores (or replaces) the pending claim for a user.
-func (r *Repository) UpsertDonorClaim(userID uuid.UUID, email, tokenHash string, expiresAt time.Time) error {
-	_, err := r.db.Exec(`
+// UpsertDonorClaim stores (or replaces) the pending claim for a user and resets
+// its attempt count, unless the user's previous claim is younger than cooldown.
+// It reports whether the claim was stored.
+func (r *Repository) UpsertDonorClaim(userID uuid.UUID, email, tokenHash string, expiresAt time.Time, cooldown time.Duration) (bool, error) {
+	res, err := r.db.Exec(`
 		INSERT INTO donor_claims (user_id, email, token_hash, expires_at)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (user_id) DO UPDATE SET
 			email = EXCLUDED.email, token_hash = EXCLUDED.token_hash,
-			expires_at = EXCLUDED.expires_at, created_at = NOW()`,
-		userID, email, tokenHash, expiresAt,
+			expires_at = EXCLUDED.expires_at, created_at = NOW(), attempts = 0
+		WHERE donor_claims.created_at <= NOW() - make_interval(secs => $5)`,
+		userID, email, tokenHash, expiresAt, cooldown.Seconds(),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to save donor claim: %w", err)
+		return false, fmt.Errorf("failed to save donor claim: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to save donor claim: %w", err)
+	}
+	return n == 1, nil
 }
 
-// GetDonorClaim returns the pending claim for a user, or sql.ErrNoRows.
-func (r *Repository) GetDonorClaim(userID uuid.UUID) (email, tokenHash string, expiresAt time.Time, err error) {
-	err = r.db.QueryRow(
-		`SELECT email, token_hash, expires_at FROM donor_claims WHERE user_id = $1`, userID,
+// UseDonorClaimAttempt takes one of the pending claim's maxAttempts attempts
+// and returns the claim. Taking the attempt before the code is compared keeps
+// the limit exact even when several checks run at once. ok is false when there
+// is no claim or its attempts are used up.
+func (r *Repository) UseDonorClaimAttempt(userID uuid.UUID, maxAttempts int) (email, tokenHash string, expiresAt time.Time, ok bool, err error) {
+	err = r.db.QueryRow(`
+		UPDATE donor_claims SET attempts = attempts + 1
+		WHERE user_id = $1 AND attempts < $2
+		RETURNING email, token_hash, expires_at`,
+		userID, maxAttempts,
 	).Scan(&email, &tokenHash, &expiresAt)
 	if err == sql.ErrNoRows {
-		return "", "", time.Time{}, sql.ErrNoRows
+		return "", "", time.Time{}, false, nil
 	}
 	if err != nil {
-		return "", "", time.Time{}, fmt.Errorf("failed to read donor claim: %w", err)
+		return "", "", time.Time{}, false, fmt.Errorf("failed to read donor claim: %w", err)
 	}
-	return email, tokenHash, expiresAt, nil
+	return email, tokenHash, expiresAt, true, nil
 }
 
 // DeleteDonorClaim removes the pending claim for a user.

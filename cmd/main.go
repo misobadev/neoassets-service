@@ -474,6 +474,15 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 	// up to ten times per minute, so download counters cannot be inflated by
 	// hammering the endpoint while legitimate installs still work.
 	downloadLimiter := handlers.NewIPLimiter(10, 10)
+	// Donor claims are keyed by account: a few code requests and checks a
+	// minute, on top of the per-claim attempt limit and the code cooldown.
+	donorClaimLimiter := handlers.NewIPLimiter(10, 5)
+	byUser := func(r *http.Request) string {
+		if claims, ok := auth.UserFromContext(r.Context()); ok && claims != nil {
+			return "user:" + claims.UserID.String()
+		}
+		return "ip:" + handlers.ClientIP(r)
+	}
 
 	r.Get("/health", h.HealthCheck)
 
@@ -550,8 +559,8 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 			r.Delete("/auth/me/avatar", h.RemoveAvatar)
 
 			// Donor status claims (donations made with another email)
-			r.Post("/auth/donor/claim", h.DonorClaim)
-			r.Post("/auth/donor/claim/verify", h.DonorClaimVerify)
+			r.With(donorClaimLimiter.KeyedHandler(byUser)).Post("/auth/donor/claim", h.DonorClaim)
+			r.With(donorClaimLimiter.KeyedHandler(byUser)).Post("/auth/donor/claim/verify", h.DonorClaimVerify)
 
 			// Public profiles + follows
 			r.Get("/users/{username}", h.PublicProfile)
