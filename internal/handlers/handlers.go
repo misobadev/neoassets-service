@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
+	"neoassets/internal/httpx"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -31,18 +31,10 @@ func NewHandler(svc *services.Service, userSvc *services.UserService, scrapeSvc 
 }
 
 // writeJSON writes a JSON response with the given status code.
-func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if payload != nil {
-		_ = json.NewEncoder(w).Encode(payload)
-	}
-}
+func writeJSON(w http.ResponseWriter, status int, payload any) { httpx.JSON(w, status, payload) }
 
 // writeError writes a JSON error response.
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
-}
+func writeError(w http.ResponseWriter, status int, message string) { httpx.Error(w, status, message) }
 
 // writeServerError logs the real error and returns a generic message, so
 // internal details (SQL text, S3 keys, schema names) never reach the client.
@@ -143,8 +135,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 // CreateSubmission registers a new pending submission for the logged-in user.
 func (h *Handler) CreateSubmission(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateSubmissionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 
@@ -161,8 +152,7 @@ func (h *Handler) CreateSubmission(w http.ResponseWriter, r *http.Request) {
 // from the pack name, before a submission row exists (drafts stay client-side).
 func (h *Handler) SubmissionUploadURLPre(w http.ResponseWriter, r *http.Request) {
 	var req models.SubmissionUploadURLRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 	resp, err := h.svc.SubmissionUploadURLPre(r.Context(), req)
@@ -175,15 +165,13 @@ func (h *Handler) SubmissionUploadURLPre(w http.ResponseWriter, r *http.Request)
 
 // GetUploadURL returns a presigned URL to upload a single file to R2.
 func (h *Handler) GetUploadURL(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 
 	var req models.UploadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 
@@ -198,14 +186,12 @@ func (h *Handler) GetUploadURL(w http.ResponseWriter, r *http.Request) {
 
 // UpdateSubmission edits the metadata of a draft owned by the user.
 func (h *Handler) UpdateSubmission(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	var req models.CreateSubmissionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 	sub, err := h.svc.UpdateSubmission(r.Context(), submissionID, userFromRequest(r), req)
@@ -219,16 +205,14 @@ func (h *Handler) UpdateSubmission(w http.ResponseWriter, r *http.Request) {
 // AddSubmissionFiles registers uploaded files on an existing draft/rejected
 // submission (submitter iterating after a rejection).
 func (h *Handler) AddSubmissionFiles(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	var req struct {
 		Files []models.SubmissionFileInput `json:"files"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 	sub, err := h.svc.AddSubmissionFiles(r.Context(), submissionID, userFromRequest(r), req.Files)
@@ -243,9 +227,8 @@ func (h *Handler) AddSubmissionFiles(w http.ResponseWriter, r *http.Request) {
 // submission (used to fix a file added to the wrong system). The file is
 // identified by its object_key, which is unique within a submission.
 func (h *Handler) RemoveSubmissionFile(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	objectKey := r.URL.Query().Get("object_key")
@@ -352,16 +335,14 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 
 // SetUserRole updates a user's role (user | reviewer | admin). Admin only.
 func (h *Handler) SetUserRole(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid user id")
+	if !ok {
 		return
 	}
 	var body struct {
 		Role string `json:"role"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &body) {
 		return
 	}
 	user, err := h.userSvc.SetUserRole(id, body.Role)
@@ -375,16 +356,14 @@ func (h *Handler) SetUserRole(w http.ResponseWriter, r *http.Request) {
 // SetDonorStatus updates a user's donor status (none | supporter | monthly_supporter).
 // Admin only. Donations grant extra threads, never XP or rank.
 func (h *Handler) SetDonorStatus(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid user id")
+	if !ok {
 		return
 	}
 	var body struct {
 		Status string `json:"status"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &body) {
 		return
 	}
 	user, err := h.userSvc.SetDonorStatus(id, body.Status)
@@ -397,9 +376,8 @@ func (h *Handler) SetDonorStatus(w http.ResponseWriter, r *http.Request) {
 
 // SubmitSubmission moves a draft owned by the user into the admin review queue.
 func (h *Handler) SubmitSubmission(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 
@@ -414,9 +392,8 @@ func (h *Handler) SubmitSubmission(w http.ResponseWriter, r *http.Request) {
 
 // TrashSubmission moves a non-approved submission owned by the user to trash.
 func (h *Handler) TrashSubmission(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 
@@ -443,9 +420,8 @@ func (h *Handler) ListUserSubmissions(w http.ResponseWriter, r *http.Request) {
 
 // GetUserSubmission returns a single submission owned by the logged-in user.
 func (h *Handler) GetUserSubmission(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 
@@ -468,8 +444,7 @@ func (h *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 
@@ -502,9 +477,8 @@ func (h *Handler) ListSubmissions(w http.ResponseWriter, r *http.Request) {
 
 // GetSubmission returns a single submission with its files and logs.
 func (h *Handler) GetSubmission(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 
@@ -520,14 +494,15 @@ func (h *Handler) GetSubmission(w http.ResponseWriter, r *http.Request) {
 // Approve marks a submission as approved with an admin-controlled version and
 // an optional comment.
 func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 
 	var req models.ReviewRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !httpx.DecodeOptional(w, r, &req) {
+		return
+	}
 
 	sub, err := h.svc.Approve(r.Context(), submissionID, actorIDFromContext(r.Context()), req.Version, req.Comment)
 	if err != nil {
@@ -541,14 +516,15 @@ func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) {
 // Reject marks a submission as rejected and deletes its files from R2,
 // optionally recording an admin comment for the submitter.
 func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 
 	var req models.ReviewRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !httpx.DecodeOptional(w, r, &req) {
+		return
+	}
 
 	sub, err := h.svc.Reject(r.Context(), submissionID, actorIDFromContext(r.Context()), req.Comment)
 	if err != nil {
@@ -562,9 +538,8 @@ func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
 // DeleteSubmission removes a system art pack submission completely (R2 objects +
 // DB rows). Admin only.
 func (h *Handler) DeleteSubmission(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	if err := h.svc.DeleteSubmission(r.Context(), submissionID); err != nil {

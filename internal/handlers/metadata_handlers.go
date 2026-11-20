@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
+	"neoassets/internal/httpx"
 	"net/http"
 	"strconv"
 
@@ -129,9 +129,8 @@ func (h *Handler) ListRegions(w http.ResponseWriter, r *http.Request) {
 // query param resolves the description to that language's translation
 // (falling back to English when no translation exists).
 func (h *Handler) GetGameDetail(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid game id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid game id")
+	if !ok {
 		return
 	}
 	lang := r.URL.Query().Get("lang")
@@ -162,9 +161,8 @@ func (h *Handler) LookupGame(w http.ResponseWriter, r *http.Request) {
 // GetMetadataPending returns the fields/media kinds that already have a pending
 // submission for the current user on a game (so the UI blocks re-submitting).
 func (h *Handler) GetMetadataPending(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid game id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid game id")
+	if !ok {
 		return
 	}
 	keys, err := h.svc.PendingMetadataKeys(userFromRequest(r), id)
@@ -182,8 +180,7 @@ func (h *Handler) GetMetadataPending(w http.ResponseWriter, r *http.Request) {
 // CreateMetadataSubmission creates a draft contribution.
 func (h *Handler) CreateMetadataSubmission(w http.ResponseWriter, r *http.Request) {
 	var req models.MetadataSubmissionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 	sub, err := h.svc.CreateMetadataSubmission(userFromRequest(r), req)
@@ -196,14 +193,12 @@ func (h *Handler) CreateMetadataSubmission(w http.ResponseWriter, r *http.Reques
 
 // MetadataUploadURL returns a presigned URL to upload a media file.
 func (h *Handler) MetadataUploadURL(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	var req models.MetadataUploadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 	resp, err := h.svc.MetadataUploadURL(r.Context(), submissionID, userFromRequest(r), req)
@@ -218,8 +213,7 @@ func (h *Handler) MetadataUploadURL(w http.ResponseWriter, r *http.Request) {
 // submission row exists (used when drafts stay client-side until review).
 func (h *Handler) MetadataUploadURLPre(w http.ResponseWriter, r *http.Request) {
 	var req models.MetadataUploadURLRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 	resp, err := h.svc.MetadataUploadURLPre(r.Context(), userFromRequest(r), req)
@@ -232,9 +226,8 @@ func (h *Handler) MetadataUploadURLPre(w http.ResponseWriter, r *http.Request) {
 
 // SubmitMetadataSubmission moves a draft contribution into review.
 func (h *Handler) SubmitMetadataSubmission(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	sub, err := h.svc.SubmitMetadataSubmission(submissionID, userFromRequest(r))
@@ -247,9 +240,8 @@ func (h *Handler) SubmitMetadataSubmission(w http.ResponseWriter, r *http.Reques
 
 // CancelMetadataSubmission deletes the user's own metadata submission.
 func (h *Handler) CancelMetadataSubmission(w http.ResponseWriter, r *http.Request) {
-	submissionID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	submissionID, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	if err := h.svc.CancelMetadataSubmission(submissionID, userFromRequest(r)); err != nil {
@@ -302,9 +294,8 @@ func (h *Handler) ListMetadataSubmissions(w http.ResponseWriter, r *http.Request
 // GetMetadataSubmission returns a contribution with its files and the current
 // target values so reviewers can compare before approving.
 func (h *Handler) GetMetadataSubmission(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	detail, err := h.svc.GetMetadataSubmissionDetail(id)
@@ -317,13 +308,14 @@ func (h *Handler) GetMetadataSubmission(w http.ResponseWriter, r *http.Request) 
 
 // ApproveMetadataSubmission approves a contribution and applies it.
 func (h *Handler) ApproveMetadataSubmission(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	var req models.MediaReviewRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !httpx.DecodeOptional(w, r, &req) {
+		return
+	}
 
 	adminID := actorIDFromContext(r.Context())
 	sub, err := h.svc.ApproveMetadataSubmission(id, adminID, req.Comment)
@@ -336,13 +328,14 @@ func (h *Handler) ApproveMetadataSubmission(w http.ResponseWriter, r *http.Reque
 
 // RejectMetadataSubmission rejects a contribution and deletes its files.
 func (h *Handler) RejectMetadataSubmission(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid submission id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid submission id")
+	if !ok {
 		return
 	}
 	var req models.MediaReviewRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if !httpx.DecodeOptional(w, r, &req) {
+		return
+	}
 
 	adminID := actorIDFromContext(r.Context())
 	sub, err := h.svc.RejectMetadataSubmission(r.Context(), id, adminID, req.Comment)
@@ -355,9 +348,8 @@ func (h *Handler) RejectMetadataSubmission(w http.ResponseWriter, r *http.Reques
 
 // RetranslateGame regenerates a game's translations from its English description.
 func (h *Handler) RetranslateGame(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid game id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid game id")
+	if !ok {
 		return
 	}
 	n, err := h.svc.RetranslateGame(r.Context(), id)

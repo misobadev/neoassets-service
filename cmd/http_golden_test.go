@@ -515,3 +515,54 @@ func TestHTTPConcurrentRejectAppliesOnce(t *testing.T) {
 		t.Fatalf("%d rejection log rows, want 1", logs)
 	}
 }
+
+// A review body may be omitted, but a malformed one is refused instead of
+// being silently ignored.
+func TestHTTPReviewBodyValidation(t *testing.T) {
+	h := newAPIHarness(t)
+	h.seedUser("reviewer", "admin")
+	admin := h.client()
+	admin.login("reviewer")
+	path := "/api/v1/admin/submissions/00000000-0000-4000-8000-0000000000ff/reject"
+
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"comment":`))
+	req.RemoteAddr = "192.0.2.10:40000"
+	for _, ck := range admin.cookies {
+		req.AddCookie(ck)
+	}
+	rec := httptest.NewRecorder()
+	h.server.ServeHTTP(rec, req)
+	golden(t, "review_malformed_body", response{status: rec.Code, body: rec.Body.Bytes()})
+
+	// No body at all is still accepted (the comment is optional).
+	golden(t, "review_empty_body", admin.do(http.MethodPost, path, nil))
+}
+
+// A pack whose file was never uploaded is refused without leaving a
+// submission row behind.
+func TestHTTPCreatePackWithMissingUploadLeavesNothing(t *testing.T) {
+	h := newAPIHarness(t)
+	h.seedUser("artist", "user")
+	artist := h.client()
+	artist.login("artist")
+	up := artist.do(http.MethodPost, "/api/v1/submissions/upload-url", map[string]any{
+		"name": "Ghost Pack", "file_name": "snes.png", "system_id": "snes", "kind": "background",
+		"mime_type": "image/png", "size": 100,
+	})
+	key := up.field(t, "object_key")
+	// The browser upload never happens: nothing is put in the bucket.
+	golden(t, "pack_create_missing_upload", artist.do(http.MethodPost, "/api/v1/submissions", map[string]any{
+		"name": "Ghost Pack", "author": "Artist",
+		"files": []map[string]any{{
+			"object_key": key, "file_name": "snes.png", "system_id": "snes", "kind": "background",
+			"mime_type": "image/png", "size": 100,
+		}},
+	}))
+	var n int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM submissions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d submission rows after a refused create, want 0", n)
+	}
+}

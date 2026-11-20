@@ -303,11 +303,25 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		}
 	}
 
-	// Refuse an upload type the file's kind can't be before anything is written.
-	for _, f := range req.Files {
-		if _, err := uploadContentType(f.Kind, f.MimeType); err != nil {
+	// Validate every file (type, kind, key, upload present and within size)
+	// before anything is written, so a bad file never leaves a half-created
+	// submission behind.
+	contentTypes := make([]string, len(req.Files))
+	for i, f := range req.Files {
+		contentType, err := uploadContentType(f.Kind, f.MimeType)
+		if err != nil {
 			return nil, err
 		}
+		if err := s.validateSubmissionFile(f); err != nil {
+			return nil, err
+		}
+		if err := s.validatePackObjectKey(packID, f); err != nil {
+			return nil, err
+		}
+		if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
+			return nil, err
+		}
+		contentTypes[i] = contentType
 	}
 
 	anonID := userID.String()
@@ -320,21 +334,8 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		return nil, err
 	}
 
-	for _, f := range req.Files {
-		if err := s.validateSubmissionFile(f); err != nil {
-			return nil, err
-		}
-		if err := s.validatePackObjectKey(packID, f); err != nil {
-			return nil, err
-		}
-		if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
-			return nil, err
-		}
-		contentType, err := uploadContentType(f.Kind, f.MimeType)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.repo.AddFileReason(id, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentType, f.Size, f.Reason); err != nil {
+	for i, f := range req.Files {
+		if err := s.repo.AddFileReason(id, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentTypes[i], f.Size, f.Reason); err != nil {
 			return nil, err
 		}
 	}
