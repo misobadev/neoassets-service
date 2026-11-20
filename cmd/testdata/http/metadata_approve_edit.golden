@@ -1,0 +1,45 @@
+200
+{
+  "base_points_earned": 0,
+  "created_at": "<time>",
+  "game_id": "00000000-0000-4000-8000-0000000000a1",
+  "id": "<uuid>",
+  "kind": "edit",
+  "old_media": [],
+  "old_payload": {
+    "description": "A platform game.",
+    "developer": "Nintendo EAD",
+    "genre": "Platform",
+    "name": "Super Mario World",
+    "publisher": "Nintendo",
+    "rating": 0,
+    "release_month": null,
+    "release_year": 1990,
+    "roms": [
+      {
+        "crc": "b19ed489",
+        "created_at": "<time>",
+        "game_id": "00000000-0000-4000-8000-0000000000a1",
+        "id": "<uuid>",
+        "md5": "",
+        "name": "Super Mario World (USA).sfc",
+        "region": "",
+        "sha1": "",
+        "sha256": "",
+        "size": 524288
+      }
+    ],
+    "type": "base"
+  },
+  "payload": {
+    "description": "An updated description.",
+    "publisher": "Nintendo of America"
+  },
+  "points_earned": 0,
+  "review_comment": "Thanks.",
+  "reviewed_at": "<time>",
+  "reviewed_by": "<uuid>",
+  "status": "approved",
+  "system_id": null,
+  "user_id": "<uuid>"
+}

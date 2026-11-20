@@ -2,7 +2,6 @@ package repository
 
 import (
 	"fmt"
-	"math"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -10,102 +9,6 @@ import (
 	"neoassets/internal/models"
 	"neoassets/internal/progression"
 )
-
-var (
-	// AdminThreads is the thread count granted to admin accounts.
-	AdminThreads = 16
-	// GuestThreads is the thread count for anonymous scraping (developer
-	// credentials without a user credential).
-	GuestThreads = 2
-	// SupporterBonusThreads is the additive thread bonus of a one-time donation.
-	SupporterBonusThreads = 2
-	// MonthlySupporterBonusThreads is the additive thread bonus of a monthly
-	// donation.
-	MonthlySupporterBonusThreads = 4
-	// SupporterXPBonusPct is the XP bonus (percent) of a one-time donation.
-	SupporterXPBonusPct = 25
-	// MonthlySupporterXPBonusPct is the XP bonus (percent) of a monthly donation.
-	MonthlySupporterXPBonusPct = 50
-	// DailyGamesPerThread is the daily game scrape quota granted per thread.
-	// The effective daily limit is threads * DailyGamesPerThread.
-	DailyGamesPerThread = 1000
-)
-
-// ConfigureThreads overrides the guest/admin/donor thread bonuses from
-// environment values. Any non-positive argument keeps the current value. Call
-// once at startup before services are built.
-func ConfigureThreads(adminThreads, guestThreads, supporterBonusThreads, monthlySupporterBonusThreads int) {
-	if adminThreads > 0 {
-		AdminThreads = adminThreads
-	}
-	if guestThreads > 0 {
-		GuestThreads = guestThreads
-	}
-	if supporterBonusThreads > 0 {
-		SupporterBonusThreads = supporterBonusThreads
-	}
-	if monthlySupporterBonusThreads > 0 {
-		MonthlySupporterBonusThreads = monthlySupporterBonusThreads
-	}
-}
-
-// ConfigureRewards overrides the daily quota per thread and the donor XP
-// bonuses (percent). A non-positive value keeps the current value.
-func ConfigureRewards(dailyGamesPerThread, supporterXPBonusPct, monthlySupporterXPBonusPct int) {
-	if dailyGamesPerThread > 0 {
-		DailyGamesPerThread = dailyGamesPerThread
-	}
-	if supporterXPBonusPct > 0 {
-		SupporterXPBonusPct = supporterXPBonusPct
-	}
-	if monthlySupporterXPBonusPct > 0 {
-		MonthlySupporterXPBonusPct = monthlySupporterXPBonusPct
-	}
-}
-
-// DonorBonusThreads returns the additive thread bonus of a donor status.
-func DonorBonusThreads(status string) int {
-	switch status {
-	case models.DonorSupporter:
-		return SupporterBonusThreads
-	case models.DonorMonthlySupporter:
-		return MonthlySupporterBonusThreads
-	default:
-		return 0
-	}
-}
-
-// DonorXPBonusPct returns the XP bonus (percent) of a donor status.
-func DonorXPBonusPct(status string) int {
-	switch status {
-	case models.DonorSupporter:
-		return SupporterXPBonusPct
-	case models.DonorMonthlySupporter:
-		return MonthlySupporterXPBonusPct
-	default:
-		return 0
-	}
-}
-
-// ApplyXPBonus returns base XP increased by pct percent (rounded).
-func ApplyXPBonus(baseXP, pct int) int {
-	return int(math.Round(float64(baseXP) * float64(100+pct) / 100))
-}
-
-// ThreadsForUser returns the effective scraping threads: admins are maxed,
-// everyone else gets their level-rank base threads plus the donor bonus, capped
-// at the hard maximum (donations never grant XP or rank, only bonus threads).
-func ThreadsForUser(role, donorStatus string, xp int) int {
-	if role == models.RoleAdmin {
-		return AdminThreads
-	}
-	base := progression.ThreadsForLevel(progression.LevelForXP(xp))
-	total := base + DonorBonusThreads(donorStatus)
-	if max := progression.MaxThreads(); total > max {
-		total = max
-	}
-	return total
-}
 
 // GetRewards returns the XP progression and unlocked limits for a user.
 func (r *Repository) GetRewards(userID uuid.UUID) (*models.Rewards, error) {
@@ -115,7 +18,7 @@ func (r *Repository) GetRewards(userID uuid.UUID) (*models.Rewards, error) {
 	}
 	level := progression.LevelForXP(u.XP)
 	rank := progression.RankForLevel(level)
-	threads := ThreadsForUser(u.Role, u.DonorStatus, u.XP)
+	threads := r.econ.ThreadsForUser(u.Role, u.DonorStatus, u.XP)
 
 	// Progress toward the next level keeps working past MaxLevel; the level is
 	// unbounded, only the rank/thread benefits stop at the top band.
@@ -132,9 +35,9 @@ func (r *Repository) GetRewards(userID uuid.UUID) (*models.Rewards, error) {
 		Rank:              rank,
 		Threads:           threads,
 		DonorStatus:       u.DonorStatus,
-		DonorBonusThreads: DonorBonusThreads(u.DonorStatus),
-		XPBonusPct:        DonorXPBonusPct(u.DonorStatus),
-		DailyGames:        threads * DailyGamesPerThread,
+		DonorBonusThreads: r.econ.DonorBonusThreads(u.DonorStatus),
+		XPBonusPct:        r.econ.DonorXPBonusPct(u.DonorStatus),
+		DailyGames:        threads * r.econ.DailyGamesPerThread,
 		LevelXP:           levelXP,
 		NextLevelXP:       nextLevelXP,
 		ProgressPct:       progress,
@@ -207,7 +110,7 @@ func (r *Repository) AwardXP(userID uuid.UUID, delta int, reason string, submiss
 	if delta == 0 {
 		return nil
 	}
-	tx, err := r.db.Begin()
+	tx, err := r.pool.Begin()
 	if err != nil {
 		return err
 	}

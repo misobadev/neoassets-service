@@ -303,11 +303,25 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		}
 	}
 
-	// Refuse an upload type the file's kind can't be before anything is written.
-	for _, f := range req.Files {
-		if _, err := uploadContentType(f.Kind, f.MimeType); err != nil {
+	// Validate every file (type, kind, key, upload present and within size)
+	// before anything is written, so a bad file never leaves a half-created
+	// submission behind.
+	contentTypes := make([]string, len(req.Files))
+	for i, f := range req.Files {
+		contentType, err := uploadContentType(f.Kind, f.MimeType)
+		if err != nil {
 			return nil, err
 		}
+		if err := s.validateSubmissionFile(f); err != nil {
+			return nil, err
+		}
+		if err := s.validatePackObjectKey(packID, f); err != nil {
+			return nil, err
+		}
+		if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
+			return nil, err
+		}
+		contentTypes[i] = contentType
 	}
 
 	anonID := userID.String()
@@ -320,26 +334,13 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		return nil, err
 	}
 
-	for _, f := range req.Files {
-		if err := s.validateSubmissionFile(f); err != nil {
-			return nil, err
-		}
-		if err := s.validatePackObjectKey(packID, f); err != nil {
-			return nil, err
-		}
-		if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
-			return nil, err
-		}
-		contentType, err := uploadContentType(f.Kind, f.MimeType)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.repo.AddFileReason(id, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentType, f.Size, f.Reason); err != nil {
+	for i, f := range req.Files {
+		if err := s.repo.AddFileReason(id, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentTypes[i], f.Size, f.Reason); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := s.repo.AddLog(id, "submitted", anonID, "", "Submission submitted for review"); err != nil {
+	if err := s.repo.AddLog(id, models.LogActionSubmitted, anonID, "", "Submission submitted for review"); err != nil {
 		return nil, err
 	}
 
@@ -645,7 +646,7 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 		return nil, err
 	}
 
-	if err := s.repo.AddLog(submissionID, "upload_initiated", sub.AnonUserID, "", objectKey); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionUploadInitiated, sub.AnonUserID, "", objectKey); err != nil {
 		return nil, err
 	}
 
@@ -684,7 +685,7 @@ func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, 
 		return nil, fmt.Errorf("submission not found")
 	}
 
-	if err := s.repo.AddLog(submissionID, "updated", sub.AnonUserID, "", "Submission saved"); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionUpdated, sub.AnonUserID, "", "Submission saved"); err != nil {
 		return nil, err
 	}
 
@@ -878,7 +879,7 @@ func (s *Service) SubmitForReview(ctx context.Context, submissionID uuid.UUID, u
 		return nil, fmt.Errorf("submission has no files")
 	}
 
-	if err := s.repo.AddLog(submissionID, "submitted", sub.AnonUserID, "", "Submitted for review"); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionSubmitted, sub.AnonUserID, "", "Submitted for review"); err != nil {
 		return nil, err
 	}
 	return sub, nil
@@ -910,7 +911,7 @@ func (s *Service) ListUserSubmissions(ctx context.Context, userID uuid.UUID, sta
 	if points, err := s.repo.SubmissionPointsByIDs(ids); err == nil {
 		for i := range details {
 			details[i].PointsEarned = points[details[i].ID]
-			details[i].BasePointsEarned = len(details[i].Files) * PointsSAPImage
+			details[i].BasePointsEarned = len(details[i].Files) * s.repo.Economy().Points.SAPImage
 		}
 	}
 	_, totalXP, err := s.repo.UserAwardedXPBySource(userID)
@@ -1172,32 +1173,36 @@ func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID u
 		return nil, err
 	}
 
-	// Packs are listed from their latest approved row, so a contribution must
-	// carry the pack's current name, author, donation link and AI flag when it
-	// is approved, whatever it was saved with.
-	if sub.Contribution {
-		if err := s.repo.SyncContributionIdentity(submissionID); err != nil {
-			return nil, err
-		}
-	}
-
-	updated, err := s.repo.SetSubmissionStatus(submissionID, models.StatusApproved, adminID, version)
-	if err != nil {
-		return nil, err
-	}
-
 	detail := "Approved by admin"
 	if strings.TrimSpace(comment) != "" {
 		detail = fmt.Sprintf("Approved by admin: %s", strings.TrimSpace(comment))
 	}
-	if err := s.repo.AddLog(submissionID, "approved", adminID.String(), "", detail); err != nil {
+	// The identity sync, the status change and its log entry are written
+	// together, so an approval is never half-recorded.
+	var updated *models.Submission
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		// Packs are listed from their latest approved row, so a contribution
+		// must carry the pack's current name, author, donation link and AI flag
+		// when it is approved, whatever it was saved with.
+		if sub.Contribution {
+			if err := tx.SyncContributionIdentity(submissionID); err != nil {
+				return err
+			}
+		}
+		var err error
+		if updated, err = tx.SetSubmissionStatus(submissionID, models.StatusApproved, adminID, version); err != nil {
+			return err
+		}
+		return tx.AddLog(submissionID, models.LogActionApproved, adminID.String(), "", detail)
+	})
+	if err != nil {
 		return nil, err
 	}
 
 	if sub.UserID != nil {
 		files, err := s.repo.ListFiles(submissionID)
 		if err == nil && len(files) > 0 {
-			if err := s.awardXP(*sub.UserID, len(files)*PointsSAPImage, "approved_sap_images", &submissionID); err != nil {
+			if err := s.awardXP(*sub.UserID, len(files)*s.repo.Economy().Points.SAPImage, "approved_sap_images", &submissionID); err != nil {
 				return nil, err
 			}
 		}
@@ -1433,7 +1438,7 @@ func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 	if strings.TrimSpace(comment) != "" {
 		detail = fmt.Sprintf("Rejected by admin: %s", strings.TrimSpace(comment))
 	}
-	if err := s.repo.AddLog(submissionID, "rejected", adminID.String(), "", detail); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionRejected, adminID.String(), "", detail); err != nil {
 		return nil, err
 	}
 
@@ -1625,7 +1630,7 @@ func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid
 		return nil, fmt.Errorf("submission not found")
 	}
 
-	if err := s.repo.AddLog(submissionID, "trashed", sub.AnonUserID, "", "Moved to trash"); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionTrashed, sub.AnonUserID, "", "Moved to trash"); err != nil {
 		return nil, err
 	}
 

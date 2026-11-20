@@ -68,7 +68,6 @@ func newAPIHarness(t *testing.T) *apiHarness {
 	if err := handlers.ConfigureCDN(cfg.CDNIPRanges, cfg.CDNClientIPHeader); err != nil {
 		t.Fatal(err)
 	}
-	configureEconomy(cfg)
 
 	resetData(t, db)
 	seedCatalog(t, db)
@@ -109,8 +108,8 @@ func seedCatalog(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO metadata_systems (id, name, short_name, family, description)
 		VALUES ('snes', 'Super Nintendo Entertainment System', 'SNES', 'console', 'A 16-bit home console.')`)
 	mustExec(t, db, `INSERT INTO games (id, system_id, name, description, release_year, publisher, developer, genre, type)
-		VALUES ($1, 'snes', 'Super Mario World', 'A platform game.', 1990, 'Nintendo', 'Nintendo EAD', 'Platform', 'game'),
-		       ($2, 'snes', 'The Legend of Zelda: A Link to the Past', 'An action adventure.', 1991, 'Nintendo', 'Nintendo EAD', 'Adventure', 'game')`,
+		VALUES ($1, 'snes', 'Super Mario World', 'A platform game.', 1990, 'Nintendo', 'Nintendo EAD', 'Platform', 'base'),
+		       ($2, 'snes', 'The Legend of Zelda: A Link to the Past', 'An action adventure.', 1991, 'Nintendo', 'Nintendo EAD', 'Adventure', 'base')`,
 		gameMarioID, gameZeldaID)
 	mustExec(t, db, `INSERT INTO roms (game_id, name, size, crc, md5, sha1)
 		VALUES ($1, 'Super Mario World (USA).sfc', 524288, 'b19ed489', '', ''),
@@ -514,4 +513,101 @@ func TestHTTPConcurrentRejectAppliesOnce(t *testing.T) {
 	if logs != 1 {
 		t.Fatalf("%d rejection log rows, want 1", logs)
 	}
+}
+
+// A review body may be omitted, but a malformed one is refused instead of
+// being silently ignored.
+func TestHTTPReviewBodyValidation(t *testing.T) {
+	h := newAPIHarness(t)
+	h.seedUser("reviewer", "admin")
+	admin := h.client()
+	admin.login("reviewer")
+	path := "/api/v1/admin/submissions/00000000-0000-4000-8000-0000000000ff/reject"
+
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"comment":`))
+	req.RemoteAddr = "192.0.2.10:40000"
+	for _, ck := range admin.cookies {
+		req.AddCookie(ck)
+	}
+	rec := httptest.NewRecorder()
+	h.server.ServeHTTP(rec, req)
+	golden(t, "review_malformed_body", response{status: rec.Code, body: rec.Body.Bytes()})
+
+	// No body at all is still accepted (the comment is optional).
+	golden(t, "review_empty_body", admin.do(http.MethodPost, path, nil))
+}
+
+// A pack whose file was never uploaded is refused without leaving a
+// submission row behind.
+func TestHTTPCreatePackWithMissingUploadLeavesNothing(t *testing.T) {
+	h := newAPIHarness(t)
+	h.seedUser("artist", "user")
+	artist := h.client()
+	artist.login("artist")
+	up := artist.do(http.MethodPost, "/api/v1/submissions/upload-url", map[string]any{
+		"name": "Ghost Pack", "file_name": "snes.png", "system_id": "snes", "kind": "background",
+		"mime_type": "image/png", "size": 100,
+	})
+	key := up.field(t, "object_key")
+	// The browser upload never happens: nothing is put in the bucket.
+	golden(t, "pack_create_missing_upload", artist.do(http.MethodPost, "/api/v1/submissions", map[string]any{
+		"name": "Ghost Pack", "author": "Artist",
+		"files": []map[string]any{{
+			"object_key": key, "file_name": "snes.png", "system_id": "snes", "kind": "background",
+			"mime_type": "image/png", "size": 100,
+		}},
+	}))
+	var n int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM submissions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d submission rows after a refused create, want 0", n)
+	}
+}
+
+// TestHTTPMetadataLifecycle walks text-only metadata contributions through
+// create, submit and review: an edit of an existing game (applied in one
+// transaction) and a brand-new game.
+func TestHTTPMetadataLifecycle(t *testing.T) {
+	h := newAPIHarness(t)
+	h.seedUser("writer", "user")
+	h.seedUser("reviewer", "admin")
+	writer := h.client()
+	writer.login("writer")
+	admin := h.client()
+	admin.login("reviewer")
+
+	edit := writer.do(http.MethodPost, "/api/v1/metadata/submissions", map[string]any{
+		"game_id": gameMarioID, "kind": "edit",
+		"payload": map[string]any{"publisher": "Nintendo of America", "description": "An updated description."},
+	})
+	golden(t, "metadata_create_edit", edit)
+	editID := edit.field(t, "id")
+	golden(t, "metadata_submit_edit", writer.do(http.MethodPost, "/api/v1/metadata/submissions/"+editID+"/submit", nil))
+	golden(t, "metadata_my_list", writer.do(http.MethodGet, "/api/v1/auth/metadata/submissions", nil))
+	golden(t, "metadata_admin_list", admin.do(http.MethodGet, "/api/v1/admin/metadata/submissions?status=pending", nil))
+	golden(t, "metadata_approve_edit", admin.do(http.MethodPost, "/api/v1/admin/metadata/submissions/"+editID+"/approve",
+		map[string]string{"comment": "Thanks."}))
+	golden(t, "metadata_approve_edit_again", admin.do(http.MethodPost, "/api/v1/admin/metadata/submissions/"+editID+"/approve", nil))
+	golden(t, "metadata_game_after_edit", h.client().do(http.MethodGet, "/api/v1/metadata/games/"+gameMarioID, nil))
+
+	newGame := writer.do(http.MethodPost, "/api/v1/metadata/submissions", map[string]any{
+		"system_id": "snes", "kind": "new_game",
+		"payload": map[string]any{"name": "Golden Test Quest", "type": "base", "publisher": "Test Co"},
+	})
+	golden(t, "metadata_create_new_game", newGame)
+	newID := newGame.field(t, "id")
+	writer.do(http.MethodPost, "/api/v1/metadata/submissions/"+newID+"/submit", nil)
+	golden(t, "metadata_approve_new_game", admin.do(http.MethodPost, "/api/v1/admin/metadata/submissions/"+newID+"/approve", nil))
+	golden(t, "metadata_search_new_game", h.client().do(http.MethodGet, "/api/v1/metadata/games?q=golden+test+quest", nil))
+
+	rejected := writer.do(http.MethodPost, "/api/v1/metadata/submissions", map[string]any{
+		"game_id": gameZeldaID, "kind": "edit", "payload": map[string]any{"publisher": "Nobody"},
+	})
+	rejectedID := rejected.field(t, "id")
+	writer.do(http.MethodPost, "/api/v1/metadata/submissions/"+rejectedID+"/submit", nil)
+	golden(t, "metadata_reject", admin.do(http.MethodPost, "/api/v1/admin/metadata/submissions/"+rejectedID+"/reject",
+		map[string]string{"comment": "No."}))
+	golden(t, "metadata_writer_rewards", writer.do(http.MethodGet, "/api/v1/rewards", nil))
 }

@@ -50,7 +50,7 @@ func (h *Handler) ScrapeGames(w http.ResponseWriter, r *http.Request) {
 	}
 	query, err := parseScrapeGameQuery(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 

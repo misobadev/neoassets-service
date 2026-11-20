@@ -596,6 +596,23 @@ const (
 	MetadataRejected = "rejected"
 )
 
+// Metadata submission kinds: a change to an existing game/system, or a
+// brand-new game.
+const (
+	MetadataKindEdit    = "edit"
+	MetadataKindNewGame = "new_game"
+)
+
+// Submission log actions (submission_logs.action), shown in the web history.
+const (
+	LogActionSubmitted       = "submitted"
+	LogActionUploadInitiated = "upload_initiated"
+	LogActionUpdated         = "updated"
+	LogActionApproved        = "approved"
+	LogActionRejected        = "rejected"
+	LogActionTrashed         = "trashed"
+)
+
 // Media kind values.
 const (
 	MediaCover      = "cover"

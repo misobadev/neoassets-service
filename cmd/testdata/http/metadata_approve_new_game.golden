@@ -1,0 +1,22 @@
+200
+{
+  "base_points_earned": 0,
+  "created_at": "<time>",
+  "game_id": "<uuid>",
+  "id": "<uuid>",
+  "kind": "new_game",
+  "old_media": [],
+  "old_payload": {},
+  "payload": {
+    "name": "Golden Test Quest",
+    "publisher": "Test Co",
+    "type": "base"
+  },
+  "points_earned": 0,
+  "review_comment": "",
+  "reviewed_at": "<time>",
+  "reviewed_by": "<uuid>",
+  "status": "approved",
+  "system_id": null,
+  "user_id": "<uuid>"
+}

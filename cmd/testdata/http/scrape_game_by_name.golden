@@ -17,7 +17,7 @@
     "scrapes": 1,
     "system_id": "snes",
     "system_name": "Super Nintendo Entertainment System",
-    "type": "game"
+    "type": "base"
   },
   "matched_by": "name",
   "system_id": "snes"

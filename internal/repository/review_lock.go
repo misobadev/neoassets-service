@@ -22,7 +22,7 @@ var ErrReviewInProgress = errors.New("submission is already being reviewed")
 // The lock is session-level, so it is taken and released on one dedicated
 // connection; fn itself uses the regular pool.
 func (r *Repository) WithReviewLock(ctx context.Context, submissionID uuid.UUID, fn func() error) error {
-	conn, err := r.db.Conn(ctx)
+	conn, err := r.pool.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("review lock: %w", err)
 	}

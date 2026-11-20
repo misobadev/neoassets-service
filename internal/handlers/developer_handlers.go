@@ -2,12 +2,9 @@ package handlers
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
+	"neoassets/internal/httpx"
 	"net/http"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
 	"neoassets/internal/models"
 )
@@ -30,13 +27,12 @@ func (h *Handler) ListDeveloperApps(w http.ResponseWriter, r *http.Request) {
 // the plaintext client secret, shown only once.
 func (h *Handler) CreateDeveloperApp(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateDeveloperAppRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 	app, err := h.devSvc.CreateApp(userFromRequest(r), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, app)
@@ -44,9 +40,8 @@ func (h *Handler) CreateDeveloperApp(w http.ResponseWriter, r *http.Request) {
 
 // RevokeDeveloperApp revokes one of the current user's applications.
 func (h *Handler) RevokeDeveloperApp(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid app id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid app id")
+	if !ok {
 		return
 	}
 	if err := h.devSvc.RevokeApp(userFromRequest(r), id); err != nil {
@@ -54,7 +49,7 @@ func (h *Handler) RevokeDeveloperApp(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "developer app not found")
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
@@ -63,9 +58,8 @@ func (h *Handler) RevokeDeveloperApp(w http.ResponseWriter, r *http.Request) {
 // RotateDeveloperApp issues a new client secret for an application. The
 // response includes the plaintext secret, shown only once.
 func (h *Handler) RotateDeveloperApp(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid app id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid app id")
+	if !ok {
 		return
 	}
 	app, err := h.devSvc.RotateApp(userFromRequest(r), id)
@@ -74,7 +68,7 @@ func (h *Handler) RotateDeveloperApp(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "developer app not found")
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, app)
@@ -98,13 +92,12 @@ func (h *Handler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 // key, shown only once.
 func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateAPIKeyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &req) {
 		return
 	}
 	key, err := h.devSvc.CreateAPIKey(userFromRequest(r), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, key)
@@ -112,9 +105,8 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 
 // RevokeAPIKey revokes one of the current user's personal API keys.
 func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid key id")
+	id, ok := httpx.PathUUID(w, r, "id", "invalid key id")
+	if !ok {
 		return
 	}
 	if err := h.devSvc.RevokeAPIKey(userFromRequest(r), id); err != nil {
@@ -122,7 +114,7 @@ func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "API key not found")
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})

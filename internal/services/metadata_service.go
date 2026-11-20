@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"neoassets/internal/economy"
 	"neoassets/internal/models"
 	"neoassets/pkg/r2"
 	"neoassets/pkg/video"
@@ -427,9 +428,9 @@ func (s *Service) LookupGame(crc, md5, sha1, sha256, systemID string) ([]models.
 func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.MetadataSubmissionRequest) (*models.MetadataSubmission, error) {
 	kind := strings.TrimSpace(req.Kind)
 	if kind == "" {
-		kind = "edit"
+		kind = models.MetadataKindEdit
 	}
-	if kind != "edit" && kind != "new_game" {
+	if kind != models.MetadataKindEdit && kind != models.MetadataKindNewGame {
 		return nil, fmt.Errorf("invalid contribution kind")
 	}
 	if req.GameID == nil && req.SystemID == nil {
@@ -512,7 +513,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 	// ROM dump changes are allowed on an existing game and on a brand-new game
 	// (applied right after the game row is created on approval).
 	if raw, ok := req.Payload["roms"]; ok {
-		if req.GameID == nil && kind != "new_game" {
+		if req.GameID == nil && kind != models.MetadataKindNewGame {
 			return nil, fmt.Errorf("ROM dumps can only be changed on a game")
 		}
 		if err := s.validateRoms(req.GameID, raw); err != nil {
@@ -556,7 +557,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 		}
 	}
 
-	if kind == "new_game" {
+	if kind == models.MetadataKindNewGame {
 		if req.GameID != nil {
 			return nil, fmt.Errorf("a new game cannot target an existing game")
 		}
@@ -583,7 +584,7 @@ func (s *Service) CreateMetadataSubmission(userID uuid.UUID, req models.Metadata
 			return nil, err
 		}
 		for _, sub := range subs {
-			if sub.Kind != "new_game" || sub.Status != models.MetadataPending || sub.SystemID == nil || *sub.SystemID != *req.SystemID {
+			if sub.Kind != models.MetadataKindNewGame || sub.Status != models.MetadataPending || sub.SystemID == nil || *sub.SystemID != *req.SystemID {
 				continue
 			}
 			var p map[string]any
@@ -775,7 +776,7 @@ func (s *Service) pendingSubmissionKeys(userID uuid.UUID, gameID *uuid.UUID, sys
 	}
 	keys := map[string]bool{}
 	for _, sub := range subs {
-		if sub.Status != models.MetadataPending || sub.Kind == "new_game" {
+		if sub.Status != models.MetadataPending || sub.Kind == models.MetadataKindNewGame {
 			continue
 		}
 		if gameID != nil {
@@ -1172,7 +1173,7 @@ func (s *Service) enrichMetadataSubmissions(list []models.MetadataSubmission) er
 
 	for i := range list {
 		list[i].PointsEarned = points[list[i].ID]
-		list[i].BasePointsEarned = metadataBasePoints(list[i].Payload, list[i].Kind, kinds[list[i].ID])
+		list[i].BasePointsEarned = metadataBasePoints(s.repo.Economy().Points, list[i].Payload, list[i].Kind, kinds[list[i].ID])
 		list[i].Files = files[list[i].ID]
 		if list[i].GameID != nil {
 			if g, ok := gameByID[*list[i].GameID]; ok {
@@ -1191,7 +1192,7 @@ func (s *Service) enrichMetadataSubmissions(list []models.MetadataSubmission) er
 		if list[i].SystemID != nil {
 			list[i].SystemName = sysNames[*list[i].SystemID]
 		}
-		if list[i].Kind == "new_game" {
+		if list[i].Kind == models.MetadataKindNewGame {
 			// A new game has no row yet, so use the proposed name from the payload.
 			var p map[string]any
 			if json.Unmarshal(list[i].Payload, &p) == nil {
@@ -1243,7 +1244,7 @@ func (s *Service) GetMetadataSubmissionDetail(id uuid.UUID) (*models.MetadataSub
 	*sub = decorated[0]
 	detail := &models.MetadataSubmissionDetail{Submission: sub, Files: files, Media: []models.Media{}}
 	switch {
-	case sub.Kind == "new_game" && sub.SystemID != nil:
+	case sub.Kind == models.MetadataKindNewGame && sub.SystemID != nil:
 		// A new game has no current media; only the target system is shown.
 		if sys, err := s.repo.GetMetadataSystem(*sub.SystemID); err == nil {
 			detail.System = sys
@@ -1491,7 +1492,7 @@ func (s *Service) approveMetadataSubmission(id, adminID uuid.UUID, comment strin
 	}
 	// A new game has no row yet: create it and point the submission at it, then
 	// the regular media/field apply path below runs against the new game.
-	if sub.Kind == "new_game" {
+	if sub.Kind == models.MetadataKindNewGame {
 		var p map[string]any
 		if err := json.Unmarshal(sub.Payload, &p); err != nil {
 			return nil, fmt.Errorf("invalid submission payload")
@@ -1520,7 +1521,7 @@ func (s *Service) approveMetadataSubmission(id, adminID uuid.UUID, comment strin
 	}
 	// Snapshot the target's current text and media before the approval overwrites
 	// them, so the review detail can still show the "old" side afterwards.
-	if sub.Kind != "new_game" {
+	if sub.Kind != models.MetadataKindNewGame {
 		s.captureOldState(context.Background(), sub, files)
 	}
 	if err := s.moveSubmissionMediaToCanonical(context.Background(), id, sub); err != nil {
@@ -1680,7 +1681,7 @@ func (s *Service) RetranslateSystem(ctx context.Context, systemID string) (int, 
 // metadataBasePoints is the XP a metadata submission earns before the donor
 // boost: one award per filled text field, per media file and, for a new game,
 // the new-game bonus. `kinds` may repeat (one entry per file).
-func metadataBasePoints(payload json.RawMessage, kind string, kinds []string) int {
+func metadataBasePoints(points economy.Points, payload json.RawMessage, kind string, kinds []string) int {
 	var delta int
 	var p map[string]any
 	if err := json.Unmarshal(payload, &p); err == nil {
@@ -1689,11 +1690,11 @@ func metadataBasePoints(payload json.RawMessage, kind string, kinds []string) in
 				switch val := v.(type) {
 				case string:
 					if strings.TrimSpace(val) != "" {
-						delta += PointsTextMetadata
+						delta += points.TextMetadata
 					}
 				case float64:
 					if val > 0 {
-						delta += PointsTextMetadata
+						delta += points.TextMetadata
 					}
 				}
 			}
@@ -1701,13 +1702,13 @@ func metadataBasePoints(payload json.RawMessage, kind string, kinds []string) in
 	}
 	for _, k := range kinds {
 		if k == models.MediaVideo {
-			delta += PointsVideoMetadata
+			delta += points.VideoMetadata
 		} else {
-			delta += PointsImageMetadata
+			delta += points.ImageMetadata
 		}
 	}
-	if kind == "new_game" {
-		delta += PointsNewGame
+	if kind == models.MetadataKindNewGame {
+		delta += points.NewGame
 	}
 	return delta
 }
@@ -1727,7 +1728,7 @@ func (s *Service) awardMetadataPoints(id uuid.UUID, sub *models.MetadataSubmissi
 		}
 		kinds = append(kinds, f.Kind)
 	}
-	delta := metadataBasePoints(sub.Payload, sub.Kind, kinds)
+	delta := metadataBasePoints(s.repo.Economy().Points, sub.Payload, sub.Kind, kinds)
 	if delta == 0 {
 		return nil
 	}

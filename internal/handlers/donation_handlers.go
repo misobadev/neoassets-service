@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"encoding/json"
 	"io"
+	"neoassets/internal/httpx"
 	"net/http"
 
 	"github.com/rs/zerolog/log"
@@ -73,8 +73,7 @@ func (h *Handler) ImportDonations(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Donations []models.DonationImportItem `json:"donations"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &body) {
 		return
 	}
 	imported, linked, skipped, err := h.donationSvc.ImportDonations(body.Donations)
@@ -93,13 +92,12 @@ func (h *Handler) DonorClaim(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &body) {
 		return
 	}
 	if err := h.donationSvc.ClaimStart(userFromRequest(r), body.Email); err != nil {
 		log.Warn().Err(err).Str("email", body.Email).Msg("donor claim failed")
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "if donations were made with that email, a claim code has been sent to it"})
@@ -111,14 +109,13 @@ func (h *Handler) DonorClaimVerify(w http.ResponseWriter, r *http.Request) {
 		Email string `json:"email"`
 		Code  string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !httpx.Decode(w, r, &body) {
 		return
 	}
 	n, err := h.donationSvc.ClaimVerify(userFromRequest(r), body.Email, body.Code)
 	if err != nil {
 		log.Warn().Err(err).Str("email", body.Email).Msg("donor claim verify failed")
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"linked": n})

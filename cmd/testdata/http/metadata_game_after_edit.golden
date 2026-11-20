@@ -1,0 +1,41 @@
+200
+{
+  "contributors": [
+    {
+      "avatar_key": "",
+      "count": 1,
+      "id": "<uuid>",
+      "username": "writer"
+    }
+  ],
+  "created_at": "<time>",
+  "description": "An updated description.",
+  "developer": "Nintendo EAD",
+  "genre": "Platform",
+  "id": "00000000-0000-4000-8000-0000000000a1",
+  "media": null,
+  "name": "Super Mario World",
+  "publisher": "Nintendo of America",
+  "rating": 0,
+  "release_month": null,
+  "release_year": 1990,
+  "roms": [
+    {
+      "crc": "b19ed489",
+      "created_at": "<time>",
+      "game_id": "00000000-0000-4000-8000-0000000000a1",
+      "id": "<uuid>",
+      "md5": "",
+      "name": "Super Mario World (USA).sfc",
+      "region": "",
+      "sha1": "",
+      "sha256": "",
+      "size": 524288
+    }
+  ],
+  "scrapes": 0,
+  "system_id": "snes",
+  "system_name": "Super Nintendo Entertainment System",
+  "type": "base",
+  "updated_at": "<time>"
+}

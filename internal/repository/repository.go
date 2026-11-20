@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
+	"neoassets/internal/economy"
 	"neoassets/internal/models"
 )
 
@@ -25,12 +27,65 @@ func isUniqueViolation(err error) bool {
 
 // Repository groups all database access for the service.
 type Repository struct {
-	db *sql.DB
+	// db runs the queries: the pool, or a transaction inside WithTx.
+	db dbtx
+	// pool is the underlying pool, for operations that need their own
+	// connection or transaction (advisory locks, AwardXP).
+	pool *sql.DB
+	// econ is the rewards/scraping economy (threads, quotas, XP).
+	econ economy.Config
+}
+
+// Option configures a Repository.
+type Option func(*Repository)
+
+// WithEconomy sets the economy (default: economy.Default()).
+func WithEconomy(c economy.Config) Option {
+	return func(r *Repository) { r.econ = c }
+}
+
+// Economy returns the economy the repository was built with.
+func (r *Repository) Economy() economy.Config { return r.econ }
+
+// dbtx is what the repository's queries need; *sql.DB and *sql.Tx both
+// satisfy it, so the same methods run inside or outside a transaction.
+type dbtx interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // NewRepository creates a Repository backed by the given database.
-func NewRepository(db *sql.DB) *Repository {
-	return &Repository{db: db}
+func NewRepository(db *sql.DB, opts ...Option) *Repository {
+	r := &Repository{db: db, pool: db, econ: economy.Default()}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// WithTx runs fn with a Repository whose queries share one transaction. It
+// commits when fn returns nil and rolls back otherwise. Called on a
+// Repository that is already inside a transaction, it reuses it.
+func (r *Repository) WithTx(ctx context.Context, fn func(tx *Repository) error) error {
+	if _, inTx := r.db.(*sql.Tx); inTx {
+		return fn(r)
+	}
+	tx, err := r.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	if err := fn(&Repository{db: tx, pool: r.pool, econ: r.econ}); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

@@ -58,6 +58,10 @@ const cfGraphQLQuery = `query($accountTag: String!, $bucketName: String!, $start
   }
 }`
 
+// usageHTTPClient bounds the Cloudflare analytics call, so a hung request can't
+// block the background usage refresher forever.
+var usageHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // GetBucketUsage fetches R2 bucket storage metrics from the Cloudflare
 // GraphQL Analytics API. This is a single HTTP request that returns the
 // total object count and payload size without listing objects.
@@ -87,7 +91,7 @@ func GetBucketUsage(ctx context.Context, accountID, apiToken, bucketName string)
 	req.Header.Set("Authorization", "Bearer "+apiToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := usageHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("cf graphql request: %w", err)
 	}

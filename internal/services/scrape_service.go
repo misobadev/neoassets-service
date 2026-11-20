@@ -85,7 +85,7 @@ type limiterEntry struct {
 // limit.
 func NewScrapeService(repo *repository.Repository, meta *Service, jwtSecret string, guestThreads, rpmPerThread int, debugEnabled, requireVerified bool) *ScrapeService {
 	if guestThreads <= 0 {
-		guestThreads = repository.GuestThreads
+		guestThreads = repo.Economy().GuestThreads
 	}
 	if rpmPerThread <= 0 {
 		rpmPerThread = defaultRPMPerThread
@@ -146,7 +146,7 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		ClientOwnerID: app.UserID,
 		SoftwareName:  resolveSoftwareName(creds.SoftwareName, app.Name),
 		Threads:       s.guestThreads,
-		DailyLimit:    s.guestThreads * repository.DailyGamesPerThread,
+		DailyLimit:    s.guestThreads * s.repo.Economy().DailyGamesPerThread,
 	}
 
 	if creds.UserCredential != "" {
@@ -154,12 +154,12 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		if err != nil {
 			return nil, err
 		}
-		threads := repository.ThreadsForUser(user.Role, user.DonorStatus, user.XP)
+		threads := s.repo.Economy().ThreadsForUser(user.Role, user.DonorStatus, user.XP)
 		subject.Kind = auth.ScrapeKindUser
 		subject.UserID = user.ID
 		subject.Username = user.Username
 		subject.Threads = threads
-		subject.DailyLimit = threads * repository.DailyGamesPerThread
+		subject.DailyLimit = threads * s.repo.Economy().DailyGamesPerThread
 	}
 
 	// Developer debug mode: a valid debug password unlocks counter/limit
@@ -185,7 +185,7 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		subject.ForceRateLimit = creds.ForceRateLimit
 		if creds.ForceThreads != nil && *creds.ForceThreads > 0 {
 			subject.Threads = *creds.ForceThreads
-			subject.DailyLimit = *creds.ForceThreads * repository.DailyGamesPerThread
+			subject.DailyLimit = *creds.ForceThreads * s.repo.Economy().DailyGamesPerThread
 		}
 	}
 

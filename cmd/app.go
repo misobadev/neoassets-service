@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"neoassets/internal/economy"
 	"neoassets/internal/email"
 	"neoassets/internal/handlers"
 	"neoassets/internal/repository"
@@ -33,13 +34,26 @@ type app struct {
 	donationSvc *services.DonationService
 }
 
-// configureEconomy applies the rewards/scrape economy from the config. It must
-// run before any service or repository reads it.
-func configureEconomy(cfg *Config) {
-	repository.ConfigureThreads(cfg.ScrapeAdminThreads, cfg.ScrapeGuestThreads, cfg.ScrapeSupporterBonusThreads, cfg.ScrapeMonthlySupporterBonusThreads)
-	repository.ConfigureRewards(cfg.ScrapeDailyPerThread, cfg.XPSupporterBonusPct, cfg.XPMonthlySupporterBonusPct)
-	repository.ConfigureDonations(cfg.DonorSubscriptionGraceDays)
-	services.ConfigurePoints(cfg.PointsTextMetadata, cfg.PointsImageMetadata, cfg.PointsVideoMetadata, cfg.PointsSAPImage, cfg.PointsNewGame)
+// economyFromConfig builds the rewards/scrape economy: the defaults with any
+// positive configured value applied (an unset variable keeps the default).
+func economyFromConfig(cfg *Config) economy.Config {
+	return economy.Default().Override(economy.Config{
+		AdminThreads:                 cfg.ScrapeAdminThreads,
+		GuestThreads:                 cfg.ScrapeGuestThreads,
+		SupporterBonusThreads:        cfg.ScrapeSupporterBonusThreads,
+		MonthlySupporterBonusThreads: cfg.ScrapeMonthlySupporterBonusThreads,
+		SupporterXPBonusPct:          cfg.XPSupporterBonusPct,
+		MonthlySupporterXPBonusPct:   cfg.XPMonthlySupporterBonusPct,
+		DailyGamesPerThread:          cfg.ScrapeDailyPerThread,
+		DonorGraceDays:               cfg.DonorSubscriptionGraceDays,
+		Points: economy.Points{
+			TextMetadata:  cfg.PointsTextMetadata,
+			ImageMetadata: cfg.PointsImageMetadata,
+			VideoMetadata: cfg.PointsVideoMetadata,
+			SAPImage:      cfg.PointsSAPImage,
+			NewGame:       cfg.PointsNewGame,
+		},
+	})
 }
 
 // newMailer returns the account mailer (verification and password reset), or
@@ -67,7 +81,7 @@ func newMailer(cfg *Config) *email.Sender {
 // emails). It also seeds the configured admin and the hidden NeoBot user.
 // main and the HTTP tests share it, so tests exercise the production wiring.
 func buildApp(cfg *Config, db *sql.DB, bucket r2.Client, mailer *email.Sender) (*app, error) {
-	repo := repository.NewRepository(db)
+	repo := repository.NewRepository(db, repository.WithEconomy(economyFromConfig(cfg)))
 
 	// The embedded system catalog used for validation and by the web endpoint
 	// (internal/systems/systems.json).

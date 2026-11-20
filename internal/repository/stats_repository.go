@@ -90,7 +90,7 @@ func (r *Repository) TopLevels(limit int) ([]models.LevelStat, error) {
 			XP:        xp,
 			Level:     level,
 			Rank:      progression.RankForLevel(level),
-			Threads:   ThreadsForUser(role, donor, xp),
+			Threads:   r.econ.ThreadsForUser(role, donor, xp),
 		})
 	}
 	return out, rows.Err()

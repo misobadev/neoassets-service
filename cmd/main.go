@@ -90,9 +90,6 @@ func main() {
 		log.Fatal().Err(err).Msg("Invalid CDN configuration")
 	}
 
-	// Apply the rewards/scrape economy before any service or repository reads it.
-	configureEconomy(cfg)
-
 	// Migrations run on their own connection, without the statement timeout:
 	// a data migration may legitimately take longer than any request should.
 	if err := runMigrations(cfg.DatabaseURL); err != nil {

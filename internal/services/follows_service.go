@@ -7,7 +7,6 @@ import (
 
 	"neoassets/internal/models"
 	"neoassets/internal/progression"
-	"neoassets/internal/repository"
 )
 
 // PublicProfile returns a user's public profile, excluding hidden users. If
@@ -34,7 +33,7 @@ func (s *Service) PublicProfile(username string, requesterID *uuid.UUID) (*model
 		XP:          u.XP,
 		Level:       level,
 		Rank:        progression.RankForLevel(level),
-		Threads:     repository.ThreadsForUser(u.Role, u.DonorStatus, u.XP),
+		Threads:     s.repo.Economy().ThreadsForUser(u.Role, u.DonorStatus, u.XP),
 		DonorStatus: u.DonorStatus,
 		AvatarKey:   u.AvatarKey,
 		Approved:    approved,
