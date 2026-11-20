@@ -19,12 +19,10 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +31,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"neoassets/internal/handlers"
@@ -435,18 +434,84 @@ func slug(s string) string {
 	return strings.ReplaceAll(strings.ToLower(s), " ", "_")
 }
 
-// testPNG is a small, valid 64x64 PNG.
+// testPNGBase64 is a valid 64x64 gradient PNG. It is stored as bytes (not
+// encoded at test time) because image/png output differs between Go
+// versions, and the size is part of the golden responses.
+const testPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAU0lEQVR4nOzPMQ3AQBTFsAwPeKEXxQ1fchQCXn2ry6/TAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALwH/AMAs0UDeeqndHMAAAAASUVORK5CYII="
+
+// testPNG returns the test image.
 func testPNG(t *testing.T) []byte {
 	t.Helper()
-	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
-	for y := 0; y < 64; y++ {
-		for x := 0; x < 64; x++ {
-			img.Set(x, y, color.RGBA{uint8(x * 4), uint8(y * 4), 128, 255})
-		}
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
+	data, err := base64.StdEncoding.DecodeString(testPNGBase64)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return buf.Bytes()
+	return data
+}
+
+// Concurrent reviews of one submission apply once: exactly one reject
+// succeeds and the others are refused (in progress, or no longer pending).
+func TestHTTPConcurrentRejectAppliesOnce(t *testing.T) {
+	h := newAPIHarness(t)
+	h.seedUser("artist", "user")
+	h.seedUser("reviewer", "admin")
+	artist := h.client()
+	artist.login("artist")
+	admin := h.client()
+	admin.login("reviewer")
+
+	up := artist.do(http.MethodPost, "/api/v1/submissions/upload-url", map[string]any{
+		"name": "Race Pack", "file_name": "snes.png", "system_id": "snes", "kind": "background",
+		"mime_type": "image/png", "size": len(testPNG(t)),
+	})
+	key := up.field(t, "object_key")
+	h.bucket.Put(key, "image/png", testPNG(t))
+	created := artist.do(http.MethodPost, "/api/v1/submissions", map[string]any{
+		"name": "Race Pack", "author": "Artist",
+		"files": []map[string]any{{
+			"object_key": key, "file_name": "snes.png", "system_id": "snes", "kind": "background",
+			"mime_type": "image/png", "size": len(testPNG(t)),
+		}},
+	})
+	id := created.field(t, "id")
+
+	const n = 8
+	results := make(chan response, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		// Each request gets its own client (cookie jar) carrying the admin session.
+		reviewer := h.client()
+		for k, v := range admin.cookies {
+			reviewer.cookies[k] = v
+		}
+		go func() {
+			defer wg.Done()
+			results <- reviewer.do(http.MethodPost, "/api/v1/admin/submissions/"+id+"/reject",
+				map[string]string{"comment": "race"})
+		}()
+	}
+	wg.Wait()
+	close(results)
+	ok := 0
+	for res := range results {
+		switch {
+		case res.status == http.StatusOK:
+			ok++
+		case res.status == http.StatusBadRequest &&
+			(strings.Contains(string(res.body), "already being reviewed") || strings.Contains(string(res.body), "not pending")):
+		default:
+			t.Errorf("unexpected response %d %s", res.status, res.body)
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("%d rejects succeeded, want exactly 1", ok)
+	}
+	var logs int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM submission_logs WHERE submission_id = $1 AND action = 'rejected'`, id).Scan(&logs); err != nil {
+		t.Fatal(err)
+	}
+	if logs != 1 {
+		t.Fatalf("%d rejection log rows, want 1", logs)
+	}
 }

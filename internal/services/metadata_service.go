@@ -1443,7 +1443,20 @@ func (s *Service) ensureGameNameAvailable(gameID uuid.UUID, payload []byte) erro
 }
 
 // ApproveMetadataSubmission approves a pending contribution and applies it.
+// ApproveMetadataSubmission applies a pending metadata submission. Approve and
+// reject of the same submission are serialized (see repository.WithReviewLock),
+// so a double click can't apply it twice.
 func (s *Service) ApproveMetadataSubmission(id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
+	var out *models.MetadataSubmission
+	err := s.repo.WithReviewLock(context.Background(), id, func() error {
+		var err error
+		out, err = s.approveMetadataSubmission(id, adminID, comment)
+		return err
+	})
+	return out, err
+}
+
+func (s *Service) approveMetadataSubmission(id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
 	sub, err := s.repo.GetMetadataSubmission(id)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
@@ -2002,7 +2015,19 @@ func (s *Service) convertVideoToCanonical(ctx context.Context, f models.Metadata
 
 // RejectMetadataSubmission rejects a pending contribution, preserving the files
 // it uploaded under rejected/.
+// RejectMetadataSubmission rejects a pending metadata submission. Approve and
+// reject of the same submission are serialized (see repository.WithReviewLock).
 func (s *Service) RejectMetadataSubmission(ctx context.Context, id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
+	var out *models.MetadataSubmission
+	err := s.repo.WithReviewLock(ctx, id, func() error {
+		var err error
+		out, err = s.rejectMetadataSubmission(ctx, id, adminID, comment)
+		return err
+	})
+	return out, err
+}
+
+func (s *Service) rejectMetadataSubmission(ctx context.Context, id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
 	sub, err := s.repo.GetMetadataSubmission(id)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")

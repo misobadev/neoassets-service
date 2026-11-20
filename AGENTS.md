@@ -13,6 +13,7 @@ the DB via `GET /api/v1/packs`.
 
 ```
 cmd/main.go                 config, DB, migration runner, router
+cmd/app.go                  buildApp: wires repository, services, handlers, router
 internal/models             request/response + DB structs (scrape.go = scraping DTOs)
 internal/repository         SQL access (repository.go, user_repository.go,
                             metadata_repository.go, developer_repository.go)
@@ -23,7 +24,7 @@ internal/handlers           HTTP handlers (scrape_handlers.go, developer_handler
 internal/systems            embedded system catalog (+ systems.json)
 pkg/auth                    JWT + password helpers, scrape credentials/middleware
 pkg/r2                      Cloudflare R2 S3 client
-migrations/*                sql-migrate files, run automatically at boot
+migrations/*                golang-migrate files, run automatically at boot
 ```
 
 ## Submission state machine
@@ -252,6 +253,20 @@ the user credential is optional and falls back to guest mode.
   stored English description. The importer's bulk path uses `translate_nllb.py`
   instead.
 
+## Reviews and XP (concurrency)
+
+- Approve and reject (packs and metadata) run under
+  `repository.WithReviewLock`: a PostgreSQL advisory lock per submission id,
+  taken with `pg_try_advisory_lock` on a dedicated connection. A second
+  concurrent review of the same submission gets
+  `submission is already being reviewed` (400) instead of applying twice;
+  after the first finishes, the usual `submission is not pending` applies.
+- `AwardXP` grants at most one ledger entry per submission: inside its
+  transaction it takes `pg_advisory_xact_lock` on the submission id and
+  re-checks the ledger before inserting, so overlapping approvals never
+  double-credit. (No unique index is added, so existing data can never make
+  a migration fail.)
+
 ## Cloudflare R2
 
 - Signing: `pkg/r2` uses the S3-compatible API against
@@ -290,9 +305,19 @@ go test ./...
 docker compose --env-file .env up -d --build
 ```
 
-The repository tests in `internal/repository/user_updates_test.go` run against a real PostgreSQL when
-`NEOASSETS_TEST_DATABASE_URL` is set (skipped otherwise). They drop and re-migrate its `public` schema, so point it at
-a throwaway database whose name contains `test`.
+Database-backed tests use `internal/testdb.Open(t, "<name>")`: with
+`NEOASSETS_TEST_DATABASE_URL` set (its database name must contain `test`) each
+caller gets its own sibling database `<base>_<name>`, reset and migrated once
+per test process; without the variable those tests are skipped. Point it at a
+throwaway server, e.g.
+`docker run -d -e POSTGRES_PASSWORD=test -e POSTGRES_DB=neoassets_test -p 127.0.0.1:55432:5432 postgres:16-alpine`.
+
+`cmd/http_golden_test.go` pins the HTTP API: it runs the production wiring
+(`buildApp`) over a test database and an in-memory bucket (`pkg/r2/r2test`)
+and compares every response with `cmd/testdata/http/*.golden`. A refactor must
+leave them unchanged; after an intended API change run
+`go test ./cmd -run HTTP -update` and review the diff. The approve path needs
+ffmpeg with libwebp (CI installs it) and is skipped without it.
 
 ## Env (.env)
 

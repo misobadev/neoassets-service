@@ -1138,7 +1138,19 @@ func (s *Service) blockSelfReview(ownerID *uuid.UUID, actorID uuid.UUID) error {
 	return fmt.Errorf("you cannot review your own submission")
 }
 
+// Approve publishes a pending submission. Approve and reject of the same
+// submission are serialized (see repository.WithReviewLock).
 func (s *Service) Approve(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, _, comment string) (*models.Submission, error) {
+	var out *models.Submission
+	err := s.repo.WithReviewLock(ctx, submissionID, func() error {
+		var err error
+		out, err = s.approve(ctx, submissionID, adminID, comment)
+		return err
+	})
+	return out, err
+}
+
+func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, comment string) (*models.Submission, error) {
 	sub, err := s.repo.GetSubmission(submissionID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
@@ -1369,7 +1381,19 @@ func isMissingSource(err error) bool {
 // Reject marks a submission as rejected and deletes its staged (review) files
 // from R2. The pack's canonical published files are untouched, so rejecting an
 // update simply drops the changes and keeps whatever is currently live.
+// Reject rejects a pending submission. Approve and reject of the same
+// submission are serialized (see repository.WithReviewLock).
 func (s *Service) Reject(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, comment string) (*models.Submission, error) {
+	var out *models.Submission
+	err := s.repo.WithReviewLock(ctx, submissionID, func() error {
+		var err error
+		out, err = s.reject(ctx, submissionID, adminID, comment)
+		return err
+	})
+	return out, err
+}
+
+func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, comment string) (*models.Submission, error) {
 	sub, err := s.repo.GetSubmission(submissionID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
