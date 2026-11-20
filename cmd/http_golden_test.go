@@ -68,7 +68,6 @@ func newAPIHarness(t *testing.T) *apiHarness {
 	if err := handlers.ConfigureCDN(cfg.CDNIPRanges, cfg.CDNClientIPHeader); err != nil {
 		t.Fatal(err)
 	}
-	configureEconomy(cfg)
 
 	resetData(t, db)
 	seedCatalog(t, db)

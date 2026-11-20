@@ -3,42 +3,10 @@ package services
 import (
 	"github.com/google/uuid"
 
+	"neoassets/internal/economy"
 	"neoassets/internal/models"
 	"neoassets/internal/progression"
-	"neoassets/internal/repository"
 )
-
-// Points awarded for approved contributions. They are configurable at startup
-// via ConfigurePoints so the economy can be tuned without code changes.
-var (
-	PointsTextMetadata  = 10
-	PointsImageMetadata = 50
-	PointsVideoMetadata = 100
-	PointsSAPImage      = 20
-	// PointsNewGame is an extra bonus for approving a brand-new game on top of
-	// the field/media XP it already earns.
-	PointsNewGame = 100
-)
-
-// ConfigurePoints overrides the points awarded per approved contribution type.
-// Any non-positive argument keeps the current value.
-func ConfigurePoints(textMetadata, imageMetadata, videoMetadata, sapImage, newGame int) {
-	if textMetadata > 0 {
-		PointsTextMetadata = textMetadata
-	}
-	if imageMetadata > 0 {
-		PointsImageMetadata = imageMetadata
-	}
-	if videoMetadata > 0 {
-		PointsVideoMetadata = videoMetadata
-	}
-	if sapImage > 0 {
-		PointsSAPImage = sapImage
-	}
-	if newGame > 0 {
-		PointsNewGame = newGame
-	}
-}
 
 // textMetadataKeys are the payload keys that count as one text metadata each.
 var textMetadataKeys = []string{"name", "description", "region", "genre", "developer", "publisher", "release_year", "rating", "type"}
@@ -65,8 +33,9 @@ func (s *Service) awardXP(userID uuid.UUID, baseXP int, reason string, submissio
 	if err != nil {
 		return err
 	}
-	pct := repository.DonorXPBonusPct(user.DonorStatus)
-	delta := repository.ApplyXPBonus(baseXP, pct)
+	econ := s.repo.Economy()
+	pct := econ.DonorXPBonusPct(user.DonorStatus)
+	delta := economy.ApplyXPBonus(baseXP, pct)
 	return s.repo.AwardXP(userID, delta, reason, submissionID)
 }
 
@@ -77,21 +46,22 @@ func (s *Service) PublicConfig() models.PublicConfig {
 	for _, r := range progression.Ranks {
 		ranks = append(ranks, models.RankConfig{Rank: r.Key, MinLevel: r.MinLevel, MaxLevel: r.MaxLevel, Threads: r.Threads})
 	}
+	econ := s.repo.Economy()
 	return models.PublicConfig{
-		GuestThreads:        repository.GuestThreads,
-		AdminThreads:        repository.AdminThreads,
-		DailyGamesPerThread: repository.DailyGamesPerThread,
+		GuestThreads:        econ.GuestThreads,
+		AdminThreads:        econ.AdminThreads,
+		DailyGamesPerThread: econ.DailyGamesPerThread,
 		Points: models.PointsConfig{
-			TextMetadata:  PointsTextMetadata,
-			ImageMetadata: PointsImageMetadata,
-			VideoMetadata: PointsVideoMetadata,
-			SAPImage:      PointsSAPImage,
-			NewGame:       PointsNewGame,
+			TextMetadata:  econ.Points.TextMetadata,
+			ImageMetadata: econ.Points.ImageMetadata,
+			VideoMetadata: econ.Points.VideoMetadata,
+			SAPImage:      econ.Points.SAPImage,
+			NewGame:       econ.Points.NewGame,
 		},
 		Ranks: ranks,
 		DonorTiers: []models.DonorTier{
-			{Status: models.DonorSupporter, BonusThreads: repository.SupporterBonusThreads, XPBonusPct: repository.SupporterXPBonusPct},
-			{Status: models.DonorMonthlySupporter, BonusThreads: repository.MonthlySupporterBonusThreads, XPBonusPct: repository.MonthlySupporterXPBonusPct},
+			{Status: models.DonorSupporter, BonusThreads: econ.SupporterBonusThreads, XPBonusPct: econ.SupporterXPBonusPct},
+			{Status: models.DonorMonthlySupporter, BonusThreads: econ.MonthlySupporterBonusThreads, XPBonusPct: econ.MonthlySupporterXPBonusPct},
 		},
 	}
 }

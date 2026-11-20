@@ -911,7 +911,7 @@ func (s *Service) ListUserSubmissions(ctx context.Context, userID uuid.UUID, sta
 	if points, err := s.repo.SubmissionPointsByIDs(ids); err == nil {
 		for i := range details {
 			details[i].PointsEarned = points[details[i].ID]
-			details[i].BasePointsEarned = len(details[i].Files) * PointsSAPImage
+			details[i].BasePointsEarned = len(details[i].Files) * s.repo.Economy().Points.SAPImage
 		}
 	}
 	_, totalXP, err := s.repo.UserAwardedXPBySource(userID)
@@ -1202,7 +1202,7 @@ func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID u
 	if sub.UserID != nil {
 		files, err := s.repo.ListFiles(submissionID)
 		if err == nil && len(files) > 0 {
-			if err := s.awardXP(*sub.UserID, len(files)*PointsSAPImage, "approved_sap_images", &submissionID); err != nil {
+			if err := s.awardXP(*sub.UserID, len(files)*s.repo.Economy().Points.SAPImage, "approved_sap_images", &submissionID); err != nil {
 				return nil, err
 			}
 		}

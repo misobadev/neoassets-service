@@ -12,19 +12,6 @@ import (
 
 const donationEventColumns = `id, platform, external_id, email, from_name, amount_cents, currency, kind, tier_name, active, user_id, occurred_at, created_at`
 
-// donorGraceDays is the inactivity window after which an auto-managed monthly
-// supporter with no fresh subscription payment is downgraded. Configured at
-// boot via ConfigureDonations.
-var donorGraceDays = 40
-
-// ConfigureDonations sets the subscription grace window in days. Zero keeps the
-// default (40 days, a little over a monthly billing cycle).
-func ConfigureDonations(graceDays int) {
-	if graceDays > 0 {
-		donorGraceDays = graceDays
-	}
-}
-
 // UpsertDonationEvent inserts a payment, or refreshes it when the platform
 // redelivers the same event. external_id is the platform transaction id, so
 // repeated webhooks are idempotent. An already-linked user_id is preserved.
@@ -108,7 +95,7 @@ func (r *Repository) RecomputeDonorStatus(userID uuid.UUID) (string, error) {
 			       WHERE user_id = $1 AND kind = 'subscription' AND active
 			         AND occurred_at >= NOW() - make_interval(days => $2)),
 			EXISTS(SELECT 1 FROM donation_events WHERE user_id = $1 AND kind = 'one_time')
-	`, userID, donorGraceDays).Scan(&hasSubscription, &hasOneTime); err != nil {
+	`, userID, r.econ.DonorGraceDays).Scan(&hasSubscription, &hasOneTime); err != nil {
 		return "", fmt.Errorf("failed to compute donor status: %w", err)
 	}
 
@@ -143,7 +130,7 @@ func (r *Repository) StaleSubscriptionUserIDs() ([]uuid.UUID, error) {
 		  AND NOT EXISTS (SELECT 1 FROM donation_events e
 		                  WHERE e.user_id = u.id AND e.kind = 'subscription' AND e.active
 		                    AND e.occurred_at >= NOW() - make_interval(days => $1))
-	`, donorGraceDays)
+	`, r.econ.DonorGraceDays)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list stale subscriptions: %w", err)
 	}

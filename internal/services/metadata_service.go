@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"neoassets/internal/economy"
 	"neoassets/internal/models"
 	"neoassets/pkg/r2"
 	"neoassets/pkg/video"
@@ -1172,7 +1173,7 @@ func (s *Service) enrichMetadataSubmissions(list []models.MetadataSubmission) er
 
 	for i := range list {
 		list[i].PointsEarned = points[list[i].ID]
-		list[i].BasePointsEarned = metadataBasePoints(list[i].Payload, list[i].Kind, kinds[list[i].ID])
+		list[i].BasePointsEarned = metadataBasePoints(s.repo.Economy().Points, list[i].Payload, list[i].Kind, kinds[list[i].ID])
 		list[i].Files = files[list[i].ID]
 		if list[i].GameID != nil {
 			if g, ok := gameByID[*list[i].GameID]; ok {
@@ -1680,7 +1681,7 @@ func (s *Service) RetranslateSystem(ctx context.Context, systemID string) (int, 
 // metadataBasePoints is the XP a metadata submission earns before the donor
 // boost: one award per filled text field, per media file and, for a new game,
 // the new-game bonus. `kinds` may repeat (one entry per file).
-func metadataBasePoints(payload json.RawMessage, kind string, kinds []string) int {
+func metadataBasePoints(points economy.Points, payload json.RawMessage, kind string, kinds []string) int {
 	var delta int
 	var p map[string]any
 	if err := json.Unmarshal(payload, &p); err == nil {
@@ -1689,11 +1690,11 @@ func metadataBasePoints(payload json.RawMessage, kind string, kinds []string) in
 				switch val := v.(type) {
 				case string:
 					if strings.TrimSpace(val) != "" {
-						delta += PointsTextMetadata
+						delta += points.TextMetadata
 					}
 				case float64:
 					if val > 0 {
-						delta += PointsTextMetadata
+						delta += points.TextMetadata
 					}
 				}
 			}
@@ -1701,13 +1702,13 @@ func metadataBasePoints(payload json.RawMessage, kind string, kinds []string) in
 	}
 	for _, k := range kinds {
 		if k == models.MediaVideo {
-			delta += PointsVideoMetadata
+			delta += points.VideoMetadata
 		} else {
-			delta += PointsImageMetadata
+			delta += points.ImageMetadata
 		}
 	}
 	if kind == "new_game" {
-		delta += PointsNewGame
+		delta += points.NewGame
 	}
 	return delta
 }
@@ -1727,7 +1728,7 @@ func (s *Service) awardMetadataPoints(id uuid.UUID, sub *models.MetadataSubmissi
 		}
 		kinds = append(kinds, f.Kind)
 	}
-	delta := metadataBasePoints(sub.Payload, sub.Kind, kinds)
+	delta := metadataBasePoints(s.repo.Economy().Points, sub.Payload, sub.Kind, kinds)
 	if delta == 0 {
 		return nil
 	}
