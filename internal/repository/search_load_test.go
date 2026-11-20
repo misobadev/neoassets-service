@@ -5,18 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 
 	"neoassets/internal/models"
+	"neoassets/internal/testdb"
 )
 
 func TestSearchTokensAreCapped(t *testing.T) {
@@ -30,60 +26,11 @@ func TestSearchTokensAreCapped(t *testing.T) {
 	}
 }
 
-var (
-	loadDBOnce sync.Once
-	loadDB     *sql.DB
-	loadDBErr  error
-)
-
-// loadTestRepo returns a Repository on the database named by
-// NEOASSETS_TEST_DATABASE_URL, migrated from scratch once per run. Its public
-// schema is dropped first, so the database's name must contain "test". Without
-// the variable the test is skipped.
+// loadTestRepo returns a Repository on a migrated test database (see testdb).
 func loadTestRepo(t *testing.T) (*Repository, *sql.DB) {
 	t.Helper()
-	url := os.Getenv("NEOASSETS_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("NEOASSETS_TEST_DATABASE_URL not set")
-	}
-	loadDBOnce.Do(func() { loadDB, loadDBErr = migrateLoadTestDB(url) })
-	if loadDBErr != nil {
-		t.Fatal(loadDBErr)
-	}
-	return NewRepository(loadDB), loadDB
-}
-
-func migrateLoadTestDB(url string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", url)
-	if err != nil {
-		return nil, err
-	}
-	var name string
-	if err := db.QueryRow(`SELECT current_database()`).Scan(&name); err != nil {
-		return nil, err
-	}
-	if !strings.Contains(strings.ToLower(name), "test") {
-		return nil, fmt.Errorf("refusing to reset database %s: its name must contain \"test\"", name)
-	}
-	if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
-		return nil, err
-	}
-	driver, err := postgres.WithInstance(db, &postgres.Config{})
-	if err != nil {
-		return nil, err
-	}
-	m, err := migrate.NewWithDatabaseInstance("file://../../migrations", "postgres", driver)
-	if err != nil {
-		return nil, err
-	}
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return nil, err
-	}
-	// games.rating is read by the game queries but no migration creates it.
-	if _, err := db.Exec(`ALTER TABLE games ADD COLUMN IF NOT EXISTS rating integer NOT NULL DEFAULT 0`); err != nil {
-		return nil, err
-	}
-	return db, nil
+	db := testdb.Open(t, "repository_search")
+	return NewRepository(db), db
 }
 
 // seedSystem creates a system with n games named "<prefix> NN".

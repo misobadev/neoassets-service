@@ -3,8 +3,6 @@ package services
 import (
 	"bytes"
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -13,18 +11,15 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 
 	"neoassets/internal/models"
 	"neoassets/internal/repository"
+	"neoassets/internal/testdb"
 	"neoassets/pkg/r2"
 )
 
@@ -207,57 +202,12 @@ func TestNormalizeDonationURL(t *testing.T) {
 	}
 }
 
-var (
-	contentDBOnce sync.Once
-	contentDB     *sql.DB
-	contentDBErr  error
-)
-
-// contentTestService returns a Service over the database named by
-// NEOASSETS_TEST_DATABASE_URL (migrated from scratch once per run; its public
-// schema is dropped first, so the name must contain "test") and the given
-// bucket. Without the variable the test is skipped.
+// contentTestService returns a Service over a migrated test database (see
+// testdb) and the given bucket.
 func contentTestService(t *testing.T, bucket r2.Client) (*Service, *repository.Repository) {
 	t.Helper()
-	url := os.Getenv("NEOASSETS_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("NEOASSETS_TEST_DATABASE_URL not set")
-	}
-	contentDBOnce.Do(func() { contentDB, contentDBErr = migrateContentTestDB(url) })
-	if contentDBErr != nil {
-		t.Fatal(contentDBErr)
-	}
-	repo := repository.NewRepository(contentDB)
+	repo := repository.NewRepository(testdb.Open(t, "services_upload"))
 	return NewService(repo, bucket, "https://cdn.test", "test-secret", nil), repo
-}
-
-func migrateContentTestDB(url string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", url)
-	if err != nil {
-		return nil, err
-	}
-	var name string
-	if err := db.QueryRow(`SELECT current_database()`).Scan(&name); err != nil {
-		return nil, err
-	}
-	if !strings.Contains(strings.ToLower(name), "test") {
-		return nil, fmt.Errorf("refusing to reset database %s: its name must contain \"test\"", name)
-	}
-	if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
-		return nil, err
-	}
-	driver, err := postgres.WithInstance(db, &postgres.Config{})
-	if err != nil {
-		return nil, err
-	}
-	m, err := migrate.NewWithDatabaseInstance("file://../../migrations", "postgres", driver)
-	if err != nil {
-		return nil, err
-	}
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return nil, err
-	}
-	return db, nil
 }
 
 func contentTestUser(t *testing.T, repo *repository.Repository, role string) *models.User {
@@ -543,7 +493,7 @@ func TestEveryUploadPathRefusesPageTypes(t *testing.T) {
 	ctx := context.Background()
 
 	systemID := "sys" + uuid.NewString()[:8]
-	if _, err := contentDB.Exec(`INSERT INTO metadata_systems (id, name) VALUES ($1, $1)`, systemID); err != nil {
+	if _, err := testdb.Open(t, "services_upload").Exec(`INSERT INTO metadata_systems (id, name) VALUES ($1, $1)`, systemID); err != nil {
 		t.Fatal(err)
 	}
 	metaID, err := repo.CreateMetadataSubmission(nil, &systemID, owner.ID, "edit", []byte(`{}`))
