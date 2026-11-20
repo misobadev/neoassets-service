@@ -185,6 +185,29 @@ the user credential is optional and falls back to guest mode.
   outstanding token immediately, admin tokens included. Admin tokens (and the
   `ns_admin` cookie) last 12 h (`auth.AdminTokenTTL`), whichever login issued them. Email-verification and password-reset tokens are
   stored as SHA-256 hashes, never plaintext.
+- **Client IP** (`handlers.ClientIP`), used by every per-IP limiter: starting at
+  the peer, X-Forwarded-For is followed **right to left** past private/loopback
+  hops (Traefik, a tunnel) to the first outside address (entries further left
+  are client-supplied). The CDN's client-address header is used when that
+  address is in the CDN's ranges or when the request only passed through
+  private hops; any other public address is the client. This assumes the
+  origin is reachable only through the CDN (a NAT that shows outside clients
+  as a private address would let them pick their key) and that Traefik appends
+  to X-Forwarded-For (keep `forwardedHeaders.notAppendXForwardedFor` off).
+  Hops in 100.64.0.0/10 (CGNAT, e.g. an overlay network) don't count as
+  private. `TRUST_PROXY_HEADERS=always` treats the direct peer as our proxy.
+- **CDN:** Cloudflare by default (`CF-Connecting-IP`, ranges embedded in
+  `security.go`; update them if Cloudflare announces a change). To move to
+  another CDN set **both** `CDN_IP_RANGES` (its published edge CIDRs) and
+  `CDN_CLIENT_IP_HEADER` (a header the CDN sets on every request, overwriting
+  any value from the client) — startup refuses one without the other, and
+  refuses `X-Forwarded-For`/`Forwarded`. Without them, every user of one edge
+  node of the new CDN would share a bucket. With nothing in front of Traefik
+  (DNS only) set `CDN_IP_RANGES=none`; don't use `none` behind a tunnel or
+  ingress, where every hop is private and all clients would share one bucket.
+- **Limiter keys** are per IPv4 address or IPv6 /64 (`ClientKey`). Limiters
+  keep two 10-minute generations of buckets with a key cap, so memory is
+  bounded and nothing scans the map per request.
 - Because R2 is public and `/api/v1/metadata/*` stays open (per-IP rate limited),
   quota is an anti-abuse contract, not a hard boundary.
 
