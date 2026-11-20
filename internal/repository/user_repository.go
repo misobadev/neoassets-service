@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -121,21 +122,123 @@ func (r *Repository) GetUserByPasswordResetToken(token string) (*models.User, er
 	return scanUser(row)
 }
 
-// UpdateUser persists every mutable field of a user, keyed by ID.
-func (r *Repository) UpdateUser(u *models.User) error {
-	_, err := r.db.Exec(
+// The account updates below each write only the columns their operation
+// changes, so a concurrent request's write to any other column is never
+// overwritten with a value read earlier. Values that more than one operation
+// changes are updated in place (token_version) or only if they still hold
+// what the caller checked (password_hash, one-time tokens).
+
+// ProfileUpdate is a change to a user's username and/or email. Empty fields are
+// left unchanged. A non-nil Verification replaces the email verification state
+// (unverified, with a new token) and is only set together with a new Email.
+type ProfileUpdate struct {
+	Username     string
+	Email        string
+	Verification *EmailVerification
+}
+
+// EmailVerification is a pending email verification token.
+type EmailVerification struct {
+	TokenHash string
+	Expires   time.Time
+}
+
+// UpdateProfile applies a profile change in a single statement, writing only
+// the fields it changes. A new email also cancels any pending password reset,
+// whose link went to the previous address. It reports whether the user exists.
+func (r *Repository) UpdateProfile(id uuid.UUID, p ProfileUpdate) (bool, error) {
+	reset := p.Verification != nil
+	if reset && p.Email == "" {
+		return false, fmt.Errorf("an email verification reset needs a new email")
+	}
+	var tokenHash *string
+	var expires *time.Time
+	if reset {
+		tokenHash, expires = &p.Verification.TokenHash, &p.Verification.Expires
+	}
+	return r.execOne(
 		`UPDATE users SET
-			username = $1, email = $2, password_hash = $3, role = $4, hidden = $5, xp = $6, donor_status = $7, email_verified = $8,
-			email_verification_token = $9, email_verification_expires_at = $10,
-			password_reset_token = $11, password_reset_expires_at = $12,
-			token_version = $13,
+			username = COALESCE(NULLIF($1, ''), username),
+			email = COALESCE(NULLIF($2, ''), email),
+			email_verified = CASE WHEN $3 THEN FALSE ELSE email_verified END,
+			email_verification_token = CASE WHEN $3 THEN $4::text ELSE email_verification_token END,
+			email_verification_expires_at = CASE WHEN $3 THEN $5::timestamptz ELSE email_verification_expires_at END,
+			password_reset_token = CASE WHEN $2 <> '' THEN NULL ELSE password_reset_token END,
+			password_reset_expires_at = CASE WHEN $2 <> '' THEN NULL ELSE password_reset_expires_at END,
 			updated_at = NOW()
-		 WHERE id = $14`,
-		u.Username, u.Email, u.PasswordHash, u.Role, u.Hidden, u.XP, u.DonorStatus, u.EmailVerified,
-		u.EmailVerificationToken, u.EmailVerificationExpires,
-		u.PasswordResetToken, u.PasswordResetExpires, u.TokenVersion, u.ID,
+		 WHERE id = $6`,
+		p.Username, p.Email, reset, tokenHash, expires, id,
 	)
-	return err
+}
+
+// SetEmailVerificationToken stores a new verification token if the account
+// still has the email the caller read and is still unverified, so the token is
+// only ever mailed to the address it can verify. It reports whether it applied.
+func (r *Repository) SetEmailVerificationToken(id uuid.UUID, email, tokenHash string, expires time.Time) (bool, error) {
+	return r.execOne(
+		`UPDATE users SET email_verification_token = $3, email_verification_expires_at = $4, updated_at = NOW()
+		 WHERE id = $1 AND email = $2 AND NOT email_verified`,
+		id, email, tokenHash, expires,
+	)
+}
+
+// MarkEmailVerified verifies the email if tokenHash is still the account's
+// unexpired verification token, consuming it. It reports whether it applied.
+func (r *Repository) MarkEmailVerified(id uuid.UUID, tokenHash string) (bool, error) {
+	return r.execOne(
+		`UPDATE users SET email_verified = TRUE, email_verification_token = NULL,
+			email_verification_expires_at = NULL, updated_at = NOW()
+		 WHERE id = $1 AND email_verification_token = $2 AND email_verification_expires_at > NOW()`,
+		id, tokenHash,
+	)
+}
+
+// SetPasswordResetToken stores a new password reset token if the account still
+// has the email the caller read (the one the token is mailed to). It reports
+// whether it applied.
+func (r *Repository) SetPasswordResetToken(id uuid.UUID, email, tokenHash string, expires time.Time) (bool, error) {
+	return r.execOne(
+		`UPDATE users SET password_reset_token = $3, password_reset_expires_at = $4, updated_at = NOW()
+		 WHERE id = $1 AND email = $2`,
+		id, email, tokenHash, expires,
+	)
+}
+
+// ResetPasswordWithToken sets a new password hash if tokenHash is still the
+// account's unexpired reset token, consuming it and revoking every issued
+// token. It reports whether it applied.
+func (r *Repository) ResetPasswordWithToken(id uuid.UUID, tokenHash, newHash string) (bool, error) {
+	return r.execOne(
+		`UPDATE users SET password_hash = $3, password_reset_token = NULL, password_reset_expires_at = NULL,
+			token_version = token_version + 1, updated_at = NOW()
+		 WHERE id = $1 AND password_reset_token = $2 AND password_reset_expires_at > NOW()`,
+		id, tokenHash, newHash,
+	)
+}
+
+// ChangePasswordHash replaces the password hash if it is still checkedHash
+// (the one the current password was verified against), revoking every issued
+// token. It reports whether it applied.
+func (r *Repository) ChangePasswordHash(id uuid.UUID, checkedHash, newHash string) (bool, error) {
+	return r.execOne(
+		`UPDATE users SET password_hash = $3, token_version = token_version + 1, updated_at = NOW()
+		 WHERE id = $1 AND password_hash = $2`,
+		id, checkedHash, newHash,
+	)
+}
+
+// execOne runs a conditional single-row update and reports whether a row
+// matched.
+func (r *Repository) execOne(query string, args ...interface{}) (bool, error) {
+	res, err := r.db.Exec(query, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // SetDonorStatus updates a user's donor status and returns the updated user.

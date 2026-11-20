@@ -177,11 +177,16 @@ func (s *UserService) VerifyEmail(token string) error {
 		return fmt.Errorf("verification token has expired")
 	}
 
-	user.EmailVerified = true
-	user.EmailVerificationToken = nil
-	user.EmailVerificationExpires = nil
-	if err := s.repo.UpdateUser(user); err != nil {
+	ok, err := s.repo.MarkEmailVerified(user.ID, auth.HashToken(token))
+	if err != nil {
 		return err
+	}
+	if !ok {
+		// The link may have been opened twice (or by a mail scanner first).
+		if current, err := s.repo.GetUserByID(user.ID); err == nil && current.EmailVerified {
+			return nil
+		}
+		return fmt.Errorf("invalid verification token")
 	}
 	// Attach donations already made with this email so users who donated before
 	// registering get their donor benefits automatically.
@@ -222,11 +227,13 @@ func (s *UserService) ResendVerification(email string) error {
 		return err
 	}
 	expires := time.Now().Add(verificationTokenTTL)
-	hashed := auth.HashToken(token)
-	user.EmailVerificationToken = &hashed
-	user.EmailVerificationExpires = &expires
-	if err := s.repo.UpdateUser(user); err != nil {
+	ok, err := s.repo.SetEmailVerificationToken(user.ID, user.Email, auth.HashToken(token), expires)
+	if err != nil {
 		return err
+	}
+	if !ok {
+		// The email changed or was verified meanwhile: nothing to send here.
+		return nil
 	}
 
 	if s.mailer != nil {
@@ -259,11 +266,13 @@ func (s *UserService) ForgotPassword(email string) error {
 		return err
 	}
 	expires := time.Now().Add(resetTokenTTL)
-	hashed := auth.HashToken(token)
-	user.PasswordResetToken = &hashed
-	user.PasswordResetExpires = &expires
-	if err := s.repo.UpdateUser(user); err != nil {
+	ok, err := s.repo.SetPasswordResetToken(user.ID, user.Email, auth.HashToken(token), expires)
+	if err != nil {
 		return err
+	}
+	if !ok {
+		// The email changed meanwhile: don't mail a reset link to the old one.
+		return nil
 	}
 
 	if s.mailer != nil {
@@ -295,13 +304,14 @@ func (s *UserService) ResetPassword(token, newPassword string) error {
 	if err != nil {
 		return err
 	}
-	user.PasswordHash = hash
-	user.PasswordResetToken = nil
-	user.PasswordResetExpires = nil
-	// Revoke every previously issued token for this account.
-	user.TokenVersion++
-	if err := s.repo.UpdateUser(user); err != nil {
+	// Consumes the token and revokes every previously issued token for this
+	// account; a token already used (or expired meanwhile) changes nothing.
+	ok, err := s.repo.ResetPasswordWithToken(user.ID, auth.HashToken(token), hash)
+	if err != nil {
 		return err
+	}
+	if !ok {
+		return fmt.Errorf("invalid or expired reset token")
 	}
 	return nil
 }
@@ -387,6 +397,7 @@ func (s *UserService) UpdateProfile(id uuid.UUID, username, email string) (*mode
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
 	}
+	newUsername, newEmail := "", ""
 	if strings.TrimSpace(username) != "" && strings.TrimSpace(username) != user.Username {
 		uname := strings.TrimSpace(username)
 		if !usernameRegex.MatchString(uname) {
@@ -399,10 +410,10 @@ func (s *UserService) UpdateProfile(id uuid.UUID, username, email string) (*mode
 		if exists {
 			return nil, fmt.Errorf("username already exists")
 		}
-		user.Username = uname
+		newUsername = uname
 	}
 	if strings.TrimSpace(email) != "" && strings.ToLower(strings.TrimSpace(email)) != strings.ToLower(user.Email) {
-		newEmail := strings.ToLower(strings.TrimSpace(email))
+		newEmail = strings.ToLower(strings.TrimSpace(email))
 		if !emailRegex.MatchString(newEmail) {
 			return nil, fmt.Errorf("invalid email address")
 		}
@@ -413,29 +424,43 @@ func (s *UserService) UpdateProfile(id uuid.UUID, username, email string) (*mode
 		if exists {
 			return nil, fmt.Errorf("email already exists")
 		}
-		user.Email = newEmail
-		// A new email address must be proven: reset the verified flag and issue
-		// a fresh verification token. Until it is verified the account's tokens
-		// no longer grant access.
-		if !s.SkipEmailVerification {
-			token, err := newToken()
-			if err != nil {
-				return nil, err
-			}
-			expires := time.Now().Add(verificationTokenTTL)
-			hashed := auth.HashToken(token)
-			user.EmailVerified = false
-			user.EmailVerificationToken = &hashed
-			user.EmailVerificationExpires = &expires
-			if s.mailer != nil {
-				if err := s.mailer.SendVerificationEmail(user.Email, user.Username, token); err != nil {
-					log.Error().Str("email", user.Email).Err(err).Msg("failed to send verification email after email change")
-				}
-			}
+	}
+	if newUsername == "" && newEmail == "" {
+		return user, nil
+	}
+	// One statement writing only the fields that changed, so nothing else on
+	// the account (password, token version, role, XP, verification) is
+	// overwritten with the values read above.
+	update := repository.ProfileUpdate{Username: newUsername, Email: newEmail}
+	// A new email address must be proven: the verified flag is cleared and a
+	// fresh verification token is emailed, and until then the account's tokens
+	// no longer grant access.
+	var verifyToken string
+	if newEmail != "" && !s.SkipEmailVerification {
+		verifyToken, err = newToken()
+		if err != nil {
+			return nil, err
+		}
+		update.Verification = &repository.EmailVerification{
+			TokenHash: auth.HashToken(verifyToken),
+			Expires:   time.Now().Add(verificationTokenTTL),
 		}
 	}
-	if err := s.repo.UpdateUser(user); err != nil {
+	ok, err := s.repo.UpdateProfile(id, update)
+	if err != nil {
 		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("user not found")
+	}
+	if update.Verification != nil && s.mailer != nil {
+		name := user.Username
+		if newUsername != "" {
+			name = newUsername
+		}
+		if err := s.mailer.SendVerificationEmail(newEmail, name, verifyToken); err != nil {
+			log.Error().Str("email", newEmail).Err(err).Msg("failed to send verification email after email change")
+		}
 	}
 	return s.repo.GetUserByID(id)
 }
@@ -456,10 +481,16 @@ func (s *UserService) ChangePassword(id uuid.UUID, currentPassword, newPassword 
 	if err != nil {
 		return err
 	}
-	user.PasswordHash = hash
-	// Revoke every previously issued token for this account.
-	user.TokenVersion++
-	return s.repo.UpdateUser(user)
+	// Applies only if the password is still the one just checked, and revokes
+	// every previously issued token for this account.
+	ok, err := s.repo.ChangePasswordHash(user.ID, user.PasswordHash, hash)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("the password was changed by another request, please try again")
+	}
+	return nil
 }
 
 func newToken() (string, error) {
