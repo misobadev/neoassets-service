@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"neoassets/internal/apperr"
 	"strings"
 
 	"github.com/google/uuid"
@@ -149,7 +150,7 @@ func (s *DeveloperService) RevokeAPIKey(ctx context.Context, userID, id uuid.UUI
 func credentialName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return "", fmt.Errorf("name is required")
+		return "", apperr.Invalid("name is required")
 	}
 	if len(name) > maxCredentialNameLen {
 		return "", fmt.Errorf("name must be at most %d characters", maxCredentialNameLen)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"neoassets/internal/apperr"
 	"net/http"
 	"regexp"
 	"strings"
@@ -465,10 +466,10 @@ func (s *ScrapeService) resolveSystems(ctx context.Context, q models.ScrapeGameQ
 		}
 	}
 	if set == 0 {
-		return nil, fmt.Errorf("system_id, family or group is required")
+		return nil, apperr.Invalid("system_id, family or group is required")
 	}
 	if set > 1 {
-		return nil, fmt.Errorf("system_id, family and group are mutually exclusive")
+		return nil, apperr.Invalid("system_id, family and group are mutually exclusive")
 	}
 
 	switch {
@@ -562,7 +563,7 @@ func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery)
 	}
 
 	if name == "" {
-		return nil, "", fmt.Errorf("name is required")
+		return nil, "", apperr.Invalid("name is required")
 	}
 	// One query for every system of the selector (up to maxGamesLimit
 	// candidates each) rather than one per system: a family or group lookup is

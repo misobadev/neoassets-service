@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"neoassets/internal/apperr"
 	"net/url"
 	"os"
 	"regexp"
@@ -103,11 +104,11 @@ func (s *Service) Login(ctx context.Context, email, password string) (*models.Lo
 	admin, err := s.repo.GetAdminByEmail(ctx, email)
 	if err != nil {
 		log.Warn().Str("email", email).Msg("failed admin login: unknown account")
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, apperr.Unauthorized("invalid credentials")
 	}
 	if !auth.CheckPassword(admin.PasswordHash, password) {
 		log.Warn().Str("email", email).Msg("failed admin login: wrong password")
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, apperr.Unauthorized("invalid credentials")
 	}
 
 	expiresAt := time.Now().Add(s.tokenTTL)
@@ -130,7 +131,7 @@ func (s *Service) ListSubmissions(ctx context.Context, status string) ([]models.
 		switch status {
 		case models.StatusCreated, models.StatusPending, models.StatusApproved, models.StatusRejected, models.StatusTrashed:
 		default:
-			return nil, fmt.Errorf("invalid status filter")
+			return nil, apperr.Invalid("invalid status filter")
 		}
 	}
 	return s.repo.ListSubmissions(ctx, status)
@@ -140,7 +141,7 @@ func (s *Service) ListSubmissions(ctx context.Context, status string) ([]models.
 func (s *Service) GetSubmissionDetail(ctx context.Context, id uuid.UUID) (*models.SubmissionDetail, error) {
 	sub, err := s.repo.GetSubmission(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 
 	files, err := s.repo.ListFiles(ctx, id)
@@ -186,19 +187,19 @@ func (s *Service) GetSubmissionDetail(ctx context.Context, id uuid.UUID) (*model
 // ValidateCreate checks the create-submission payload.
 func (s *Service) ValidateCreate(req models.CreateSubmissionRequest) error {
 	if strings.TrimSpace(req.Name) == "" {
-		return fmt.Errorf("name is required")
+		return apperr.Invalid("name is required")
 	}
 	if strings.TrimSpace(req.Author) == "" {
-		return fmt.Errorf("author is required")
+		return apperr.Invalid("author is required")
 	}
 	if len(req.Name) > 255 {
-		return fmt.Errorf("name too long")
+		return apperr.Invalid("name too long")
 	}
 	if len(req.Author) > 255 {
-		return fmt.Errorf("author too long")
+		return apperr.Invalid("author too long")
 	}
 	if len(req.DonationURL) > 512 {
-		return fmt.Errorf("donation_url too long")
+		return apperr.Invalid("donation_url too long")
 	}
 	return nil
 }
@@ -220,17 +221,17 @@ func normalizeDonationURL(raw string) (string, error) {
 		u, err = url.Parse("https://" + raw)
 	}
 	if err != nil {
-		return "", fmt.Errorf("donation_url must be an https:// web address")
+		return "", apperr.Invalid("donation_url must be an https:// web address")
 	}
 	if u.Scheme == "http" {
 		u.Scheme = "https"
 	}
 	if u.Scheme != "https" || !strings.Contains(u.Hostname(), ".") || u.User != nil || u.Opaque != "" {
-		return "", fmt.Errorf("donation_url must be an https:// web address")
+		return "", apperr.Invalid("donation_url must be an https:// web address")
 	}
 	out := u.String()
 	if len(out) > maxDonationURLLen {
-		return "", fmt.Errorf("donation_url too long")
+		return "", apperr.Invalid("donation_url too long")
 	}
 	return out, nil
 }
@@ -272,11 +273,11 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 	packID := s.PackIDFromName(req.Name)
 	if req.Contribution {
 		if strings.TrimSpace(req.PackID) == "" {
-			return nil, fmt.Errorf("pack_id is required for a contribution")
+			return nil, apperr.Invalid("pack_id is required for a contribution")
 		}
 		target, err := s.repo.GetApprovedPackMeta(ctx, strings.TrimSpace(req.PackID))
 		if err != nil {
-			return nil, fmt.Errorf("pack not found or not approved")
+			return nil, apperr.NotFound("pack not found or not approved")
 		}
 		packID = target.PackID
 		req.Name = target.Name
@@ -307,7 +308,7 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 			return nil, err
 		}
 		if inUse {
-			return nil, fmt.Errorf("a pack with that name already exists; contribute to it instead")
+			return nil, apperr.Conflict("a pack with that name already exists; contribute to it instead")
 		}
 	}
 
@@ -359,7 +360,7 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 // kinds/extensions/system ids.
 func (s *Service) validateSubmissionFile(f models.SubmissionFileInput) error {
 	if f.ObjectKey == "" {
-		return fmt.Errorf("object_key required")
+		return apperr.Invalid("object_key required")
 	}
 	switch f.Kind {
 	case models.KindBackground, models.KindPreview, models.KindTheme, models.KindLogo:
@@ -369,7 +370,7 @@ func (s *Service) validateSubmissionFile(f models.SubmissionFileInput) error {
 	ext := strings.ToLower(getExt(f.FileName))
 	if f.Kind == models.KindTheme {
 		if ext != ".json" {
-			return fmt.Errorf("theme must be a .json file")
+			return apperr.Invalid("theme must be a .json file")
 		}
 	} else if !s.imageExts[ext] {
 		return fmt.Errorf("unsupported image extension %q", ext)
@@ -386,13 +387,13 @@ func (s *Service) validateSubmissionFile(f models.SubmissionFileInput) error {
 // pack or by the media catalog.
 func (s *Service) validatePackObjectKey(packID string, f models.SubmissionFileInput) error {
 	if !strings.HasPrefix(f.ObjectKey, "packs/"+packID+"/") {
-		return fmt.Errorf("object_key does not belong to this submission")
+		return apperr.Forbidden("object_key does not belong to this submission")
 	}
 	if !isReviewObjectKey(f.ObjectKey) {
 		// A canonical key is only acceptable when it is exactly the one the
 		// service would generate for this (kind, file name).
 		if canonical := s.ObjectKey(packID, f.Kind, f.FileName); f.ObjectKey != canonical {
-			return fmt.Errorf("object_key does not belong to this submission")
+			return apperr.Forbidden("object_key does not belong to this submission")
 		}
 	}
 	return nil
@@ -403,7 +404,7 @@ func (s *Service) validatePackObjectKey(packID string, f models.SubmissionFileIn
 // until the submission is approved, so the reviewer can compare old vs new.
 func (s *Service) SubmissionUploadURLPre(ctx context.Context, req models.SubmissionUploadURLRequest) (*models.UploadResponse, error) {
 	if strings.TrimSpace(req.Name) == "" {
-		return nil, fmt.Errorf("pack name is required")
+		return nil, apperr.Invalid("pack name is required")
 	}
 	if err := s.ValidateUploadRequest(models.UploadRequest{Kind: req.Kind, FileName: req.FileName, SystemID: req.SystemID, MimeType: req.MimeType, Size: req.Size}); err != nil {
 		return nil, err
@@ -420,7 +421,7 @@ func (s *Service) SubmissionUploadURLPre(ctx context.Context, req models.Submiss
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign upload URL")
-		return nil, fmt.Errorf("could not prepare upload")
+		return nil, apperr.Unavailable("could not prepare upload")
 	}
 	return &models.UploadResponse{UploadURL: uploadURL, ObjectKey: objectKey, ExpiresAt: time.Now().Add(s.uploadTTL)}, nil
 }
@@ -512,7 +513,7 @@ func (s *Service) ValidateUploadRequest(req models.UploadRequest) error {
 	// Images (background, preview, logo) must be WebP/GIF; themes are JSON.
 	if req.Kind == models.KindTheme {
 		if ext != ".json" {
-			return fmt.Errorf("theme must be a .json file")
+			return apperr.Invalid("theme must be a .json file")
 		}
 	} else if !s.imageExts[ext] {
 		return fmt.Errorf("unsupported image extension %q", ext)
@@ -624,10 +625,10 @@ func (s *Service) PublicURL(objectKey string) string {
 func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID, req models.UploadRequest) (*models.UploadResponse, error) {
 	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	if sub.Status != models.StatusPending && sub.Status != models.StatusCreated {
-		return nil, fmt.Errorf("submission is not editable")
+		return nil, apperr.Conflict("submission is not editable")
 	}
 	if err := s.ValidateUploadRequest(req); err != nil {
 		return nil, err
@@ -642,7 +643,7 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, mimeType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign upload URL")
-		return nil, fmt.Errorf("could not prepare upload")
+		return nil, apperr.Unavailable("could not prepare upload")
 	}
 
 	systemID := ""
@@ -673,7 +674,7 @@ func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, 
 	}
 	current, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	// A contribution keeps the pack's name, author, donation link and AI flag
 	// (the update below leaves them unchanged), so only a pack's own submission
@@ -690,7 +691,7 @@ func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, 
 		strings.TrimSpace(req.Description), strings.TrimSpace(req.DonationURL), req.AI,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 
 	if err := s.repo.AddLog(ctx, submissionID, models.LogActionUpdated, sub.AnonUserID, "", "Submission saved"); err != nil {
@@ -706,10 +707,10 @@ func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, 
 func (s *Service) AddSubmissionFiles(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID, files []models.SubmissionFileInput) (*models.Submission, error) {
 	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	if sub.Status != models.StatusCreated && sub.Status != models.StatusRejected {
-		return nil, fmt.Errorf("submission cannot be edited")
+		return nil, apperr.Conflict("submission cannot be edited")
 	}
 	for _, f := range files {
 		if err := s.validateSubmissionFile(f); err != nil {
@@ -738,13 +739,13 @@ func (s *Service) AddSubmissionFiles(ctx context.Context, submissionID uuid.UUID
 func (s *Service) RemoveSubmissionFile(ctx context.Context, submissionID, userID uuid.UUID, objectKey string) error {
 	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
-		return fmt.Errorf("submission not found")
+		return apperr.NotFound("submission not found")
 	}
 	if sub.Status != models.StatusCreated && sub.Status != models.StatusRejected {
-		return fmt.Errorf("submission cannot be edited")
+		return apperr.Conflict("submission cannot be edited")
 	}
 	if strings.TrimSpace(objectKey) == "" {
-		return fmt.Errorf("object_key required")
+		return apperr.Invalid("object_key required")
 	}
 	file, err := s.repo.GetSubmissionFileByObjectKey(ctx, submissionID, objectKey)
 	if err != nil {
@@ -752,7 +753,7 @@ func (s *Service) RemoveSubmissionFile(ctx context.Context, submissionID, userID
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
-		return fmt.Errorf("file not found")
+		return apperr.NotFound("file not found")
 	}
 	if isStagedObjectKey(file.ObjectKey) {
 		if err := s.r2.DeleteObject(ctx, file.ObjectKey); err != nil {
@@ -812,7 +813,7 @@ func (s *Service) AvatarUploadURL(ctx context.Context, userID uuid.UUID, mimeTyp
 	case strings.EqualFold(mimeType, "image/webp"):
 		ext = ".webp"
 	default:
-		return nil, fmt.Errorf("avatar must be a WebP or GIF image")
+		return nil, apperr.Invalid("avatar must be a WebP or GIF image")
 	}
 	if ext == ".gif" && size > maxGIFSize {
 		return nil, fmt.Errorf("GIF must be at most %d MB", maxGIFSize>>20)
@@ -821,7 +822,7 @@ func (s *Service) AvatarUploadURL(ctx context.Context, userID uuid.UUID, mimeTyp
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, key, mimeType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign avatar upload URL")
-		return nil, fmt.Errorf("could not prepare upload")
+		return nil, apperr.Unavailable("could not prepare upload")
 	}
 	return &models.UploadResponse{UploadURL: uploadURL, ObjectKey: key, ExpiresAt: time.Now().Add(s.uploadTTL)}, nil
 }
@@ -830,7 +831,7 @@ func (s *Service) AvatarUploadURL(ctx context.Context, userID uuid.UUID, mimeTyp
 // previous object so only one avatar exists per user.
 func (s *Service) SetAvatar(ctx context.Context, userID uuid.UUID, objectKey string) (*models.User, error) {
 	if !strings.HasPrefix(objectKey, fmt.Sprintf("profile/%s/", userID)) {
-		return nil, fmt.Errorf("object_key does not belong to this user")
+		return nil, apperr.Forbidden("object_key does not belong to this user")
 	}
 	if err := s.ensureUploaded(ctx, objectKey, objectKey); err != nil {
 		return nil, err
@@ -874,7 +875,7 @@ func (s *Service) RemoveAvatar(ctx context.Context, userID uuid.UUID) (*models.U
 func (s *Service) SubmitForReview(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID) (*models.Submission, error) {
 	sub, err := s.repo.SubmitSubmission(ctx, submissionID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 
 	files, err := s.repo.ListFiles(ctx, submissionID)
@@ -884,7 +885,7 @@ func (s *Service) SubmitForReview(ctx context.Context, submissionID uuid.UUID, u
 	// A contribution may carry only a description change (no new images), so
 	// require files only for brand-new packs.
 	if len(files) == 0 && !sub.Contribution {
-		return nil, fmt.Errorf("submission has no files")
+		return nil, apperr.Invalid("submission has no files")
 	}
 
 	if err := s.repo.AddLog(ctx, submissionID, models.LogActionSubmitted, sub.AnonUserID, "", "Submitted for review"); err != nil {
@@ -1106,7 +1107,7 @@ func (s *Service) decorateReplaces(ctx context.Context, details []models.Submiss
 func (s *Service) GetUserSubmissionDetail(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID) (*models.SubmissionDetail, error) {
 	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 
 	files, err := s.repo.ListFiles(ctx, submissionID)
@@ -1144,7 +1145,7 @@ func (s *Service) blockSelfReview(ctx context.Context, ownerID *uuid.UUID, actor
 	if user.Role == models.RoleAdmin {
 		return nil
 	}
-	return fmt.Errorf("you cannot review your own submission")
+	return apperr.Forbidden("you cannot review your own submission")
 }
 
 // Approve publishes a pending submission. Approve and reject of the same
@@ -1162,10 +1163,10 @@ func (s *Service) Approve(ctx context.Context, submissionID uuid.UUID, adminID u
 func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, comment string) (*models.Submission, error) {
 	sub, err := s.repo.GetSubmission(ctx, submissionID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	if sub.Status != models.StatusPending {
-		return nil, fmt.Errorf("submission is not pending")
+		return nil, apperr.Conflict("submission is not pending")
 	}
 	if err := s.blockSelfReview(ctx, sub.UserID, adminID); err != nil {
 		return nil, err
@@ -1409,10 +1410,10 @@ func (s *Service) Reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, comment string) (*models.Submission, error) {
 	sub, err := s.repo.GetSubmission(ctx, submissionID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	if sub.Status != models.StatusPending {
-		return nil, fmt.Errorf("submission is not pending")
+		return nil, apperr.Conflict("submission is not pending")
 	}
 	if err := s.blockSelfReview(ctx, sub.UserID, adminID); err != nil {
 		return nil, err
@@ -1459,7 +1460,7 @@ func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 // to its file rows and logs). Admin only.
 func (s *Service) DeleteSubmission(ctx context.Context, submissionID uuid.UUID) error {
 	if _, err := s.repo.GetSubmission(ctx, submissionID); err != nil {
-		return fmt.Errorf("submission not found")
+		return apperr.NotFound("submission not found")
 	}
 	files, err := s.repo.ListFiles(ctx, submissionID)
 	if err != nil {
@@ -1617,13 +1618,13 @@ func (s *Service) deletePackOrphans(ctx context.Context, packID string, excludeI
 func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID) (*models.Submission, error) {
 	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	// A user can clear their own submission while it is a draft, pending review
 	// or rejected, so a mistake does not have to wait for a review; only an
 	// approved (published) pack is protected.
 	if sub.Status == models.StatusApproved {
-		return nil, fmt.Errorf("an approved submission cannot be cancelled")
+		return nil, apperr.Conflict("an approved submission cannot be cancelled")
 	}
 
 	if err := s.deletePackOrphans(ctx, sub.PackID, submissionID); err != nil {
@@ -1635,7 +1636,7 @@ func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid
 
 	updated, err := s.repo.TrashSubmission(ctx, submissionID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 
 	if err := s.repo.AddLog(ctx, submissionID, models.LogActionTrashed, sub.AnonUserID, "", "Moved to trash"); err != nil {

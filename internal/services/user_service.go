@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"neoassets/internal/apperr"
 	"regexp"
 	"strings"
 	"time"
@@ -59,27 +60,27 @@ func (s *UserService) Register(ctx context.Context, req models.RegisterRequest) 
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
 	if !usernameRegex.MatchString(req.Username) {
-		return nil, fmt.Errorf("username must be 3-20 alphanumeric characters")
+		return nil, apperr.Invalid("username must be 3-20 alphanumeric characters")
 	}
 	if !emailRegex.MatchString(req.Email) {
-		return nil, fmt.Errorf("invalid email address")
+		return nil, apperr.Invalid("invalid email address")
 	}
 	if len(req.Password) < 8 {
-		return nil, fmt.Errorf("password must be at least 8 characters")
+		return nil, apperr.Invalid("password must be at least 8 characters")
 	}
 
 	if _, err := s.repo.GetUserByUsername(ctx, req.Username); err == nil {
-		return nil, fmt.Errorf("username already exists")
+		return nil, apperr.Conflict("username already exists")
 	} else if err != sql.ErrNoRows {
 		return nil, err
 	}
 	if exists, err := s.repo.UsernameExists(ctx, req.Username); err != nil {
 		return nil, err
 	} else if exists {
-		return nil, fmt.Errorf("username already exists")
+		return nil, apperr.Conflict("username already exists")
 	}
 	if _, err := s.repo.GetUserByEmail(ctx, req.Email); err == nil {
-		return nil, fmt.Errorf("email already exists")
+		return nil, apperr.Conflict("email already exists")
 	} else if err != sql.ErrNoRows {
 		return nil, err
 	}
@@ -130,17 +131,17 @@ func (s *UserService) Login(ctx context.Context, req models.UserLoginRequest) (*
 	user, err := s.repo.GetUserByEmail(ctx, req.Email)
 	if err != nil {
 		log.Warn().Str("email", req.Email).Msg("failed login: unknown email")
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, apperr.Unauthorized("invalid credentials")
 	}
 	// Check verification before the password so the endpoint never reveals
 	// whether the supplied password was correct.
 	if !s.SkipEmailVerification && !user.EmailVerified {
 		log.Warn().Str("email", req.Email).Msg("failed login: email not verified")
-		return nil, fmt.Errorf("email not verified")
+		return nil, apperr.Forbidden("email not verified")
 	}
 	if !auth.CheckPassword(user.PasswordHash, req.Password) {
 		log.Warn().Str("email", req.Email).Msg("failed login: wrong password")
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, apperr.Unauthorized("invalid credentials")
 	}
 
 	jwt, err := auth.GenerateUserToken(s.jwtSecret, user.ID, user.Email, user.Role, user.TokenVersion, s.tokenTTL)
@@ -169,13 +170,13 @@ func (s *UserService) TokenTTL() time.Duration { return s.tokenTTL }
 func (s *UserService) VerifyEmail(ctx context.Context, token string) error {
 	user, err := s.repo.GetUserByVerificationToken(ctx, auth.HashToken(token))
 	if err != nil {
-		return fmt.Errorf("invalid verification token")
+		return apperr.Invalid("invalid verification token")
 	}
 	if user.EmailVerified {
 		return nil
 	}
 	if user.EmailVerificationExpires == nil || time.Now().After(*user.EmailVerificationExpires) {
-		return fmt.Errorf("verification token has expired")
+		return apperr.Invalid("verification token has expired")
 	}
 
 	ok, err := s.repo.MarkEmailVerified(ctx, user.ID, auth.HashToken(token))
@@ -187,7 +188,7 @@ func (s *UserService) VerifyEmail(ctx context.Context, token string) error {
 		if current, err := s.repo.GetUserByID(ctx, user.ID); err == nil && current.EmailVerified {
 			return nil
 		}
-		return fmt.Errorf("invalid verification token")
+		return apperr.Invalid("invalid verification token")
 	}
 	// Attach donations already made with this email so users who donated before
 	// registering get their donor benefits automatically.
@@ -287,18 +288,18 @@ func (s *UserService) ForgotPassword(ctx context.Context, email string) error {
 // ResetPassword sets a new password using the emailed token.
 func (s *UserService) ResetPassword(ctx context.Context, token, newPassword string) error {
 	if token == "" {
-		return fmt.Errorf("reset token is required")
+		return apperr.Invalid("reset token is required")
 	}
 	if len(newPassword) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+		return apperr.Invalid("password must be at least 8 characters")
 	}
 
 	user, err := s.repo.GetUserByPasswordResetToken(ctx, auth.HashToken(token))
 	if err != nil {
-		return fmt.Errorf("invalid or expired reset token")
+		return apperr.Invalid("invalid or expired reset token")
 	}
 	if user.PasswordResetExpires == nil || time.Now().After(*user.PasswordResetExpires) {
-		return fmt.Errorf("reset token has expired")
+		return apperr.Invalid("reset token has expired")
 	}
 
 	hash, err := auth.HashPassword(newPassword)
@@ -312,7 +313,7 @@ func (s *UserService) ResetPassword(ctx context.Context, token, newPassword stri
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("invalid or expired reset token")
+		return apperr.Invalid("invalid or expired reset token")
 	}
 	return nil
 }
@@ -321,7 +322,7 @@ func (s *UserService) ResetPassword(ctx context.Context, token, newPassword stri
 func (s *UserService) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	return user, nil
 }
@@ -348,7 +349,7 @@ func (s *UserService) SetDonorStatus(ctx context.Context, id uuid.UUID, status s
 	}
 	updated, err := s.repo.SetDonorStatus(ctx, id, status)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	log.Warn().Str("user_id", id.String()).Str("donor_status", status).Msg("user donor status changed")
 	return updated, nil
@@ -378,14 +379,14 @@ func (s *UserService) SetUserRole(ctx context.Context, id uuid.UUID, role string
 	}
 	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	if s.protectedAdminEmail != "" && strings.EqualFold(user.Email, s.protectedAdminEmail) {
-		return nil, fmt.Errorf("this account's role is locked and cannot be changed")
+		return nil, apperr.Forbidden("this account's role is locked and cannot be changed")
 	}
 	updated, err := s.repo.SetUserRole(ctx, id, role)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	log.Warn().Str("user_id", id.String()).Str("role", role).Msg("user role changed")
 	return updated, nil
@@ -396,34 +397,34 @@ func (s *UserService) SetUserRole(ctx context.Context, id uuid.UUID, role string
 func (s *UserService) UpdateProfile(ctx context.Context, id uuid.UUID, username, email string) (*models.User, error) {
 	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	newUsername, newEmail := "", ""
 	if strings.TrimSpace(username) != "" && strings.TrimSpace(username) != user.Username {
 		uname := strings.TrimSpace(username)
 		if !usernameRegex.MatchString(uname) {
-			return nil, fmt.Errorf("username must be 3-20 alphanumeric characters")
+			return nil, apperr.Invalid("username must be 3-20 alphanumeric characters")
 		}
 		exists, err := s.repo.UsernameExistsExcluding(ctx, uname, id)
 		if err != nil {
 			return nil, err
 		}
 		if exists {
-			return nil, fmt.Errorf("username already exists")
+			return nil, apperr.Conflict("username already exists")
 		}
 		newUsername = uname
 	}
 	if strings.TrimSpace(email) != "" && strings.ToLower(strings.TrimSpace(email)) != strings.ToLower(user.Email) {
 		newEmail = strings.ToLower(strings.TrimSpace(email))
 		if !emailRegex.MatchString(newEmail) {
-			return nil, fmt.Errorf("invalid email address")
+			return nil, apperr.Invalid("invalid email address")
 		}
 		exists, err := s.repo.EmailExistsExcluding(ctx, newEmail, id)
 		if err != nil {
 			return nil, err
 		}
 		if exists {
-			return nil, fmt.Errorf("email already exists")
+			return nil, apperr.Conflict("email already exists")
 		}
 	}
 	if newUsername == "" && newEmail == "" {
@@ -452,7 +453,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, id uuid.UUID, username,
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	if update.Verification != nil && s.mailer != nil {
 		name := user.Username
@@ -470,13 +471,13 @@ func (s *UserService) UpdateProfile(ctx context.Context, id uuid.UUID, username,
 func (s *UserService) ChangePassword(ctx context.Context, id uuid.UUID, currentPassword, newPassword string) error {
 	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
-		return fmt.Errorf("user not found")
+		return apperr.NotFound("user not found")
 	}
 	if !auth.CheckPassword(user.PasswordHash, currentPassword) {
-		return fmt.Errorf("current password is incorrect")
+		return apperr.Unauthorized("current password is incorrect")
 	}
 	if len(newPassword) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+		return apperr.Invalid("password must be at least 8 characters")
 	}
 	hash, err := auth.HashPassword(newPassword)
 	if err != nil {
@@ -489,7 +490,7 @@ func (s *UserService) ChangePassword(ctx context.Context, id uuid.UUID, currentP
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("the password was changed by another request, please try again")
+		return apperr.Conflict("the password was changed by another request, please try again")
 	}
 	return nil
 }

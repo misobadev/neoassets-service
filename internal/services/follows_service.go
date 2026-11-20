@@ -2,7 +2,7 @@ package services
 
 import (
 	"context"
-	"fmt"
+	"neoassets/internal/apperr"
 
 	"github.com/google/uuid"
 
@@ -15,7 +15,7 @@ import (
 func (s *Service) PublicProfile(ctx context.Context, username string, requesterID *uuid.UUID) (*models.PublicProfile, error) {
 	u, err := s.repo.PublicProfileByUsername(ctx, username)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	followers, following, err := s.repo.FollowCounts(ctx, u.ID)
 	if err != nil {
@@ -56,10 +56,10 @@ func (s *Service) PublicProfile(ctx context.Context, username string, requesterI
 func (s *Service) Follow(ctx context.Context, followerID uuid.UUID, username string) error {
 	target, err := s.repo.PublicProfileByUsername(ctx, username)
 	if err != nil {
-		return fmt.Errorf("user not found")
+		return apperr.NotFound("user not found")
 	}
 	if target.ID == followerID {
-		return fmt.Errorf("you cannot follow yourself")
+		return apperr.Invalid("you cannot follow yourself")
 	}
 	return s.repo.Follow(ctx, followerID, target.ID)
 }
@@ -68,7 +68,7 @@ func (s *Service) Follow(ctx context.Context, followerID uuid.UUID, username str
 func (s *Service) Unfollow(ctx context.Context, followerID uuid.UUID, username string) error {
 	target, err := s.repo.PublicProfileByUsername(ctx, username)
 	if err != nil {
-		return fmt.Errorf("user not found")
+		return apperr.NotFound("user not found")
 	}
 	return s.repo.Unfollow(ctx, followerID, target.ID)
 }
@@ -76,7 +76,7 @@ func (s *Service) Unfollow(ctx context.Context, followerID uuid.UUID, username s
 // Followers returns the usernames following the given user.
 func (s *Service) Followers(ctx context.Context, username string) ([]string, error) {
 	if _, err := s.repo.PublicProfileByUsername(ctx, username); err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	return s.repo.FollowersByUsername(ctx, username)
 }
@@ -84,7 +84,7 @@ func (s *Service) Followers(ctx context.Context, username string) ([]string, err
 // Following returns the usernames the given user follows.
 func (s *Service) Following(ctx context.Context, username string) ([]string, error) {
 	if _, err := s.repo.PublicProfileByUsername(ctx, username); err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	return s.repo.FollowingByUsername(ctx, username)
 }
@@ -93,7 +93,7 @@ func (s *Service) Following(ctx context.Context, username string) ([]string, err
 func (s *Service) RecentSubmissions(ctx context.Context, username string, limit int) ([]models.UserSubmissionItem, error) {
 	u, err := s.repo.PublicProfileByUsername(ctx, username)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, apperr.NotFound("user not found")
 	}
 	return s.repo.RecentUserSubmissions(ctx, u.ID, limit)
 }

@@ -263,6 +263,12 @@ the user credential is optional and falls back to guest mode.
   report service errors with `writeClientError`, which keeps business messages
   but never returns storage errors verbatim (a missing row becomes
   `not found`, database failures a logged 500).
+- **Errors**: services return `apperr` errors for anything the client should
+  see (`apperr.Invalid`, `NotFound`, `Conflict`, `Forbidden`,
+  `Unauthorized`, `Unavailable`); the message is shown as-is. Use
+  `fmt.Errorf("...: %w", err)` only for internal failures, which
+  `writeClientError` turns into a logged 500 when they come from storage.
+  Handlers still pick the same HTTP status per endpoint as before.
 - **Transactions**: multi-write operations run in `repo.WithTx(ctx, fn)`; the
   `*Repository` passed to `fn` shares one transaction (nested calls join it).
   `ApplyMetadataSubmission` and the pack approval writes use it. R2 moves stay
