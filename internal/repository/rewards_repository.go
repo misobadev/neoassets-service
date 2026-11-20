@@ -127,17 +127,17 @@ func (r *Repository) GetRewards(userID uuid.UUID) (*models.Rewards, error) {
 	}
 
 	return &models.Rewards{
-		XP:               u.XP,
-		Level:            level,
-		Rank:             rank,
-		Threads:          threads,
-		DonorStatus:      u.DonorStatus,
+		XP:                u.XP,
+		Level:             level,
+		Rank:              rank,
+		Threads:           threads,
+		DonorStatus:       u.DonorStatus,
 		DonorBonusThreads: DonorBonusThreads(u.DonorStatus),
-		XPBonusPct:       DonorXPBonusPct(u.DonorStatus),
-		DailyGames:       threads * DailyGamesPerThread,
-		LevelXP:          levelXP,
-		NextLevelXP:      nextLevelXP,
-		ProgressPct:      progress,
+		XPBonusPct:        DonorXPBonusPct(u.DonorStatus),
+		DailyGames:        threads * DailyGamesPerThread,
+		LevelXP:           levelXP,
+		NextLevelXP:       nextLevelXP,
+		ProgressPct:       progress,
 	}, nil
 }
 

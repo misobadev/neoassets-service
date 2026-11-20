@@ -20,12 +20,12 @@ const (
 // ScrapeSubject is the authenticated identity behind a scraping API request: a
 // developer application, plus an optional registered user (guest when absent).
 type ScrapeSubject struct {
-	Kind         string
-	UserID       uuid.UUID
-	Username     string
-	ClientID     string
-	ClientDBID   uuid.UUID
-	ClientName   string
+	Kind       string
+	UserID     uuid.UUID
+	Username   string
+	ClientID   string
+	ClientDBID uuid.UUID
+	ClientName string
 	// ClientOwnerID is the registered user that owns the developer app. Guest
 	// quota is keyed by this id so multiple apps share one universal daily limit.
 	ClientOwnerID uuid.UUID
