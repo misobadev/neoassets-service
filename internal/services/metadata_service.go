@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"neoassets/internal/apperr"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -199,7 +200,7 @@ func (s *Service) decorateGameStats(ctx context.Context, list []models.Game) err
 func (s *Service) GetGame(ctx context.Context, id uuid.UUID, lang string) (*models.GameDetail, error) {
 	g, err := s.repo.GetGame(ctx, id, lang)
 	if err != nil {
-		return nil, fmt.Errorf("game not found")
+		return nil, apperr.NotFound("game not found")
 	}
 	roms, err := s.repo.ListRomsByGame(ctx, id)
 	if err != nil {
@@ -347,7 +348,7 @@ func (s *Service) validateRoms(ctx context.Context, gameID *uuid.UUID, raw any) 
 	for _, item := range list {
 		m, ok := item.(map[string]any)
 		if !ok {
-			return fmt.Errorf("invalid ROM entry")
+			return apperr.Invalid("invalid ROM entry")
 		}
 		str := func(k string) string {
 			v, _ := m[k].(string)
@@ -361,14 +362,14 @@ func (s *Service) validateRoms(ctx context.Context, gameID *uuid.UUID, raw any) 
 		}
 		if action == "edit" || action == "delete" {
 			if _, err := uuid.Parse(str("id")); err != nil {
-				return fmt.Errorf("invalid ROM id")
+				return apperr.Invalid("invalid ROM id")
 			}
 		}
 		if action == "delete" {
 			continue
 		}
 		if str("name") == "" {
-			return fmt.Errorf("a ROM dump name is required")
+			return apperr.Invalid("a ROM dump name is required")
 		}
 		if err := validateHash("CRC", str("crc"), 8); err != nil {
 			return err
@@ -387,10 +388,10 @@ func (s *Service) validateRoms(ctx context.Context, gameID *uuid.UUID, raw any) 
 		sha1 := strings.ToLower(str("sha1"))
 		if sha1 != "" {
 			if len(sha1) != 40 || !isHexString(sha1) {
-				return fmt.Errorf("invalid SHA1")
+				return apperr.Invalid("invalid SHA1")
 			}
 			if seenSHA1[sha1] {
-				return fmt.Errorf("the same SHA1 appears twice in the submission")
+				return apperr.Invalid("the same SHA1 appears twice in the submission")
 			}
 			seenSHA1[sha1] = true
 			// Uniqueness is per game; a brand-new game has no row yet.
@@ -404,7 +405,7 @@ func (s *Service) validateRoms(ctx context.Context, gameID *uuid.UUID, raw any) 
 					return err
 				}
 				if exists {
-					return fmt.Errorf("a ROM dump with that SHA1 already exists for this game")
+					return apperr.Conflict("a ROM dump with that SHA1 already exists for this game")
 				}
 			}
 		}
@@ -431,22 +432,22 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 		kind = models.MetadataKindEdit
 	}
 	if kind != models.MetadataKindEdit && kind != models.MetadataKindNewGame {
-		return nil, fmt.Errorf("invalid contribution kind")
+		return nil, apperr.Invalid("invalid contribution kind")
 	}
 	if req.GameID == nil && req.SystemID == nil {
-		return nil, fmt.Errorf("a game or system must be provided")
+		return nil, apperr.Invalid("a game or system must be provided")
 	}
 	var targetGame *models.Game
 	if req.GameID != nil {
 		g, err := s.repo.GetGame(ctx, *req.GameID, "")
 		if err != nil {
-			return nil, fmt.Errorf("game not found")
+			return nil, apperr.NotFound("game not found")
 		}
 		targetGame = g
 	}
 	if req.SystemID != nil {
 		if _, err := s.repo.GetMetadataSystem(ctx, *req.SystemID); err != nil {
-			return nil, fmt.Errorf("system not found")
+			return nil, apperr.NotFound("system not found")
 		}
 	}
 	// A rename must not collide with another game's name in the same system (the
@@ -514,7 +515,7 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 	// (applied right after the game row is created on approval).
 	if raw, ok := req.Payload["roms"]; ok {
 		if req.GameID == nil && kind != models.MetadataKindNewGame {
-			return nil, fmt.Errorf("ROM dumps can only be changed on a game")
+			return nil, apperr.Invalid("ROM dumps can only be changed on a game")
 		}
 		if err := s.validateRoms(ctx, req.GameID, raw); err != nil {
 			return nil, err
@@ -544,27 +545,27 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 	// the game to keep and must explain why.
 	if v, ok := req.Payload["delete_game"].(bool); ok && v {
 		if req.GameID == nil {
-			return nil, fmt.Errorf("a deletion request must target a game")
+			return nil, apperr.Invalid("a deletion request must target a game")
 		}
 		if link, _ := req.Payload["duplicate_of"].(string); strings.TrimSpace(link) == "" {
-			return nil, fmt.Errorf("a link to the duplicate game is required")
+			return nil, apperr.Invalid("a link to the duplicate game is required")
 		}
 		deleting = true
 	}
 	if deleting {
 		if note, _ := req.Payload["note"].(string); strings.TrimSpace(note) == "" {
-			return nil, fmt.Errorf("a reason is required when deleting")
+			return nil, apperr.Invalid("a reason is required when deleting")
 		}
 	}
 
 	if kind == models.MetadataKindNewGame {
 		if req.GameID != nil {
-			return nil, fmt.Errorf("a new game cannot target an existing game")
+			return nil, apperr.Invalid("a new game cannot target an existing game")
 		}
 		name, _ := req.Payload["name"].(string)
 		name = strings.TrimSpace(name)
 		if name == "" {
-			return nil, fmt.Errorf("game name is required")
+			return nil, apperr.Invalid("game name is required")
 		}
 		if v, ok := req.Payload["type"].(string); ok {
 			if !models.ValidGameType(v) {
@@ -576,7 +577,7 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 			return nil, err
 		}
 		if exists {
-			return nil, fmt.Errorf("a game with that name already exists in this system")
+			return nil, apperr.Conflict("a game with that name already exists in this system")
 		}
 		// Block a duplicate pending new game with the same name in this system.
 		subs, _, err := s.repo.ListMetadataSubmissionsByUser(ctx, userID, "", 0, 0)
@@ -590,7 +591,7 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 			var p map[string]any
 			if json.Unmarshal(sub.Payload, &p) == nil {
 				if n, _ := p["name"].(string); strings.EqualFold(strings.TrimSpace(n), name) {
-					return nil, fmt.Errorf("you already have a pending submission for this game")
+					return nil, apperr.Conflict("you already have a pending submission for this game")
 				}
 			}
 		}
@@ -615,7 +616,7 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 
 	payload, err := json.Marshal(req.Payload)
 	if err != nil {
-		return nil, fmt.Errorf("invalid payload")
+		return nil, apperr.Invalid("invalid payload")
 	}
 	// Probe uploaded videos before creating the submission so a bad frame rate is
 	// rejected with the accurate ffprobe reading and no partial row is left
@@ -636,7 +637,7 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 			return nil, err
 		}
 		if err != nil {
-			return nil, fmt.Errorf("could not read the video, please upload it again")
+			return nil, apperr.Invalid("could not read the video, please upload it again")
 		}
 		if vm.FPS > 0 && vm.FPS < minVideoFPS {
 			return nil, fmt.Errorf("video must be at least %d fps, 60 recommended (detected %d fps)", minVideoFPS, vm.FPS)
@@ -666,13 +667,13 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 		if f.Delete {
 			// Removing a regional media: no file to upload or move.
 			if req.GameID == nil {
-				return nil, fmt.Errorf("media can only be deleted on a game")
+				return nil, apperr.Invalid("media can only be deleted on a game")
 			}
 			if f.Kind != models.MediaCover && f.Kind != models.MediaLogo {
-				return nil, fmt.Errorf("only cover and logo can be deleted per region")
+				return nil, apperr.Invalid("only cover and logo can be deleted per region")
 			}
 			if strings.TrimSpace(f.Region) == "" {
-				return nil, fmt.Errorf("region required")
+				return nil, apperr.Invalid("region required")
 			}
 			if err := s.repo.AddMetadataSubmissionFile(ctx, id, f.Kind, f.ObjectKey, f.FileName, "", f.Region, f.Size, true, false, nil); err != nil {
 				return nil, err
@@ -686,28 +687,28 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 		if f.Move {
 			// References an existing cover/logo of this game to move region.
 			if req.GameID == nil {
-				return nil, fmt.Errorf("media can only be moved on a game")
+				return nil, apperr.Invalid("media can only be moved on a game")
 			}
 			if f.Kind != models.MediaCover && f.Kind != models.MediaLogo {
-				return nil, fmt.Errorf("only cover and logo can be moved between regions")
+				return nil, apperr.Invalid("only cover and logo can be moved between regions")
 			}
 			ok, err := s.repo.MediaExists(ctx, *req.GameID, f.Kind, f.ObjectKey)
 			if err != nil {
 				return nil, err
 			}
 			if !ok {
-				return nil, fmt.Errorf("media not found")
+				return nil, apperr.NotFound("media not found")
 			}
 		} else {
 			if f.ObjectKey == "" {
-				return nil, fmt.Errorf("object_key required")
+				return nil, apperr.Invalid("object_key required")
 			}
 			// Only the uploader's own staging objects are accepted. This blocks
 			// referencing canonical/published objects (media/games, media/systems,
 			// packs, history, rejected), which could otherwise be deleted or
 			// overwritten via cancel/reject/approve.
 			if !isOwnStagingKey(f.ObjectKey, userID) {
-				return nil, fmt.Errorf("invalid upload reference")
+				return nil, apperr.Invalid("invalid upload reference")
 			}
 			if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
 				return nil, err
@@ -826,7 +827,7 @@ func (s *Service) PendingMetadataKeys(ctx context.Context, userID, gameID uuid.U
 // and replaced assets always get a brand-new URL (no cache invalidation).
 func (s *Service) MetadataUploadURLPre(ctx context.Context, userID uuid.UUID, req models.MetadataUploadURLRequest) (*models.UploadResponse, error) {
 	if req.GameID == nil && req.SystemID == nil {
-		return nil, fmt.Errorf("a game or system must be provided")
+		return nil, apperr.Invalid("a game or system must be provided")
 	}
 	if !validMediaKind(req.Kind) {
 		return nil, fmt.Errorf("invalid media kind %q", req.Kind)
@@ -841,18 +842,18 @@ func (s *Service) MetadataUploadURLPre(ctx context.Context, userID uuid.UUID, re
 	}
 	if req.GameID != nil {
 		if _, err := s.repo.GetGame(ctx, *req.GameID, ""); err != nil {
-			return nil, fmt.Errorf("game not found")
+			return nil, apperr.NotFound("game not found")
 		}
 	} else if req.SystemID != nil {
 		if _, err := s.repo.GetMetadataSystem(ctx, *req.SystemID); err != nil {
-			return nil, fmt.Errorf("system not found")
+			return nil, apperr.NotFound("system not found")
 		}
 	}
 	objectKey := stagingMediaKey(userID, req.Kind, req.FileName)
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign metadata upload URL")
-		return nil, fmt.Errorf("could not prepare upload")
+		return nil, apperr.Unavailable("could not prepare upload")
 	}
 	return &models.UploadResponse{
 		UploadURL: uploadURL,
@@ -935,10 +936,10 @@ func metadataImageSpec(kind string) video.ImageSpec {
 func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uuid.UUID, req models.MetadataUploadRequest) (*models.UploadResponse, error) {
 	sub, err := s.repo.GetMetadataSubmissionForUser(ctx, submissionID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	if sub.Status != models.MetadataCreated && sub.Status != models.MetadataPending {
-		return nil, fmt.Errorf("submission is not editable")
+		return nil, apperr.Conflict("submission is not editable")
 	}
 	if !validMediaKind(req.Kind) {
 		return nil, fmt.Errorf("invalid media kind %q", req.Kind)
@@ -956,7 +957,7 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign metadata upload URL")
-		return nil, fmt.Errorf("could not prepare upload")
+		return nil, apperr.Unavailable("could not prepare upload")
 	}
 	if err := s.repo.AddMetadataSubmissionFile(ctx, submissionID, req.Kind, objectKey, req.FileName, contentType, req.Region, req.Size, false, false, nil); err != nil {
 		return nil, err
@@ -980,7 +981,7 @@ func (s *Service) SubmitMetadataSubmission(ctx context.Context, submissionID, us
 	}
 	// A submission must carry either an uploaded media file or a text field.
 	if len(files) == 0 && !payloadHasText(sub.Payload) {
-		return nil, fmt.Errorf("submission has no content")
+		return nil, apperr.Invalid("submission has no content")
 	}
 	return s.repo.SubmitMetadataSubmission(ctx, submissionID, userID)
 }
@@ -991,10 +992,10 @@ func (s *Service) SubmitMetadataSubmission(ctx context.Context, submissionID, us
 func (s *Service) CancelMetadataSubmission(ctx context.Context, submissionID, userID uuid.UUID) error {
 	sub, err := s.repo.GetMetadataSubmissionForUser(ctx, submissionID, userID)
 	if err != nil {
-		return fmt.Errorf("submission not found")
+		return apperr.NotFound("submission not found")
 	}
 	if sub.Status == models.MetadataApproved {
-		return fmt.Errorf("an approved submission cannot be cancelled")
+		return apperr.Conflict("an approved submission cannot be cancelled")
 	}
 	files, err := s.repo.ListMetadataSubmissionFiles(ctx, submissionID)
 	if err != nil {
@@ -1104,7 +1105,7 @@ func (s *Service) ListMetadataSubmissions(ctx context.Context, status string) ([
 		switch status {
 		case models.MetadataCreated, models.MetadataPending, models.MetadataApproved, models.MetadataRejected:
 		default:
-			return nil, fmt.Errorf("invalid status filter")
+			return nil, apperr.Invalid("invalid status filter")
 		}
 	}
 	var list []models.MetadataSubmission
@@ -1229,7 +1230,7 @@ func (s *Service) enrichMetadataSubmissions(ctx context.Context, list []models.M
 func (s *Service) GetMetadataSubmissionDetail(ctx context.Context, id uuid.UUID) (*models.MetadataSubmissionDetail, error) {
 	sub, err := s.repo.GetMetadataSubmission(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	files, err := s.repo.ListMetadataSubmissionFiles(ctx, id)
 	if err != nil {
@@ -1460,10 +1461,10 @@ func (s *Service) ApproveMetadataSubmission(ctx context.Context, id, adminID uui
 func (s *Service) approveMetadataSubmission(ctx context.Context, id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
 	sub, err := s.repo.GetMetadataSubmission(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	if sub.Status != models.MetadataPending {
-		return nil, fmt.Errorf("submission is not pending")
+		return nil, apperr.Conflict("submission is not pending")
 	}
 	if err := s.blockSelfReview(ctx, &sub.UserID, adminID); err != nil {
 		return nil, err
@@ -1495,10 +1496,10 @@ func (s *Service) approveMetadataSubmission(ctx context.Context, id, adminID uui
 	if sub.Kind == models.MetadataKindNewGame {
 		var p map[string]any
 		if err := json.Unmarshal(sub.Payload, &p); err != nil {
-			return nil, fmt.Errorf("invalid submission payload")
+			return nil, apperr.Invalid("invalid submission payload")
 		}
 		if sub.SystemID == nil {
-			return nil, fmt.Errorf("new game submission has no system")
+			return nil, apperr.Invalid("new game submission has no system")
 		}
 		gameID, err := s.repo.CreateGameFromPayload(ctx, *sub.SystemID, p)
 		if err != nil {
@@ -1561,7 +1562,7 @@ func isDeleteGamePayload(payload json.RawMessage) bool {
 // game's submissions are detached first so the review history survives.
 func (s *Service) deleteDuplicateGame(ctx context.Context, sub *models.MetadataSubmission) error {
 	if sub.GameID == nil {
-		return fmt.Errorf("deletion request has no game")
+		return apperr.Invalid("deletion request has no game")
 	}
 	media, err := s.repo.ListMediaByGame(ctx, *sub.GameID)
 	if err != nil {
@@ -1605,7 +1606,7 @@ func (s *Service) translateApprovedDescription(ctx context.Context, sub *models.
 // languages are never re-inserted.
 func (s *Service) translateAndStoreDescription(ctx context.Context, desc string, gameID *uuid.UUID, systemID *string) (int, error) {
 	if s.translator == nil {
-		return 0, fmt.Errorf("translator is not configured")
+		return 0, apperr.Unavailable("translator is not configured")
 	}
 	desc = strings.TrimSpace(desc)
 	if desc == "" {
@@ -1652,10 +1653,10 @@ func (s *Service) translateAndStoreDescription(ctx context.Context, desc string,
 func (s *Service) RetranslateGame(ctx context.Context, gameID uuid.UUID) (int, error) {
 	g, err := s.repo.GetGame(ctx, gameID, "")
 	if err != nil {
-		return 0, fmt.Errorf("game not found")
+		return 0, apperr.NotFound("game not found")
 	}
 	if strings.TrimSpace(g.Description) == "" {
-		return 0, fmt.Errorf("game has no description to translate")
+		return 0, apperr.Invalid("game has no description to translate")
 	}
 	if n := len([]rune(strings.TrimSpace(g.Description))); n > MaxDescriptionLength {
 		return 0, fmt.Errorf("description exceeds %d characters (%d); trim it first", MaxDescriptionLength, n)
@@ -1667,10 +1668,10 @@ func (s *Service) RetranslateGame(ctx context.Context, gameID uuid.UUID) (int, e
 func (s *Service) RetranslateSystem(ctx context.Context, systemID string) (int, error) {
 	sys, err := s.repo.GetMetadataSystem(ctx, systemID)
 	if err != nil {
-		return 0, fmt.Errorf("system not found")
+		return 0, apperr.NotFound("system not found")
 	}
 	if strings.TrimSpace(sys.Description) == "" {
-		return 0, fmt.Errorf("system has no description to translate")
+		return 0, apperr.Invalid("system has no description to translate")
 	}
 	if n := len([]rune(strings.TrimSpace(sys.Description))); n > MaxDescriptionLength {
 		return 0, fmt.Errorf("description exceeds %d characters (%d); trim it first", MaxDescriptionLength, n)
@@ -1949,13 +1950,13 @@ func (s *Service) checkVideoEntries(ctx context.Context, userID uuid.UUID, files
 			continue
 		}
 		if videos++; videos > 1 {
-			return fmt.Errorf("only one video can be submitted at a time")
+			return apperr.Invalid("only one video can be submitted at a time")
 		}
 		if ext := strings.ToLower(getExt(f.FileName)); !validMediaExt(f.Kind, ext) {
 			return fmt.Errorf("unsupported %s extension %q", mediaExtLabel(f.Kind), ext)
 		}
 		if !isOwnStagingKey(f.ObjectKey, userID) {
-			return fmt.Errorf("invalid upload reference")
+			return apperr.Invalid("invalid upload reference")
 		}
 		if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
 			return err
@@ -2031,10 +2032,10 @@ func (s *Service) RejectMetadataSubmission(ctx context.Context, id, adminID uuid
 func (s *Service) rejectMetadataSubmission(ctx context.Context, id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
 	sub, err := s.repo.GetMetadataSubmission(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("submission not found")
+		return nil, apperr.NotFound("submission not found")
 	}
 	if sub.Status != models.MetadataPending {
-		return nil, fmt.Errorf("submission is not pending")
+		return nil, apperr.Conflict("submission is not pending")
 	}
 	if err := s.blockSelfReview(ctx, &sub.UserID, adminID); err != nil {
 		return nil, err

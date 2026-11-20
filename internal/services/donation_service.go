@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"neoassets/internal/apperr"
 	"strconv"
 	"strings"
 	"time"
@@ -60,14 +61,14 @@ func (s *DonationService) PatreonEnabled() bool { return s.patreonSecret != "" }
 // registered account the donor status is refreshed immediately.
 func (s *DonationService) HandleKofi(ctx context.Context, raw []byte) error {
 	if !s.KofiEnabled() {
-		return fmt.Errorf("ko-fi webhook is not configured")
+		return apperr.Unavailable("ko-fi webhook is not configured")
 	}
 	var p models.KofiWebhookPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return fmt.Errorf("invalid ko-fi payload")
+		return apperr.Invalid("invalid ko-fi payload")
 	}
 	if subtle.ConstantTimeCompare([]byte(p.VerificationToken), []byte(s.kofiToken)) != 1 {
-		return fmt.Errorf("invalid ko-fi verification token")
+		return apperr.Unauthorized("invalid ko-fi verification token")
 	}
 	// Ko-fi sends Tip, Subscription, Commission or Shop Order. Only tips and
 	// subscriptions affect donor status; the rest are ignored (still 200 so
@@ -130,17 +131,17 @@ func (s *DonationService) HandleKofi(ctx context.Context, raw []byte) error {
 // payload is matched to an account just like Ko-fi.
 func (s *DonationService) HandlePatreon(ctx context.Context, event, signature string, raw []byte) error {
 	if !s.PatreonEnabled() {
-		return fmt.Errorf("patreon webhook is not configured")
+		return apperr.Unavailable("patreon webhook is not configured")
 	}
 	if !verifyPatreonSignature(s.patreonSecret, raw, signature) {
-		return fmt.Errorf("invalid patreon signature")
+		return apperr.Unauthorized("invalid patreon signature")
 	}
 	var p models.PatreonWebhookPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return fmt.Errorf("invalid patreon payload")
+		return apperr.Invalid("invalid patreon payload")
 	}
 	if p.Data.ID == "" {
-		return fmt.Errorf("patreon payload without member id")
+		return apperr.Invalid("patreon payload without member id")
 	}
 
 	active := p.Data.Attributes.PatronStatus == "active_patron"
@@ -292,10 +293,10 @@ func parseImportTime(ts string) *time.Time {
 func (s *DonationService) ClaimStart(ctx context.Context, userID uuid.UUID, email string) error {
 	email = normalizeEmail(email)
 	if email == "" {
-		return fmt.Errorf("invalid email address")
+		return apperr.Invalid("invalid email address")
 	}
 	if s.mailer == nil {
-		return fmt.Errorf("email delivery is not configured")
+		return apperr.Unavailable("email delivery is not configured")
 	}
 	pending, err := s.repo.HasPendingDonationsForEmail(ctx, email)
 	if err != nil {
@@ -303,7 +304,7 @@ func (s *DonationService) ClaimStart(ctx context.Context, userID uuid.UUID, emai
 	}
 	user, err := s.repo.GetUserByID(ctx, userID)
 	if err != nil {
-		return fmt.Errorf("user not found")
+		return apperr.NotFound("user not found")
 	}
 	code, err := numericCode(donorClaimCodeDigits)
 	if err != nil {
@@ -314,7 +315,7 @@ func (s *DonationService) ClaimStart(ctx context.Context, userID uuid.UUID, emai
 		return err
 	}
 	if !stored {
-		return fmt.Errorf("please wait a minute before requesting another code")
+		return apperr.Invalid("please wait a minute before requesting another code")
 	}
 	if !pending {
 		return nil
@@ -337,19 +338,19 @@ func (s *DonationService) ClaimVerify(ctx context.Context, userID uuid.UUID, ema
 	claimEmail, hash, expires, ok, err := s.repo.UseDonorClaimAttempt(ctx, userID, donorClaimMaxAttempts)
 	if err != nil {
 		log.Error().Err(err).Str("user_id", userID.String()).Msg("failed to check donor claim")
-		return 0, fmt.Errorf("could not check the claim code, please try again")
+		return 0, apperr.Unavailable("could not check the claim code, please try again")
 	}
 	if !ok {
-		return 0, fmt.Errorf("no claim in progress, or too many attempts: request a new code")
+		return 0, apperr.Conflict("no claim in progress, or too many attempts: request a new code")
 	}
 	if !strings.EqualFold(claimEmail, email) {
-		return 0, fmt.Errorf("email does not match the pending claim")
+		return 0, apperr.Invalid("email does not match the pending claim")
 	}
 	if time.Now().After(expires) {
-		return 0, fmt.Errorf("claim code has expired")
+		return 0, apperr.Invalid("claim code has expired")
 	}
 	if subtle.ConstantTimeCompare([]byte(hash), []byte(auth.HashToken(strings.TrimSpace(code)))) != 1 {
-		return 0, fmt.Errorf("invalid claim code")
+		return 0, apperr.Invalid("invalid claim code")
 	}
 
 	n, err := s.repo.LinkDonationEventsByEmail(ctx, userID, email)

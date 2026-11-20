@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"neoassets/internal/apperr"
 	"net/http"
 	"time"
 )
@@ -37,7 +38,7 @@ func NewTranslator(url, token string) *Translator {
 // included in the response.
 func (t *Translator) Translate(ctx context.Context, text string) (map[string]string, error) {
 	if t == nil {
-		return nil, fmt.Errorf("translator not configured")
+		return nil, apperr.Unavailable("translator not configured")
 	}
 	body, err := json.Marshal(map[string]any{"text": text})
 	if err != nil {
