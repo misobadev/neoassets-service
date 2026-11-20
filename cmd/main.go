@@ -16,6 +16,7 @@ import (
 
 	"neoassets/internal/handlers"
 	"neoassets/internal/services"
+	"neoassets/internal/sitemap"
 	"neoassets/pkg/auth"
 	"neoassets/pkg/r2"
 
@@ -360,7 +361,7 @@ func runMigrations(databaseURL string) error {
 	return nil
 }
 
-func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Config) *chi.Mux {
+func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemaps *sitemap.Handler, cfg *Config) *chi.Mux {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Logger)
@@ -419,6 +420,13 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 	}
 
 	r.Get("/health", h.HealthCheck)
+
+	// Sitemaps of the public web pages (games, systems, art packs), referenced
+	// from the web's robots.txt.
+	r.Group(func(r chi.Router) {
+		r.Use(metadataLimiter.Handler)
+		sitemaps.Routes(r)
+	})
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public

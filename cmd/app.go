@@ -14,6 +14,7 @@ import (
 	"neoassets/internal/handlers"
 	"neoassets/internal/repository"
 	"neoassets/internal/services"
+	"neoassets/internal/sitemap"
 	"neoassets/internal/systems"
 	"neoassets/pkg/auth"
 	"neoassets/pkg/r2"
@@ -105,7 +106,7 @@ func buildApp(ctx context.Context, cfg *Config, db *sql.DB, bucket r2.Client, ma
 	handler := handlers.NewHandler(svc, userSvc, scrapeSvc, devSvc, donationSvc, cfg.JWTSecret, cfg.SkipEmailVerification)
 
 	return &app{
-		router:      setupRouter(handler, scrapeSvc, cfg),
+		router:      setupRouter(handler, scrapeSvc, sitemap.NewHandler(repo, cfg.FrontendURL), cfg),
 		svc:         svc,
 		scrapeSvc:   scrapeSvc,
 		donationSvc: donationSvc,

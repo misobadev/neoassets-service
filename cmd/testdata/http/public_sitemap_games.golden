@@ -1,0 +1,12 @@
+200
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>http://localhost:8091/app/metadata/snes/game/00000000-0000-4000-8000-0000000000a1</loc>
+    <lastmod><date></lastmod>
+  </url>
+  <url>
+    <loc>http://localhost:8091/app/metadata/snes/game/00000000-0000-4000-8000-0000000000a2</loc>
+    <lastmod><date></lastmod>
+  </url>
+</urlset>
