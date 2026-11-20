@@ -30,7 +30,9 @@ func (f fakeStore) SitemapGames(_ context.Context, limit, offset int) ([]reposit
 
 func (f fakeStore) SitemapSystems(context.Context) ([]string, error) { return []string{"snes"}, nil }
 
-func (f fakeStore) SitemapPacks(context.Context) ([]repository.SitemapPack, error) { return f.packs, nil }
+func (f fakeStore) SitemapPacks(context.Context) ([]repository.SitemapPack, error) {
+	return f.packs, nil
+}
 
 func get(t *testing.T, store Store, path string) (int, string) {
 	t.Helper()
