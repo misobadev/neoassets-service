@@ -25,8 +25,8 @@ var embedded []byte
 
 // Catalog is an in-memory, read-only view of the system catalog.
 type Catalog struct {
-	list  []System
-	byID  map[string]System
+	list []System
+	byID map[string]System
 }
 
 // Load parses the embedded systems.json into a Catalog.

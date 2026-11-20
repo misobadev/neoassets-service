@@ -1,0 +1,40 @@
+200
+{
+  "games": [
+    {
+      "created_at": "<time>",
+      "description": "A platform game.",
+      "developer": "Nintendo EAD",
+      "genre": "Platform",
+      "id": "00000000-0000-4000-8000-0000000000a1",
+      "name": "Super Mario World",
+      "publisher": "Nintendo",
+      "rating": 0,
+      "release_month": null,
+      "release_year": 1990,
+      "scrapes": 0,
+      "system_id": "snes",
+      "system_name": "Super Nintendo Entertainment System",
+      "type": "game",
+      "updated_at": "<time>"
+    },
+    {
+      "created_at": "<time>",
+      "description": "An action adventure.",
+      "developer": "Nintendo EAD",
+      "genre": "Adventure",
+      "id": "00000000-0000-4000-8000-0000000000a2",
+      "name": "The Legend of Zelda: A Link to the Past",
+      "publisher": "Nintendo",
+      "rating": 0,
+      "release_month": null,
+      "release_year": 1991,
+      "scrapes": 0,
+      "system_id": "snes",
+      "system_name": "Super Nintendo Entertainment System",
+      "type": "game",
+      "updated_at": "<time>"
+    }
+  ],
+  "total": 2
+}

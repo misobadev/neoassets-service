@@ -1,0 +1,24 @@
+200
+{
+  "game": {
+    "description_en": "An action adventure.",
+    "developer": "Nintendo EAD",
+    "genre": "Adventure",
+    "id": "00000000-0000-4000-8000-0000000000a2",
+    "media": [],
+    "name": "The Legend of Zelda: A Link to the Past",
+    "publisher": "Nintendo",
+    "rating": 0,
+    "region": "",
+    "release_month": null,
+    "release_year": 1991,
+    "rom_count": 1,
+    "rom_name": "Legend of Zelda, The - A Link to the Past (USA).sfc",
+    "scrapes": 2,
+    "system_id": "snes",
+    "system_name": "Super Nintendo Entertainment System",
+    "type": "game"
+  },
+  "matched_by": "hash",
+  "system_id": "snes"
+}

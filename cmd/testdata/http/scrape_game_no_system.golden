@@ -1,0 +1,4 @@
+400
+{
+  "error": "system_id, family or group is required"
+}

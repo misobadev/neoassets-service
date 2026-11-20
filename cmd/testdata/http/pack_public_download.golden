@@ -1,0 +1,24 @@
+200
+{
+  "ai": false,
+  "author": "Artist",
+  "description": "A test pack.",
+  "donation_url": "https://ko-fi.com/artist",
+  "downloads": 0,
+  "files": [
+    {
+      "file_name": "snes.png",
+      "kind": "background",
+      "mime": "image/webp",
+      "object_key": "packs/approved-pack/backgrounds/snes.webp",
+      "size": 140,
+      "system_id": "snes",
+      "url": "https://cdn.test/packs/approved-pack/backgrounds/snes.webp"
+    }
+  ],
+  "folder": "approved-pack",
+  "name": "Approved Pack",
+  "submitted_by": "artist",
+  "systems_covered": 1,
+  "version": "1.0"
+}

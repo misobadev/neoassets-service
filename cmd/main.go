@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,11 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"neoassets/internal/email"
 	"neoassets/internal/handlers"
-	"neoassets/internal/repository"
 	"neoassets/internal/services"
-	"neoassets/internal/systems"
 	"neoassets/pkg/auth"
 	"neoassets/pkg/r2"
 
@@ -96,10 +91,7 @@ func main() {
 	}
 
 	// Apply the rewards/scrape economy before any service or repository reads it.
-	repository.ConfigureThreads(cfg.ScrapeAdminThreads, cfg.ScrapeGuestThreads, cfg.ScrapeSupporterBonusThreads, cfg.ScrapeMonthlySupporterBonusThreads)
-	repository.ConfigureRewards(cfg.ScrapeDailyPerThread, cfg.XPSupporterBonusPct, cfg.XPMonthlySupporterBonusPct)
-	repository.ConfigureDonations(cfg.DonorSubscriptionGraceDays)
-	services.ConfigurePoints(cfg.PointsTextMetadata, cfg.PointsImageMetadata, cfg.PointsVideoMetadata, cfg.PointsSAPImage, cfg.PointsNewGame)
+	configureEconomy(cfg)
 
 	// Migrations run on their own connection, without the statement timeout:
 	// a data migration may legitimately take longer than any request should.
@@ -113,85 +105,24 @@ func main() {
 	}
 	defer db.Close()
 
-	repo := repository.NewRepository(db)
-
-	// Load the embedded system catalog used for validation and by the web
-	// endpoint (internal/systems/systems.json).
-	catalog, err := systems.Load()
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to load system catalog")
-	}
-
-	// Seed the initial admin account from environment.
-	if cfg.AdminEmail != "" && cfg.AdminPassword != "" {
-		hash, err := auth.HashPassword(cfg.AdminPassword)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to hash seed admin password")
-		}
-		if err := repo.EnsureAdmin(cfg.AdminEmail, hash); err != nil {
-			log.Fatal().Err(err).Msg("Failed to seed admin")
-		}
-		log.Info().Str("email", cfg.AdminEmail).Msg("Seed admin ensured")
-	}
-
-	// Ensure the hidden NeoBot integration user exists. NeoBot is the origin of
-	// imported catalog data and is never shown in lists/leaderboards. Its password
-	// is a random value so nobody can log in as it.
-	buf := make([]byte, 16)
-	_, _ = rand.Read(buf)
-	nbHash, err := auth.HashPassword("neobot-system-" + hex.EncodeToString(buf))
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to hash NeoBot password")
-	} else if neobotID, err := repo.EnsureNeoBot(nbHash); err != nil {
-		log.Warn().Err(err).Msg("Failed to seed NeoBot user")
-	} else {
-		log.Info().Str("id", neobotID.String()).Msg("NeoBot user ensured")
-	}
-
 	r2Client, err := r2.NewClient(context.Background(), cfg.R2AccountID, cfg.R2AccessKey, cfg.R2SecretKey, cfg.R2BucketName, log.Logger)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize R2 client")
 	}
 
-	// Account emails (verification + password reset). If SMTP is not
-	// configured the mailer is nil and email sending is skipped.
-	mailer, err := email.NewSender(email.Config{
-		Host:        cfg.SMTPHost,
-		Port:        cfg.SMTPPort,
-		Username:    cfg.SMTPUsername,
-		Password:    cfg.SMTPPassword,
-		FromEmail:   cfg.SMTPFromEmail,
-		FromName:    cfg.SMTPFromName,
-		FrontendURL: cfg.FrontendURL,
-		LogoURL:     cfg.EmailLogoURL,
-	})
+	a, err := buildApp(cfg, db, r2Client, newMailer(cfg))
 	if err != nil {
-		log.Warn().Err(err).Msg("SMTP not configured, account emails disabled")
-		mailer = nil
+		log.Fatal().Err(err).Msg("Failed to start the service")
 	}
 
-	svc := services.NewService(repo, r2Client, cfg.R2PublicBase, cfg.JWTSecret, catalog)
-	// User sessions live 7 days; a password change bumps token_version and
-	// revokes every outstanding token immediately.
-	userSvc := services.NewUserService(repo, mailer, cfg.JWTSecret, 7*24*time.Hour, cfg.ProtectedAdminEmail)
-	userSvc.SkipEmailVerification = cfg.SkipEmailVerification
-	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, cfg.ScrapeRPMPerThread, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
-	devSvc := services.NewDeveloperService(repo)
-	donationSvc := services.NewDonationService(repo, mailer, cfg.KofiVerificationToken, cfg.PatreonWebhookSecret)
-	handler := handlers.NewHandler(svc, userSvc, scrapeSvc, devSvc, donationSvc, cfg.JWTSecret, cfg.SkipEmailVerification)
-
-	// Start background R2 usage refresh
-	svc.StartStorageRefresh(context.Background())
-	// Downgrade monthly supporters whose Ko-fi subscription stopped paying.
-	donationSvc.StartExpiryJob(context.Background())
-	// Write the batched counts of rate-limited scrape requests.
-	scrapeSvc.StartRefusalFlush(context.Background())
-
-	r := setupRouter(handler, scrapeSvc, cfg)
+	// Background jobs stop when the server shuts down.
+	jobsCtx, stopJobs := context.WithCancel(context.Background())
+	defer stopJobs()
+	a.startJobs(jobsCtx)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           r,
+		Handler:           a.router,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      6 * time.Minute,
@@ -216,7 +147,8 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Server forced to shutdown")
 	}
-	scrapeSvc.FlushRefusals()
+	stopJobs()
+	a.scrapeSvc.FlushRefusals()
 
 	log.Info().Msg("Server exited")
 }

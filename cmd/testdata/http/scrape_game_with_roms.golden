@@ -1,0 +1,35 @@
+200
+{
+  "game": {
+    "description_en": "A platform game.",
+    "developer": "Nintendo EAD",
+    "genre": "Platform",
+    "id": "00000000-0000-4000-8000-0000000000a1",
+    "media": [],
+    "name": "Super Mario World",
+    "publisher": "Nintendo",
+    "rating": 0,
+    "region": "",
+    "release_month": null,
+    "release_year": 1990,
+    "rom_count": 1,
+    "rom_name": "Super Mario World (USA).sfc",
+    "roms": [
+      {
+        "crc": "b19ed489",
+        "md5": "",
+        "name": "Super Mario World (USA).sfc",
+        "region": "",
+        "sha1": "",
+        "sha256": "",
+        "size": 524288
+      }
+    ],
+    "scrapes": 2,
+    "system_id": "snes",
+    "system_name": "Super Nintendo Entertainment System",
+    "type": "game"
+  },
+  "matched_by": "hash",
+  "system_id": "snes"
+}

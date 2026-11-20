@@ -57,9 +57,9 @@ type ScrapeService struct {
 	meta      *Service // catalog reads (systems/games) reused from the web service
 	jwtSecret string
 
-	guestThreads int
-	rpmPerThread int
-	debugEnabled bool
+	guestThreads    int
+	rpmPerThread    int
+	debugEnabled    bool
 	requireVerified bool
 
 	mu       sync.Mutex

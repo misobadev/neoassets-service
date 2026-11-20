@@ -1,0 +1,14 @@
+200
+{
+  "daily_games": 4000,
+  "donor_bonus_threads": 0,
+  "donor_status": "none",
+  "level": 2,
+  "level_xp": 17,
+  "next_level_xp": 47,
+  "progress_pct": 10,
+  "rank": "novice",
+  "threads": 4,
+  "xp": 20,
+  "xp_bonus_pct": 0
+}

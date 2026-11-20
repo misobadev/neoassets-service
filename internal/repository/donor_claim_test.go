@@ -1,74 +1,21 @@
 package repository
 
 import (
-	"database/sql"
-	"errors"
-	"fmt"
-	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 
 	"neoassets/internal/models"
+	"neoassets/internal/testdb"
 )
 
-var (
-	claimDBOnce sync.Once
-	claimDB     *sql.DB
-	claimDBErr  error
-)
-
-// claimTestRepo returns a Repository on the database named by
-// NEOASSETS_TEST_DATABASE_URL, migrated from scratch once per run. Its public
-// schema is dropped first, so the database's name must contain "test". Without
-// the variable the test is skipped.
+// claimTestRepo returns a Repository on a migrated test database (see testdb).
 func claimTestRepo(t *testing.T) *Repository {
 	t.Helper()
-	url := os.Getenv("NEOASSETS_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("NEOASSETS_TEST_DATABASE_URL not set")
-	}
-	claimDBOnce.Do(func() { claimDB, claimDBErr = migrateClaimTestDB(url) })
-	if claimDBErr != nil {
-		t.Fatal(claimDBErr)
-	}
-	return NewRepository(claimDB)
-}
-
-func migrateClaimTestDB(url string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", url)
-	if err != nil {
-		return nil, err
-	}
-	var name string
-	if err := db.QueryRow(`SELECT current_database()`).Scan(&name); err != nil {
-		return nil, err
-	}
-	if !strings.Contains(strings.ToLower(name), "test") {
-		return nil, fmt.Errorf("refusing to reset database %s: its name must contain \"test\"", name)
-	}
-	if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
-		return nil, err
-	}
-	driver, err := postgres.WithInstance(db, &postgres.Config{})
-	if err != nil {
-		return nil, err
-	}
-	m, err := migrate.NewWithDatabaseInstance("file://../../migrations", "postgres", driver)
-	if err != nil {
-		return nil, err
-	}
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return nil, err
-	}
-	return db, nil
+	return NewRepository(testdb.Open(t, "repository_donor"))
 }
 
 func claimTestUser(t *testing.T, r *Repository) uuid.UUID {

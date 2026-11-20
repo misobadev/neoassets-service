@@ -127,17 +127,17 @@ func (r *Repository) GetRewards(userID uuid.UUID) (*models.Rewards, error) {
 	}
 
 	return &models.Rewards{
-		XP:               u.XP,
-		Level:            level,
-		Rank:             rank,
-		Threads:          threads,
-		DonorStatus:      u.DonorStatus,
+		XP:                u.XP,
+		Level:             level,
+		Rank:              rank,
+		Threads:           threads,
+		DonorStatus:       u.DonorStatus,
 		DonorBonusThreads: DonorBonusThreads(u.DonorStatus),
-		XPBonusPct:       DonorXPBonusPct(u.DonorStatus),
-		DailyGames:       threads * DailyGamesPerThread,
-		LevelXP:          levelXP,
-		NextLevelXP:      nextLevelXP,
-		ProgressPct:      progress,
+		XPBonusPct:        DonorXPBonusPct(u.DonorStatus),
+		DailyGames:        threads * DailyGamesPerThread,
+		LevelXP:           levelXP,
+		NextLevelXP:       nextLevelXP,
+		ProgressPct:       progress,
 	}, nil
 }
 
@@ -212,6 +212,22 @@ func (r *Repository) AwardXP(userID uuid.UUID, delta int, reason string, submiss
 		return err
 	}
 	defer tx.Rollback()
+	// An award tied to a submission is granted once. The transaction-level
+	// advisory lock serializes concurrent awards for the same submission, so
+	// the existence check and the insert can't interleave (a re-approval or two
+	// overlapping approvals never double-credit).
+	if submissionID != nil {
+		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "xp:"+submissionID.String()); err != nil {
+			return err
+		}
+		var exists bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM xp_ledger WHERE submission_id = $1)`, *submissionID).Scan(&exists); err != nil {
+			return fmt.Errorf("failed to check xp ledger: %w", err)
+		}
+		if exists {
+			return nil
+		}
+	}
 	if _, err := tx.Exec(`UPDATE users SET xp = xp + $1, updated_at = NOW() WHERE id = $2`, delta, userID); err != nil {
 		return err
 	}

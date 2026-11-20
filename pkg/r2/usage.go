@@ -13,8 +13,8 @@ import (
 // BucketUsage holds the R2 bucket storage metrics returned by the Cloudflare
 // GraphQL Analytics API.
 type BucketUsage struct {
-	ObjectCount int64
-	PayloadSize int64
+	ObjectCount  int64
+	PayloadSize  int64
 	MetadataSize int64
 }
 

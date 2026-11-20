@@ -1,0 +1,26 @@
+200
+{
+  "systems": [
+    {
+      "aftermarket": 0,
+      "base": 0,
+      "bootleg": 0,
+      "created_at": "<time>",
+      "description": "A 16-bit home console.",
+      "family": "console",
+      "group": "",
+      "hack": 0,
+      "homebrew": 0,
+      "id": "snes",
+      "media_pct": 0,
+      "metadata_pct": 41.66666666666667,
+      "name": "Super Nintendo Entertainment System",
+      "region": "",
+      "short_name": "SNES",
+      "text_pct": 83.33333333333334,
+      "total_games": 2,
+      "updated_at": "<time>",
+      "virtual": false
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+200
+{
+  "regions": [
+    {
+      "id": "world",
+      "name": "World",
+      "sort_order": 1
+    },
+    {
+      "id": "usa",
+      "name": "USA",
+      "sort_order": 2
+    },
+    {
+      "id": "europe",
+      "name": "Europe",
+      "sort_order": 3
+    },
+    {
+      "id": "japan",
+      "name": "Japan",
+      "sort_order": 4
+    },
+    {
+      "id": "brazil",
+      "name": "Brazil",
+      "sort_order": 5
+    },
+    {
+      "id": "asia",
+      "name": "Asia",
+      "sort_order": 6
+    },
+    {
+      "id": "spain",
+      "name": "Spain",
+      "sort_order": 7
+    },
+    {
+      "id": "france",
+      "name": "France",
+      "sort_order": 8
+    },
+    {
+      "id": "germany",
+      "name": "Germany",
+      "sort_order": 9
+    },
+    {
+      "id": "italy",
+      "name": "Italy",
+      "sort_order": 10
+    },
+    {
+      "id": "korea",
+      "name": "Korea",
+      "sort_order": 11
+    },
+    {
+      "id": "china",
+      "name": "China",
+      "sort_order": 12
+    }
+  ]
+}

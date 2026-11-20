@@ -1,0 +1,19 @@
+200
+{
+  "admin_version": "",
+  "ai": false,
+  "anon_user_id": "<uuid>",
+  "author": "Artist",
+  "contribution": false,
+  "created_at": "<time>",
+  "description": "A test pack.",
+  "donation_url": "https://ko-fi.com/artist",
+  "id": "<uuid>",
+  "name": "Rejected Pack",
+  "pack_id": "rejected-pack",
+  "reviewed_at": "<time>",
+  "reviewed_by": "<uuid>",
+  "status": "rejected",
+  "user_id": "<uuid>",
+  "version": ""
+}

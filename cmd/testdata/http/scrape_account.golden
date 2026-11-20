@@ -1,0 +1,15 @@
+200
+{
+  "client": {
+    "id": "golden-client-id",
+    "name": "Golden App"
+  },
+  "quota": {
+    "daily_limit": 2000,
+    "remaining": 1995,
+    "resets_at": "<time>",
+    "used": 5
+  },
+  "subject": "guest",
+  "user": null
+}
