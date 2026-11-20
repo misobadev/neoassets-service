@@ -475,8 +475,8 @@ type Pack struct {
 	// SystemsCovered is the number of distinct systems with a published
 	// background image in the pack.
 	SystemsCovered int `json:"systems_covered"`
-	// SubmittedBy is the username of the user behind the latest approved
-	// revision of the pack.
+	// SubmittedBy is the username of the user who submitted the pack itself
+	// (contributors are listed separately).
 	SubmittedBy string `json:"submitted_by,omitempty"`
 	// Contributions is the number of pending/draft contributions to this pack.
 	Contributions int `json:"contributions"`

@@ -268,11 +268,17 @@ func (r *Repository) SetSubmissionStatus(id uuid.UUID, status string, adminID uu
 // UpdateSubmission edits the metadata of a draft owned by the user. It only
 // applies while the submission is still in the 'created' or 'rejected' state;
 // approved submissions are read-only (changes go through a new contribution).
+// A contribution only changes its description: it keeps the name, author,
+// donation link and AI flag copied from the pack it contributes to.
 func (r *Repository) UpdateSubmission(id uuid.UUID, userID uuid.UUID, name, author, description, donationURL string, ai bool) (*models.Submission, error) {
 	var s models.Submission
 	err := r.db.QueryRow(
 		`UPDATE submissions
-		 SET name = $1, author = $2, description = $3, donation_url = $4, ai = $5
+		 SET name = CASE WHEN contribution THEN name ELSE $1 END,
+		     author = CASE WHEN contribution THEN author ELSE $2 END,
+		     description = $3,
+		     donation_url = CASE WHEN contribution THEN donation_url ELSE $4 END,
+		     ai = CASE WHEN contribution THEN ai ELSE $5 END
 		 WHERE id = $6 AND user_id = $7 AND status IN ('created','rejected')
 		 RETURNING id, pack_id, name, author, description, donation_url, ai, version,
 		           status, anon_user_id, user_id, created_at, reviewed_at, reviewed_by, admin_version, contribution`,
@@ -285,6 +291,31 @@ func (r *Repository) UpdateSubmission(id uuid.UUID, userID uuid.UUID, name, auth
 		return nil, err
 	}
 	return &s, nil
+}
+
+// SyncContributionIdentity copies the name, author, donation link and AI flag
+// of the pack's latest approved revision onto a contribution, so approving it
+// never changes how the pack is listed. It is a no-op for a pack's own
+// submission.
+func (r *Repository) SyncContributionIdentity(id uuid.UUID) error {
+	_, err := r.db.Exec(
+		`UPDATE submissions c
+		 SET name = p.name, author = p.author, donation_url = p.donation_url, ai = p.ai
+		 FROM (
+		   SELECT a.name, a.author, a.donation_url, a.ai
+		   FROM submissions a
+		   WHERE a.pack_id = (SELECT pack_id FROM submissions WHERE id = $1)
+		     AND a.status = 'approved'
+		   ORDER BY a.created_at DESC
+		   LIMIT 1
+		 ) p
+		 WHERE c.id = $1 AND c.contribution`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to sync contribution identity: %w", err)
+	}
+	return nil
 }
 
 // SubmitSubmission moves a submission owned by the user from the draft
@@ -541,7 +572,7 @@ func (r *Repository) ListApprovedPacks(sort string, limit, offset int) ([]models
 		   ORDER BY pack_id, created_at DESC
 		 ) latest
 		 LEFT JOIN pack_scrape_stats st ON st.pack_id = latest.pack_id
-		 LEFT JOIN users u ON u.id = latest.user_id
+		 LEFT JOIN users u ON u.id = `+packOwnerSQL("latest.pack_id", "latest.user_id")+`
 		 LEFT JOIN (
 		   SELECT s.pack_id, count(DISTINCT sf.system_id) AS systems_covered
 		   FROM submission_files sf
@@ -572,6 +603,19 @@ func (r *Repository) ListApprovedPacks(sort string, limit, offset int) ([]models
 	return list, total, rows.Err()
 }
 
+// packOwnerSQL is the SQL for a pack's owner: the user who submitted the pack
+// itself (its first approved, non-contribution submission), so an approved
+// contribution never shows its contributor as the pack's submitter. It falls
+// back to the latest revision's user for packs with no such row.
+func packOwnerSQL(packIDCol, fallbackUserCol string) string {
+	return `COALESCE((
+		   SELECT o.user_id FROM submissions o
+		   WHERE o.pack_id = ` + packIDCol + ` AND o.status = 'approved' AND NOT o.contribution
+		   ORDER BY o.created_at
+		   LIMIT 1
+		 ), ` + fallbackUserCol + `)`
+}
+
 // GetPackDetail returns the latest approved revision of a pack together with
 // every published file, or sql.ErrNoRows when the pack is not approved.
 func (r *Repository) GetPackDetail(packID string) (*models.PackDetail, error) {
@@ -588,7 +632,7 @@ func (r *Repository) GetPackDetail(packID string) (*models.PackDetail, error) {
 		   ORDER BY created_at DESC
 		   LIMIT 1
 		 ) p
-		 LEFT JOIN users u ON u.id = p.user_id
+		 LEFT JOIN users u ON u.id = `+packOwnerSQL("p.pack_id", "p.user_id")+`
 		 LEFT JOIN pack_scrape_stats st ON st.pack_id = p.pack_id
 		 LEFT JOIN (
 		   SELECT s.pack_id, count(DISTINCT sf.system_id) AS systems_covered

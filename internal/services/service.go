@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -192,6 +195,49 @@ func (s *Service) ValidateCreate(req models.CreateSubmissionRequest) error {
 	return nil
 }
 
+// maxDonationURLLen caps a pack's donation link.
+const maxDonationURLLen = 512
+
+// normalizeDonationURL checks a pack's donation link. The web UI and the app
+// open it as a link, so it must be an https web address: a bare
+// "ko-fi.com/name" or an http:// link is upgraded to https, and any other
+// scheme (javascript:, data:, mailto:, ...) is refused. Empty means none.
+func normalizeDonationURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err == nil && u.Scheme == "" {
+		u, err = url.Parse("https://" + raw)
+	}
+	if err != nil {
+		return "", fmt.Errorf("donation_url must be an https:// web address")
+	}
+	if u.Scheme == "http" {
+		u.Scheme = "https"
+	}
+	if u.Scheme != "https" || !strings.Contains(u.Hostname(), ".") || u.User != nil || u.Opaque != "" {
+		return "", fmt.Errorf("donation_url must be an https:// web address")
+	}
+	out := u.String()
+	if len(out) > maxDonationURLLen {
+		return "", fmt.Errorf("donation_url too long")
+	}
+	return out, nil
+}
+
+// servedDonationURL is the donation link a pack is listed with: the stored
+// value when it is (or upgrades to) an https web address, otherwise none, so a
+// link stored before the check existed is never handed to a client.
+func servedDonationURL(stored string) string {
+	u, err := normalizeDonationURL(stored)
+	if err != nil {
+		return ""
+	}
+	return u
+}
+
 // PackIDFromName generates a URL-safe pack id from a display name.
 func (s *Service) PackIDFromName(name string) string {
 	slug := strings.ToLower(strings.TrimSpace(name))
@@ -232,6 +278,12 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		if strings.TrimSpace(req.Description) == "" {
 			req.Description = target.Description
 		}
+	} else {
+		donationURL, err := normalizeDonationURL(req.DonationURL)
+		if err != nil {
+			return nil, err
+		}
+		req.DonationURL = donationURL
 	}
 	if !packIDRegex.MatchString(packID) {
 		packID = fmt.Sprintf("theme-%s", uuid.NewString()[:8])
@@ -248,6 +300,13 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		}
 		if inUse {
 			return nil, fmt.Errorf("a pack with that name already exists; contribute to it instead")
+		}
+	}
+
+	// Refuse an upload type the file's kind can't be before anything is written.
+	for _, f := range req.Files {
+		if _, err := uploadContentType(f.Kind, f.MimeType); err != nil {
+			return nil, err
 		}
 	}
 
@@ -271,11 +330,11 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
 			return nil, err
 		}
-		mime := f.MimeType
-		if mime == "" {
-			mime = "application/octet-stream"
+		contentType, err := uploadContentType(f.Kind, f.MimeType)
+		if err != nil {
+			return nil, err
 		}
-		if err := s.repo.AddFileReason(id, f.ObjectKey, f.FileName, f.SystemID, f.Kind, mime, f.Size, f.Reason); err != nil {
+		if err := s.repo.AddFileReason(id, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentType, f.Size, f.Reason); err != nil {
 			return nil, err
 		}
 	}
@@ -344,12 +403,12 @@ func (s *Service) SubmissionUploadURLPre(ctx context.Context, req models.Submiss
 	if !packIDRegex.MatchString(packID) {
 		packID = fmt.Sprintf("theme-%s", uuid.NewString()[:8])
 	}
-	objectKey := reviewObjectKey(packID, req.FileName)
-	mime := req.MimeType
-	if mime == "" {
-		mime = "application/octet-stream"
+	contentType, err := uploadContentType(req.Kind, req.MimeType)
+	if err != nil {
+		return nil, err
 	}
-	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, mime, s.uploadTTL)
+	objectKey := reviewObjectKey(packID, req.FileName)
+	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign upload URL")
 		return nil, fmt.Errorf("could not prepare upload")
@@ -370,10 +429,57 @@ const maxImageSize = 25 << 20
 // memory, so the source has to stay within what the service can hold.
 const maxVideoSize = 200 << 20
 
+// maxThemeSize caps a pack's theme JSON. Themes are small configuration files;
+// approval downloads and checks them, so they need a cap of their own.
+const maxThemeSize = 1 << 20
+
+// imageUploadTypes are the types an image upload may be signed and stored with.
+var imageUploadTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/webp": true,
+	"image/gif":  true,
+}
+
+// uploadContentType returns the Content-Type an upload of this kind is signed
+// and recorded with. The browser sends the same header when it uploads, so the
+// declared type is checked rather than replaced: an upload is stored as a type
+// its kind can be (an image, a video, JSON for themes), or as
+// application/octet-stream when the browser doesn't know the type. Types a
+// browser would render as a page (HTML, SVG, XML, text) are refused, since
+// uploads are served from the public bucket as stored.
+func uploadContentType(kind, declared string) (string, error) {
+	if declared == "" {
+		return "application/octet-stream", nil
+	}
+	// The type is signed exactly as given, so it must be a bare lowercase type.
+	mediaType, params, err := mime.ParseMediaType(declared)
+	if err == nil && len(params) == 0 && mediaType == declared {
+		switch {
+		case mediaType == "application/octet-stream":
+			return declared, nil
+		case kind == models.KindTheme:
+			if mediaType == "application/json" {
+				return declared, nil
+			}
+		case kind == models.MediaVideo:
+			if strings.HasPrefix(mediaType, "video/") {
+				return declared, nil
+			}
+		case imageUploadTypes[mediaType]:
+			return declared, nil
+		}
+	}
+	return "", fmt.Errorf("unsupported file type %q for a %s", declared, kind)
+}
+
 // maxUploadSize is the largest object the service downloads for an upload of
 // this kind and file name: the same caps ensureUploaded applies, enforced again
 // on the download itself because the object can be replaced after that check.
 func maxUploadSize(kind, fileName string) int64 {
+	if kind == models.KindTheme {
+		return maxThemeSize
+	}
 	if kind == models.MediaVideo || videoExts[strings.ToLower(getExt(fileName))] {
 		return maxVideoSize
 	}
@@ -405,7 +511,11 @@ func (s *Service) ValidateUploadRequest(req models.UploadRequest) error {
 
 	// GIFs are stored as-is (animation preserved), so cap their size. Other
 	// images are re-encoded on approval, so they only need a sane size cap.
-	if ext == ".gif" {
+	if req.Kind == models.KindTheme {
+		if req.Size > maxThemeSize {
+			return fmt.Errorf("theme must be at most %d MB", maxThemeSize>>20)
+		}
+	} else if ext == ".gif" {
 		if req.Size > maxGIFSize {
 			return fmt.Errorf("GIF must be at most %d MB", maxGIFSize>>20)
 		}
@@ -514,13 +624,12 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 		return nil, err
 	}
 
-	objectKey := reviewObjectKey(sub.PackID, req.FileName)
-
-	mimeType := req.MimeType
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
+	mimeType, err := uploadContentType(req.Kind, req.MimeType)
+	if err != nil {
+		return nil, err
 	}
 
+	objectKey := reviewObjectKey(sub.PackID, req.FileName)
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, mimeType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign upload URL")
@@ -552,6 +661,18 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID, req models.CreateSubmissionRequest) (*models.Submission, error) {
 	if err := s.ValidateCreate(req); err != nil {
 		return nil, err
+	}
+	current, err := s.repo.GetSubmissionByIDForUser(submissionID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("submission not found")
+	}
+	// A contribution keeps the pack's name, author, donation link and AI flag
+	// (the update below leaves them unchanged), so only a pack's own submission
+	// sets a donation link.
+	if !current.Contribution {
+		if req.DonationURL, err = normalizeDonationURL(req.DonationURL); err != nil {
+			return nil, err
+		}
 	}
 
 	sub, err := s.repo.UpdateSubmission(
@@ -591,11 +712,11 @@ func (s *Service) AddSubmissionFiles(ctx context.Context, submissionID uuid.UUID
 		if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
 			return nil, err
 		}
-		mime := f.MimeType
-		if mime == "" {
-			mime = "application/octet-stream"
+		contentType, err := uploadContentType(f.Kind, f.MimeType)
+		if err != nil {
+			return nil, err
 		}
-		if err := s.repo.AddFileReason(submissionID, f.ObjectKey, f.FileName, f.SystemID, f.Kind, mime, f.Size, f.Reason); err != nil {
+		if err := s.repo.AddFileReason(submissionID, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentType, f.Size, f.Reason); err != nil {
 			return nil, err
 		}
 	}
@@ -646,6 +767,10 @@ func (s *Service) ensureUploaded(ctx context.Context, objectKey, fileName string
 	}
 	ext := strings.ToLower(getExt(fileName))
 	switch {
+	case ext == ".json":
+		if size > maxThemeSize {
+			return fmt.Errorf("theme %q is too large (max %d MB)", fileName, maxThemeSize>>20)
+		}
 	case ext == ".gif":
 		if size > maxGIFSize {
 			return fmt.Errorf("GIF %q is too large (max %d MB)", fileName, maxGIFSize>>20)
@@ -1035,6 +1160,15 @@ func (s *Service) Approve(ctx context.Context, submissionID uuid.UUID, adminID u
 		return nil, err
 	}
 
+	// Packs are listed from their latest approved row, so a contribution must
+	// carry the pack's current name, author, donation link and AI flag when it
+	// is approved, whatever it was saved with.
+	if sub.Contribution {
+		if err := s.repo.SyncContributionIdentity(submissionID); err != nil {
+			return nil, err
+		}
+	}
+
 	updated, err := s.repo.SetSubmissionStatus(submissionID, models.StatusApproved, adminID, version)
 	if err != nil {
 		return nil, err
@@ -1061,11 +1195,11 @@ func (s *Service) Approve(ctx context.Context, submissionID uuid.UUID, adminID u
 }
 
 // moveSubmissionFilesToCanonical publishes an approved submission's files to
-// their canonical pack keys. Theme JSON and animated GIFs are copied unchanged;
-// every other image is normalized to WebP by the backend (crop, scale, quality)
-// so the published art never depends on client-side conversion. The staging
-// objects and the replaced canonical objects are deleted so R2 does not
-// accumulate garbage.
+// their canonical pack keys. Theme JSON and animated GIFs are published
+// unchanged; every other image is normalized to WebP by the backend (crop,
+// scale, quality) so the published art never depends on client-side
+// conversion. The staging objects and the replaced canonical objects are
+// deleted so R2 does not accumulate garbage.
 func (s *Service) moveSubmissionFilesToCanonical(ctx context.Context, packID string, submissionID uuid.UUID) error {
 	if packID == "" {
 		return nil
@@ -1073,6 +1207,13 @@ func (s *Service) moveSubmissionFilesToCanonical(ctx context.Context, packID str
 	files, err := s.repo.ListFiles(submissionID)
 	if err != nil {
 		return err
+	}
+	// Themes are checked before anything is published, so a bad one fails the
+	// approval without leaving the pack half-published.
+	for i := range files {
+		if err := s.checkTheme(ctx, packID, &files[i]); err != nil {
+			return err
+		}
 	}
 	for i := range files {
 		if err := s.publishSubmissionFile(ctx, packID, submissionID, &files[i]); err != nil {
@@ -1082,18 +1223,40 @@ func (s *Service) moveSubmissionFilesToCanonical(ctx context.Context, packID str
 	return nil
 }
 
+// checkTheme reports whether a submission's theme can be published: within the
+// size cap and valid JSON. Other files, and themes already at their canonical
+// key or missing from R2 (publishing drops those rows), pass.
+func (s *Service) checkTheme(ctx context.Context, packID string, f *models.SubmissionFile) error {
+	if f.Kind != models.KindTheme {
+		return nil
+	}
+	if canonical := s.ObjectKey(packID, f.Kind, f.FileName); canonical == "" || canonical == f.ObjectKey {
+		return nil
+	}
+	data, err := s.r2.DownloadObject(ctx, f.ObjectKey, maxThemeSize)
+	if errors.Is(err, r2.ErrObjectTooLarge) {
+		return fmt.Errorf("theme %s is larger than %d MB", f.FileName, maxThemeSize>>20)
+	}
+	if err != nil {
+		if isMissingSource(err) {
+			return nil
+		}
+		return fmt.Errorf("download %s: %w", f.ObjectKey, err)
+	}
+	if !json.Valid(data) {
+		return fmt.Errorf("theme %s is not valid JSON", f.FileName)
+	}
+	return nil
+}
+
 // publishSubmissionFile moves a single approved file to its canonical key. JSON
-// themes and animated GIFs are copied as-is; all other images are re-encoded to
-// WebP.
+// themes and animated GIFs are published unchanged; all other images are
+// re-encoded to WebP. Every published object is written by the backend with a
+// type it chose, never copied with the type the uploader's browser declared.
 func (s *Service) publishSubmissionFile(ctx context.Context, packID string, submissionID uuid.UUID, f *models.SubmissionFile) error {
 	canonical := s.ObjectKey(packID, f.Kind, f.FileName)
 	if canonical == "" || canonical == f.ObjectKey {
 		return nil
-	}
-
-	// JSON themes are not images and are copied verbatim.
-	if f.Kind == models.KindTheme {
-		return s.copySubmissionFileToCanonical(ctx, packID, submissionID, f, canonical)
 	}
 
 	data, err := s.r2.DownloadObject(ctx, f.ObjectKey, maxUploadSize(f.Kind, f.FileName))
@@ -1111,17 +1274,32 @@ func (s *Service) publishSubmissionFile(ctx context.Context, packID string, subm
 		return fmt.Errorf("download %s: %w", f.ObjectKey, err)
 	}
 
+	// JSON themes are not images: they are checked and published verbatim.
+	if f.Kind == models.KindTheme {
+		if !json.Valid(data) {
+			return fmt.Errorf("theme %s is not valid JSON", f.FileName)
+		}
+		return s.publishObject(ctx, packID, submissionID, f, canonical, "application/json", data)
+	}
+
 	// Animated GIFs keep their animation and are published unchanged.
 	if info, perr := video.ProbeImage(ctx, data); perr == nil && info.Codec == "gif" {
-		return s.copySubmissionFileToCanonical(ctx, packID, submissionID, f, canonical)
+		return s.publishObject(ctx, packID, submissionID, f, canonical, "image/gif", data)
 	}
 
 	normalized, err := video.NormalizeImage(ctx, data, sapImageSpec(f.Kind))
 	if err != nil {
 		return fmt.Errorf("normalize %s: %w", f.FileName, err)
 	}
-	if err := s.r2.UploadFile(ctx, canonical, "image/webp", bytes.NewReader(normalized)); err != nil {
-		return fmt.Errorf("upload normalized %s: %w", canonical, err)
+	return s.publishObject(ctx, packID, submissionID, f, canonical, "image/webp", normalized)
+}
+
+// publishObject writes a file's published bytes to its canonical key with the
+// given type, deletes the staging object and points the file row at the
+// canonical key.
+func (s *Service) publishObject(ctx context.Context, packID string, submissionID uuid.UUID, f *models.SubmissionFile, canonical, contentType string, data []byte) error {
+	if err := s.r2.UploadFile(ctx, canonical, contentType, bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("upload %s: %w", canonical, err)
 	}
 	if err := s.r2.DeleteObject(ctx, f.ObjectKey); err != nil {
 		return fmt.Errorf("delete temp %s: %w", f.ObjectKey, err)
@@ -1138,28 +1316,7 @@ func (s *Service) publishSubmissionFile(ctx context.Context, packID string, subm
 	if err := s.repo.UpdateSubmissionFileObjectKey(f.ID, canonical); err != nil {
 		return err
 	}
-	return s.repo.UpdateSubmissionFileMime(f.ID, "image/webp")
-}
-
-// copySubmissionFileToCanonical copies a staged file to its canonical key
-// without re-encoding (themes and animated GIFs), deletes the staging object and
-// updates the file row.
-func (s *Service) copySubmissionFileToCanonical(ctx context.Context, packID string, submissionID uuid.UUID, f *models.SubmissionFile, canonical string) error {
-	if err := s.r2.CopyObject(ctx, f.ObjectKey, canonical); err != nil {
-		if isMissingSource(err) {
-			log.Warn().Str("object", f.ObjectKey).Msg("skipping missing submission object on approve")
-			return s.repo.DeleteSubmissionFile(f.ID)
-		}
-		return fmt.Errorf("copy %s -> %s: %w", f.ObjectKey, canonical, err)
-	}
-	if err := s.r2.DeleteObject(ctx, f.ObjectKey); err != nil {
-		return fmt.Errorf("delete temp %s: %w", f.ObjectKey, err)
-	}
-	s.deleteSiblingCanonical(ctx, packID, f.Kind, f.FileName, canonical)
-	if err := s.repo.DeleteSubmissionFileByObjectKey(submissionID, canonical, f.ID); err != nil {
-		return err
-	}
-	return s.repo.UpdateSubmissionFileObjectKey(f.ID, canonical)
+	return s.repo.UpdateSubmissionFileMime(f.ID, contentType)
 }
 
 // deleteSiblingCanonical removes the alternate-extension canonical object for a
@@ -1188,7 +1345,7 @@ func (s *Service) deleteSiblingCanonical(ctx context.Context, packID, kind, file
 
 // sapImageSpec returns the normalization applied to an approved SAP image:
 // backgrounds are center-cropped to a 1024x1024 square and previews/logos are
-// capped at 1024px. GIFs never reach this path (they are copied unchanged).
+// capped at 1024px. GIFs never reach this path (they are published unchanged).
 func sapImageSpec(kind string) video.ImageSpec {
 	if kind == models.KindBackground {
 		return video.ImageSpec{TargetW: 1024, TargetH: 1024, Quality: 90}
@@ -1482,6 +1639,7 @@ func (s *Service) ListedApprovedPacks(sort string, limit, offset int) ([]models.
 		return nil, 0, err
 	}
 	for i := range packs {
+		packs[i].DonationURL = servedDonationURL(packs[i].DonationURL)
 		packs[i].Backgrounds = backgrounds[packs[i].PackID]
 		packs[i].Contributions = contribCounts[packs[i].PackID]
 		packs[i].Contributors = contributors[packs[i].PackID]
@@ -1498,6 +1656,7 @@ func (s *Service) GetPackDetail(packID string) (*models.PackDetail, error) {
 	if err != nil {
 		return nil, err
 	}
+	detail.DonationURL = servedDonationURL(detail.DonationURL)
 	for i := range detail.Files {
 		detail.Files[i].URL = s.PublicURL(detail.Files[i].ObjectKey)
 	}
