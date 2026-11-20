@@ -31,7 +31,7 @@ func (h *Handler) KofiWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing data field")
 		return
 	}
-	if err := h.donationSvc.HandleKofi([]byte(data)); err != nil {
+	if err := h.donationSvc.HandleKofi(r.Context(), []byte(data)); err != nil {
 		log.Warn().Err(err).Msg("ko-fi webhook rejected")
 		writeError(w, http.StatusBadRequest, "invalid webhook")
 		return
@@ -55,7 +55,7 @@ func (h *Handler) PatreonWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	event := r.Header.Get("X-Patreon-Event")
 	signature := r.Header.Get("X-Patreon-Signature")
-	if err := h.donationSvc.HandlePatreon(event, signature, raw); err != nil {
+	if err := h.donationSvc.HandlePatreon(r.Context(), event, signature, raw); err != nil {
 		log.Warn().Err(err).Msg("patreon webhook rejected")
 		writeError(w, http.StatusBadRequest, "invalid webhook")
 		return
@@ -76,7 +76,7 @@ func (h *Handler) ImportDonations(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &body) {
 		return
 	}
-	imported, linked, skipped, err := h.donationSvc.ImportDonations(body.Donations)
+	imported, linked, skipped, err := h.donationSvc.ImportDonations(r.Context(), body.Donations)
 	if err != nil {
 		log.Error().Err(err).Msg("donation import failed")
 		writeServerError(w, http.StatusInternalServerError, "import failed", err)
@@ -95,7 +95,7 @@ func (h *Handler) DonorClaim(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &body) {
 		return
 	}
-	if err := h.donationSvc.ClaimStart(userFromRequest(r), body.Email); err != nil {
+	if err := h.donationSvc.ClaimStart(r.Context(), userFromRequest(r), body.Email); err != nil {
 		log.Warn().Err(err).Str("email", body.Email).Msg("donor claim failed")
 		writeClientError(w, http.StatusBadRequest, err)
 		return
@@ -112,7 +112,7 @@ func (h *Handler) DonorClaimVerify(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &body) {
 		return
 	}
-	n, err := h.donationSvc.ClaimVerify(userFromRequest(r), body.Email, body.Code)
+	n, err := h.donationSvc.ClaimVerify(r.Context(), userFromRequest(r), body.Email, body.Code)
 	if err != nil {
 		log.Warn().Err(err).Str("email", body.Email).Msg("donor claim verify failed")
 		writeClientError(w, http.StatusBadRequest, err)

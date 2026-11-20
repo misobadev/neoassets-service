@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -10,18 +11,18 @@ import (
 )
 
 // CountGames returns the total number of games in the catalog.
-func (r *Repository) CountGames() (int, error) {
+func (r *Repository) CountGames(ctx context.Context) (int, error) {
 	var n int
-	if err := r.db.QueryRow(`SELECT count(*) FROM games`).Scan(&n); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM games`).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
 }
 
 // CountApprovedPacks returns the number of distinct approved system art packs.
-func (r *Repository) CountApprovedPacks() (int, error) {
+func (r *Repository) CountApprovedPacks(ctx context.Context) (int, error) {
 	var n int
-	if err := r.db.QueryRow(`SELECT count(DISTINCT pack_id) FROM submissions WHERE status = 'approved'`).Scan(&n); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT count(DISTINCT pack_id) FROM submissions WHERE status = 'approved'`).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
@@ -31,18 +32,18 @@ func (r *Repository) CountApprovedPacks() (int, error) {
 // catalog. Virtual systems (e.g. the "arcade" aggregate) are excluded
 // because they own no games and are not browsable, so the dashboard count
 // matches the metadata browse page.
-func (r *Repository) CountMetadataSystems() (int, error) {
+func (r *Repository) CountMetadataSystems(ctx context.Context) (int, error) {
 	var n int
-	if err := r.db.QueryRow(`SELECT count(*) FROM metadata_systems WHERE NOT virtual`).Scan(&n); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM metadata_systems WHERE NOT virtual`).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
 }
 
 // CountUsers returns the number of non-hidden accounts.
-func (r *Repository) CountUsers() (int, error) {
+func (r *Repository) CountUsers(ctx context.Context) (int, error) {
 	var n int
-	if err := r.db.QueryRow(`SELECT count(*) FROM users WHERE NOT hidden`).Scan(&n); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE NOT hidden`).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
@@ -50,9 +51,9 @@ func (r *Repository) CountUsers() (int, error) {
 
 // CountApprovedContributions returns the total number of approved contributions
 // (SAP submissions + metadata submissions).
-func (r *Repository) CountApprovedContributions() (int, error) {
+func (r *Repository) CountApprovedContributions(ctx context.Context) (int, error) {
 	var n int
-	err := r.db.QueryRow(`
+	err := r.db.QueryRowContext(ctx, `
 		SELECT (SELECT count(*) FROM submissions WHERE status = 'approved')
 		     + (SELECT count(*) FROM metadata_submissions WHERE status = 'approved')`,
 	).Scan(&n)
@@ -64,8 +65,8 @@ func (r *Repository) CountApprovedContributions() (int, error) {
 
 // TopLevels returns the users with the most XP (hidden users excluded), with
 // their level, rank and unlocked threads.
-func (r *Repository) TopLevels(limit int) ([]models.LevelStat, error) {
-	rows, err := r.db.Query(`
+func (r *Repository) TopLevels(ctx context.Context, limit int) ([]models.LevelStat, error) {
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, username, xp, role, donor_status, avatar_key
 		FROM users WHERE NOT hidden
 		ORDER BY xp DESC, username ASC
@@ -99,26 +100,26 @@ func (r *Repository) TopLevels(limit int) ([]models.LevelStat, error) {
 // TopContributions returns users with the most approved contributions across
 // both SAP and metadata, excluding hidden users. A metadata submission counts
 // once, while a SAP submission counts once per uploaded image file.
-func (r *Repository) TopContributions(limit int) ([]models.UserCountStat, error) {
-	return r.topApprovedContributions(limit, 0)
+func (r *Repository) TopContributions(ctx context.Context, limit int) ([]models.UserCountStat, error) {
+	return r.topApprovedContributions(ctx, limit, 0)
 }
 
 // TopApprovedThisWeek returns users with the most approved contributions in
 // the last seven days, using the same counting rule as TopContributions.
-func (r *Repository) TopApprovedThisWeek(limit int) ([]models.UserCountStat, error) {
-	return r.topApprovedContributions(limit, 7)
+func (r *Repository) TopApprovedThisWeek(ctx context.Context, limit int) ([]models.UserCountStat, error) {
+	return r.topApprovedContributions(ctx, limit, 7)
 }
 
 // topApprovedContributions counts approved contributions per user. When
 // sinceDays > 0 only contributions reviewed within that window are counted.
-func (r *Repository) topApprovedContributions(limit, sinceDays int) ([]models.UserCountStat, error) {
+func (r *Repository) topApprovedContributions(ctx context.Context, limit, sinceDays int) ([]models.UserCountStat, error) {
 	sapFilter := ""
 	metaFilter := ""
 	if sinceDays > 0 {
 		sapFilter = fmt.Sprintf(" AND s.reviewed_at >= NOW() - INTERVAL '%d days'", sinceDays)
 		metaFilter = fmt.Sprintf(" AND m.reviewed_at >= NOW() - INTERVAL '%d days'", sinceDays)
 	}
-	rows, err := r.db.Query(`
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT u.id, u.username, u.avatar_key, SUM(t.c) AS c
 		FROM (
 			SELECT s.user_id AS user_id, COUNT(sf.id) AS c
@@ -153,8 +154,8 @@ func (r *Repository) topApprovedContributions(limit, sinceDays int) ([]models.Us
 }
 
 // RecentApprovedPacks returns the most recently approved SAP submissions.
-func (r *Repository) RecentApprovedPacks(limit int) ([]models.RecentPack, error) {
-	rows, err := r.db.Query(`
+func (r *Repository) RecentApprovedPacks(ctx context.Context, limit int) ([]models.RecentPack, error) {
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT s.id, s.pack_id, s.name, s.author,
 		       COALESCE(NULLIF(s.admin_version,''), s.version),
 		       s.created_at, u.username,
@@ -189,8 +190,8 @@ func (r *Repository) RecentApprovedPacks(limit int) ([]models.RecentPack, error)
 
 // RecentApprovedMetadata returns the most recently approved game metadata
 // contributions (game contributions only; system ones are excluded).
-func (r *Repository) RecentApprovedMetadata(limit int) ([]models.RecentMetadata, error) {
-	rows, err := r.db.Query(`
+func (r *Repository) RecentApprovedMetadata(ctx context.Context, limit int) ([]models.RecentMetadata, error) {
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT m.id, m.game_id, COALESCE(g.system_id,''), COALESCE(g.name,''), COALESCE(s.name,''),
 		       COALESCE(u.username,''), `+primaryCover+`, `+primaryCoverUpdated+`, m.created_at
 		FROM metadata_submissions m

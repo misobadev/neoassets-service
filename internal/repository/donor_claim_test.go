@@ -20,7 +20,7 @@ func claimTestRepo(t *testing.T) *Repository {
 
 func claimTestUser(t *testing.T, r *Repository) uuid.UUID {
 	t.Helper()
-	u, err := r.CreateUser(&models.User{
+	u, err := r.CreateUser(t.Context(), &models.User{
 		Username:     "c" + uuid.NewString()[:8],
 		Email:        uuid.NewString()[:8] + "@example.com",
 		PasswordHash: "hash",
@@ -37,22 +37,22 @@ func TestDonorClaimAttemptsAreLimited(t *testing.T) {
 	id := claimTestUser(t, r)
 	expires := time.Now().Add(15 * time.Minute)
 
-	if ok, err := r.UpsertDonorClaim(id, "donor@example.com", "hash", expires, 0); err != nil || !ok {
+	if ok, err := r.UpsertDonorClaim(t.Context(), id, "donor@example.com", "hash", expires, 0); err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
 	for i := 1; i <= 5; i++ {
-		if _, _, _, ok, err := r.UseDonorClaimAttempt(id, 5); err != nil || !ok {
+		if _, _, _, ok, err := r.UseDonorClaimAttempt(t.Context(), id, 5); err != nil || !ok {
 			t.Fatalf("attempt %d refused: err=%v", i, err)
 		}
 	}
-	if _, _, _, ok, err := r.UseDonorClaimAttempt(id, 5); err != nil || ok {
+	if _, _, _, ok, err := r.UseDonorClaimAttempt(t.Context(), id, 5); err != nil || ok {
 		t.Fatalf("a sixth attempt was allowed: ok=%v err=%v", ok, err)
 	}
 
-	if ok, err := r.UpsertDonorClaim(id, "donor@example.com", "hash2", expires, 0); err != nil || !ok {
+	if ok, err := r.UpsertDonorClaim(t.Context(), id, "donor@example.com", "hash2", expires, 0); err != nil || !ok {
 		t.Fatalf("new code: ok=%v err=%v", ok, err)
 	}
-	email, hash, _, ok, err := r.UseDonorClaimAttempt(id, 5)
+	email, hash, _, ok, err := r.UseDonorClaimAttempt(t.Context(), id, 5)
 	if err != nil || !ok || email != "donor@example.com" || hash != "hash2" {
 		t.Fatalf("after a new code: ok=%v err=%v email=%q hash=%q", ok, err, email, hash)
 	}
@@ -62,7 +62,7 @@ func TestDonorClaimAttemptsAreLimited(t *testing.T) {
 func TestDonorClaimAttemptsHoldUnderConcurrency(t *testing.T) {
 	r := claimTestRepo(t)
 	id := claimTestUser(t, r)
-	if ok, err := r.UpsertDonorClaim(id, "donor@example.com", "hash", time.Now().Add(time.Hour), 0); err != nil || !ok {
+	if ok, err := r.UpsertDonorClaim(t.Context(), id, "donor@example.com", "hash", time.Now().Add(time.Hour), 0); err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
 
@@ -73,7 +73,7 @@ func TestDonorClaimAttemptsHoldUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, _, _, ok, err := r.UseDonorClaimAttempt(id, 5); err == nil && ok {
+			if _, _, _, ok, err := r.UseDonorClaimAttempt(t.Context(), id, 5); err == nil && ok {
 				mu.Lock()
 				allowed++
 				mu.Unlock()
@@ -91,13 +91,13 @@ func TestDonorClaimCooldown(t *testing.T) {
 	id := claimTestUser(t, r)
 	expires := time.Now().Add(15 * time.Minute)
 
-	if ok, err := r.UpsertDonorClaim(id, "donor@example.com", "hash", expires, time.Minute); err != nil || !ok {
+	if ok, err := r.UpsertDonorClaim(t.Context(), id, "donor@example.com", "hash", expires, time.Minute); err != nil || !ok {
 		t.Fatalf("first claim: ok=%v err=%v", ok, err)
 	}
-	if ok, err := r.UpsertDonorClaim(id, "other@example.com", "hash2", expires, time.Minute); err != nil || ok {
+	if ok, err := r.UpsertDonorClaim(t.Context(), id, "other@example.com", "hash2", expires, time.Minute); err != nil || ok {
 		t.Fatalf("a second code within the cooldown was stored: ok=%v err=%v", ok, err)
 	}
-	email, hash, _, ok, err := r.UseDonorClaimAttempt(id, 5)
+	email, hash, _, ok, err := r.UseDonorClaimAttempt(t.Context(), id, 5)
 	if err != nil || !ok || email != "donor@example.com" || hash != "hash" {
 		t.Fatalf("claim replaced within the cooldown: ok=%v err=%v email=%q hash=%q", ok, err, email, hash)
 	}
@@ -105,7 +105,7 @@ func TestDonorClaimCooldown(t *testing.T) {
 
 func TestUseDonorClaimAttemptWithoutAClaim(t *testing.T) {
 	r := claimTestRepo(t)
-	if _, _, _, ok, err := r.UseDonorClaimAttempt(claimTestUser(t, r), 5); err != nil || ok {
+	if _, _, _, ok, err := r.UseDonorClaimAttempt(t.Context(), claimTestUser(t, r), 5); err != nil || ok {
 		t.Fatalf("no claim: ok=%v err=%v", ok, err)
 	}
 }

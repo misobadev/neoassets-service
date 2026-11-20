@@ -117,7 +117,7 @@ func TestToScrapeGameBuildsPublicURLs(t *testing.T) {
 		},
 	}
 
-	got := s.toScrapeGame(detail, models.ScrapeGameQuery{})
+	got := s.toScrapeGame(t.Context(), detail, models.ScrapeGameQuery{})
 	if len(got.Media) != 2 {
 		t.Fatalf("media len = %d, want 2", len(got.Media))
 	}
@@ -129,12 +129,12 @@ func TestToScrapeGameBuildsPublicURLs(t *testing.T) {
 		t.Errorf("roms should be omitted by default, got count=%d roms=%+v", got.RomCount, got.Roms)
 	}
 
-	withRoms := s.toScrapeGame(detail, models.ScrapeGameQuery{IncludeRoms: true})
+	withRoms := s.toScrapeGame(t.Context(), detail, models.ScrapeGameQuery{IncludeRoms: true})
 	if len(withRoms.Roms) != 1 || withRoms.Roms[0].CRC != "abc" {
 		t.Errorf("roms = %+v", withRoms.Roms)
 	}
 
-	filtered := s.toScrapeGame(detail, models.ScrapeGameQuery{Media: []string{"cover"}})
+	filtered := s.toScrapeGame(t.Context(), detail, models.ScrapeGameQuery{Media: []string{"cover"}})
 	if len(filtered.Media) != 1 || filtered.Media[0].Kind != "cover" {
 		t.Errorf("media filter failed: %+v", filtered.Media)
 	}

@@ -55,7 +55,7 @@ func parseUserListParams(r *http.Request) (int, int) {
 
 // ListMetadataSystems returns the metadata system catalog.
 func (h *Handler) ListMetadataSystems(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.ListMetadataSystems()
+	list, err := h.svc.ListMetadataSystems(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list systems")
 		return
@@ -69,7 +69,7 @@ func (h *Handler) ListGamesBySystem(w http.ResponseWriter, r *http.Request) {
 	limit, offset := parseLimitOffset(r)
 	gtype := r.URL.Query().Get("type")
 	sort := r.URL.Query().Get("sort")
-	list, total, err := h.svc.ListGamesBySystem(systemID, limit, offset, gtype, sort)
+	list, total, err := h.svc.ListGamesBySystem(r.Context(), systemID, limit, offset, gtype, sort)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list games")
 		return
@@ -97,7 +97,7 @@ func (h *Handler) SearchGames(w http.ResponseWriter, r *http.Request) {
 
 // ListMetadataLanguages returns the supported description languages.
 func (h *Handler) ListMetadataLanguages(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.ListLanguages()
+	list, err := h.svc.ListLanguages(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list languages")
 		return
@@ -107,7 +107,7 @@ func (h *Handler) ListMetadataLanguages(w http.ResponseWriter, r *http.Request) 
 
 // ListGenres returns the canonical genre catalog for the web forms.
 func (h *Handler) ListGenres(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.ListGenres()
+	list, err := h.svc.ListGenres(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list genres")
 		return
@@ -117,7 +117,7 @@ func (h *Handler) ListGenres(w http.ResponseWriter, r *http.Request) {
 
 // ListRegions returns the canonical region catalog for the web forms.
 func (h *Handler) ListRegions(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.ListRegions()
+	list, err := h.svc.ListRegions(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list regions")
 		return
@@ -134,14 +134,14 @@ func (h *Handler) GetGameDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lang := r.URL.Query().Get("lang")
-	detail, err := h.svc.GetGame(id, lang)
+	detail, err := h.svc.GetGame(r.Context(), id, lang)
 	if err != nil {
 		writeServerError(w, http.StatusNotFound, "game not found", err)
 		return
 	}
 	// Contributors are only needed by the web detail page, so they are attached
 	// here rather than in GetGame (which the scrape path also uses).
-	if contributors, cerr := h.svc.ListGameContributors(id); cerr == nil {
+	if contributors, cerr := h.svc.ListGameContributors(r.Context(), id); cerr == nil {
 		detail.Contributors = contributors
 	}
 	writeJSON(w, http.StatusOK, detail)
@@ -150,7 +150,7 @@ func (h *Handler) GetGameDetail(w http.ResponseWriter, r *http.Request) {
 // LookupGame finds games by ROM hash.
 func (h *Handler) LookupGame(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	list, err := h.svc.LookupGame(q.Get("crc"), q.Get("md5"), q.Get("sha1"), q.Get("sha256"), q.Get("system_id"))
+	list, err := h.svc.LookupGame(r.Context(), q.Get("crc"), q.Get("md5"), q.Get("sha1"), q.Get("sha256"), q.Get("system_id"))
 	if err != nil {
 		writeServerError(w, http.StatusBadRequest, "failed to look up game", err)
 		return
@@ -165,7 +165,7 @@ func (h *Handler) GetMetadataPending(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	keys, err := h.svc.PendingMetadataKeys(userFromRequest(r), id)
+	keys, err := h.svc.PendingMetadataKeys(r.Context(), userFromRequest(r), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load pending submissions")
 		return
@@ -183,7 +183,7 @@ func (h *Handler) CreateMetadataSubmission(w http.ResponseWriter, r *http.Reques
 	if !httpx.Decode(w, r, &req) {
 		return
 	}
-	sub, err := h.svc.CreateMetadataSubmission(userFromRequest(r), req)
+	sub, err := h.svc.CreateMetadataSubmission(r.Context(), userFromRequest(r), req)
 	if err != nil {
 		writeActionError(w, http.StatusBadRequest, err)
 		return
@@ -230,7 +230,7 @@ func (h *Handler) SubmitMetadataSubmission(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	sub, err := h.svc.SubmitMetadataSubmission(submissionID, userFromRequest(r))
+	sub, err := h.svc.SubmitMetadataSubmission(r.Context(), submissionID, userFromRequest(r))
 	if err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
@@ -244,7 +244,7 @@ func (h *Handler) CancelMetadataSubmission(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if err := h.svc.CancelMetadataSubmission(submissionID, userFromRequest(r)); err != nil {
+	if err := h.svc.CancelMetadataSubmission(r.Context(), submissionID, userFromRequest(r)); err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -255,7 +255,7 @@ func (h *Handler) CancelMetadataSubmission(w http.ResponseWriter, r *http.Reques
 func (h *Handler) ListMyMetadataSubmissions(w http.ResponseWriter, r *http.Request) {
 	limit, offset := parseUserListParams(r)
 	status := r.URL.Query().Get("status")
-	list, total, totalXP, err := h.svc.ListMyMetadataSubmissions(userFromRequest(r), status, limit, offset)
+	list, total, totalXP, err := h.svc.ListMyMetadataSubmissions(r.Context(), userFromRequest(r), status, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list submissions")
 		return
@@ -268,7 +268,7 @@ func (h *Handler) ListMyMetadataSubmissions(w http.ResponseWriter, r *http.Reque
 // notification badge without downloading the full review feed.
 func (h *Handler) ReviewSummary(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	summary, err := h.svc.ReviewSummary(userFromRequest(r), limit)
+	summary, err := h.svc.ReviewSummary(r.Context(), userFromRequest(r), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load review summary")
 		return
@@ -283,7 +283,7 @@ func (h *Handler) ReviewSummary(w http.ResponseWriter, r *http.Request) {
 // ListMetadataSubmissions lists all contributions.
 func (h *Handler) ListMetadataSubmissions(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
-	list, err := h.svc.ListMetadataSubmissions(status)
+	list, err := h.svc.ListMetadataSubmissions(r.Context(), status)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list submissions")
 		return
@@ -298,7 +298,7 @@ func (h *Handler) GetMetadataSubmission(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	detail, err := h.svc.GetMetadataSubmissionDetail(id)
+	detail, err := h.svc.GetMetadataSubmissionDetail(r.Context(), id)
 	if err != nil {
 		writeServerError(w, http.StatusNotFound, "submission not found", err)
 		return
@@ -318,7 +318,7 @@ func (h *Handler) ApproveMetadataSubmission(w http.ResponseWriter, r *http.Reque
 	}
 
 	adminID := actorIDFromContext(r.Context())
-	sub, err := h.svc.ApproveMetadataSubmission(id, adminID, req.Comment)
+	sub, err := h.svc.ApproveMetadataSubmission(r.Context(), id, adminID, req.Comment)
 	if err != nil {
 		writeActionError(w, http.StatusBadRequest, err)
 		return

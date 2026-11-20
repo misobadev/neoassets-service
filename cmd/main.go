@@ -107,7 +107,7 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize R2 client")
 	}
 
-	a, err := buildApp(cfg, db, r2Client, newMailer(cfg))
+	a, err := buildApp(context.Background(), cfg, db, r2Client, newMailer(cfg))
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to start the service")
 	}
@@ -145,7 +145,7 @@ func main() {
 		log.Fatal().Err(err).Msg("Server forced to shutdown")
 	}
 	stopJobs()
-	a.scrapeSvc.FlushRefusals()
+	a.scrapeSvc.FlushRefusals(ctx)
 
 	log.Info().Msg("Server exited")
 }
@@ -370,6 +370,8 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, cfg *Co
 	// Approving a SAP can move dozens of files to their canonical keys
 	// sequentially, which can exceed a minute; give requests more headroom.
 	r.Use(middleware.Timeout(5 * time.Minute))
+	// Writes finish even if the client disconnects; reads are cancelled.
+	r.Use(handlers.DetachWrites)
 
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: cfg.CORSOrigins,

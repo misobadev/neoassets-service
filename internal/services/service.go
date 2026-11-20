@@ -51,8 +51,16 @@ type Service struct {
 }
 
 // NewService creates a Service.
-func NewService(repo *repository.Repository, r2Client r2.Client, publicBase, jwtSecret string, systems *systems.Catalog) *Service {
-	return &Service{
+// ServiceOption configures a Service.
+type ServiceOption func(*Service)
+
+// WithTranslator sets the description translator (nil disables translation).
+func WithTranslator(t *Translator) ServiceOption {
+	return func(s *Service) { s.translator = t }
+}
+
+func NewService(repo *repository.Repository, r2Client r2.Client, publicBase, jwtSecret string, systems *systems.Catalog, opts ...ServiceOption) *Service {
+	s := &Service{
 		repo:       repo,
 		r2:         r2Client,
 		publicBase: strings.TrimRight(publicBase, "/"),
@@ -71,11 +79,11 @@ func NewService(repo *repository.Repository, r2Client r2.Client, publicBase, jwt
 		jwtSecret: jwtSecret,
 		tokenTTL:  auth.AdminTokenTTL,
 		systems:   systems,
-		translator: NewTranslator(
-			os.Getenv("TRANSLATE_WORKER_URL"),
-			os.Getenv("TRANSLATE_WORKER_TOKEN"),
-		),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // ListSystems returns the official system catalog for the web frontend.
@@ -91,8 +99,8 @@ func (s *Service) ListSystems() []systems.System {
 func (s *Service) TokenTTL() time.Duration { return s.tokenTTL }
 
 // Login validates admin credentials and returns a signed JWT.
-func (s *Service) Login(email, password string) (*models.LoginResult, error) {
-	admin, err := s.repo.GetAdminByEmail(email)
+func (s *Service) Login(ctx context.Context, email, password string) (*models.LoginResult, error) {
+	admin, err := s.repo.GetAdminByEmail(ctx, email)
 	if err != nil {
 		log.Warn().Str("email", email).Msg("failed admin login: unknown account")
 		return nil, fmt.Errorf("invalid credentials")
@@ -117,7 +125,7 @@ func (s *Service) Login(email, password string) (*models.LoginResult, error) {
 }
 
 // ListSubmissions returns submissions filtered by status.
-func (s *Service) ListSubmissions(status string) ([]models.Submission, error) {
+func (s *Service) ListSubmissions(ctx context.Context, status string) ([]models.Submission, error) {
 	if status != "" {
 		switch status {
 		case models.StatusCreated, models.StatusPending, models.StatusApproved, models.StatusRejected, models.StatusTrashed:
@@ -125,21 +133,21 @@ func (s *Service) ListSubmissions(status string) ([]models.Submission, error) {
 			return nil, fmt.Errorf("invalid status filter")
 		}
 	}
-	return s.repo.ListSubmissions(status)
+	return s.repo.ListSubmissions(ctx, status)
 }
 
 // GetSubmissionDetail returns a submission with its files and logs.
 func (s *Service) GetSubmissionDetail(ctx context.Context, id uuid.UUID) (*models.SubmissionDetail, error) {
-	sub, err := s.repo.GetSubmission(id)
+	sub, err := s.repo.GetSubmission(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
 
-	files, err := s.repo.ListFiles(id)
+	files, err := s.repo.ListFiles(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	logs, err := s.repo.ListLogs(id)
+	logs, err := s.repo.ListLogs(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +165,7 @@ func (s *Service) GetSubmissionDetail(ctx context.Context, id uuid.UUID) (*model
 		if sub.ReviewedBy != nil {
 			ids = append(ids, *sub.ReviewedBy)
 		}
-		if names, err := s.repo.UserNamesByID(ids); err == nil {
+		if names, err := s.repo.UserNamesByID(ctx, ids); err == nil {
 			if sub.UserID != nil {
 				detail.SubmittedBy = names[*sub.UserID]
 			}
@@ -166,7 +174,7 @@ func (s *Service) GetSubmissionDetail(ctx context.Context, id uuid.UUID) (*model
 			}
 		}
 	}
-	if err := s.decorateReplaces([]models.SubmissionDetail{*detail}); err != nil {
+	if err := s.decorateReplaces(ctx, []models.SubmissionDetail{*detail}); err != nil {
 		return nil, err
 	}
 	if err := s.decorateLogUsers(ctx, []models.SubmissionDetail{*detail}); err != nil {
@@ -266,7 +274,7 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		if strings.TrimSpace(req.PackID) == "" {
 			return nil, fmt.Errorf("pack_id is required for a contribution")
 		}
-		target, err := s.repo.GetApprovedPackMeta(strings.TrimSpace(req.PackID))
+		target, err := s.repo.GetApprovedPackMeta(ctx, strings.TrimSpace(req.PackID))
 		if err != nil {
 			return nil, fmt.Errorf("pack not found or not approved")
 		}
@@ -294,7 +302,7 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 	// pack's canonical objects. Existing packs are extended via the contribution
 	// flow instead.
 	if !req.Contribution {
-		inUse, err := s.repo.PackIDInUse(packID)
+		inUse, err := s.repo.PackIDInUse(ctx, packID)
 		if err != nil {
 			return nil, err
 		}
@@ -325,7 +333,7 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 	}
 
 	anonID := userID.String()
-	id, err := s.repo.CreateSubmission(
+	id, err := s.repo.CreateSubmission(ctx,
 		packID, strings.TrimSpace(req.Name), strings.TrimSpace(req.Author),
 		strings.TrimSpace(req.Description), strings.TrimSpace(req.DonationURL),
 		anonID, req.AI, &userID, req.Contribution,
@@ -335,16 +343,16 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 	}
 
 	for i, f := range req.Files {
-		if err := s.repo.AddFileReason(id, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentTypes[i], f.Size, f.Reason); err != nil {
+		if err := s.repo.AddFileReason(ctx, id, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentTypes[i], f.Size, f.Reason); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := s.repo.AddLog(id, models.LogActionSubmitted, anonID, "", "Submission submitted for review"); err != nil {
+	if err := s.repo.AddLog(ctx, id, models.LogActionSubmitted, anonID, "", "Submission submitted for review"); err != nil {
 		return nil, err
 	}
 
-	return s.repo.GetSubmission(id)
+	return s.repo.GetSubmission(ctx, id)
 }
 
 // validateSubmissionFile checks a file already uploaded against the allowed
@@ -614,7 +622,7 @@ func (s *Service) PublicURL(objectKey string) string {
 // GetUploadURL returns a presigned URL for uploading a single file to R2,
 // registering the file metadata once the URL is generated.
 func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID, req models.UploadRequest) (*models.UploadResponse, error) {
-	sub, err := s.repo.GetSubmissionByIDForUser(submissionID, userID)
+	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
@@ -642,11 +650,11 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 		systemID = strings.TrimSuffix(req.FileName, getExt(req.FileName))
 	}
 
-	if err := s.repo.AddFile(submissionID, objectKey, req.FileName, systemID, req.Kind, mimeType, req.Size); err != nil {
+	if err := s.repo.AddFile(ctx, submissionID, objectKey, req.FileName, systemID, req.Kind, mimeType, req.Size); err != nil {
 		return nil, err
 	}
 
-	if err := s.repo.AddLog(submissionID, models.LogActionUploadInitiated, sub.AnonUserID, "", objectKey); err != nil {
+	if err := s.repo.AddLog(ctx, submissionID, models.LogActionUploadInitiated, sub.AnonUserID, "", objectKey); err != nil {
 		return nil, err
 	}
 
@@ -663,7 +671,7 @@ func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, 
 	if err := s.ValidateCreate(req); err != nil {
 		return nil, err
 	}
-	current, err := s.repo.GetSubmissionByIDForUser(submissionID, userID)
+	current, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
@@ -676,7 +684,7 @@ func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, 
 		}
 	}
 
-	sub, err := s.repo.UpdateSubmission(
+	sub, err := s.repo.UpdateSubmission(ctx,
 		submissionID, userID,
 		strings.TrimSpace(req.Name), strings.TrimSpace(req.Author),
 		strings.TrimSpace(req.Description), strings.TrimSpace(req.DonationURL), req.AI,
@@ -685,7 +693,7 @@ func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, 
 		return nil, fmt.Errorf("submission not found")
 	}
 
-	if err := s.repo.AddLog(submissionID, models.LogActionUpdated, sub.AnonUserID, "", "Submission saved"); err != nil {
+	if err := s.repo.AddLog(ctx, submissionID, models.LogActionUpdated, sub.AnonUserID, "", "Submission saved"); err != nil {
 		return nil, err
 	}
 
@@ -696,7 +704,7 @@ func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, 
 // rejected submission (used when a submitter iterates after a rejection).
 // Approved submissions are read-only: changes must be a new contribution.
 func (s *Service) AddSubmissionFiles(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID, files []models.SubmissionFileInput) (*models.Submission, error) {
-	sub, err := s.repo.GetSubmissionByIDForUser(submissionID, userID)
+	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
@@ -717,18 +725,18 @@ func (s *Service) AddSubmissionFiles(ctx context.Context, submissionID uuid.UUID
 		if err != nil {
 			return nil, err
 		}
-		if err := s.repo.AddFileReason(submissionID, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentType, f.Size, f.Reason); err != nil {
+		if err := s.repo.AddFileReason(ctx, submissionID, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentType, f.Size, f.Reason); err != nil {
 			return nil, err
 		}
 	}
-	return s.repo.GetSubmission(submissionID)
+	return s.repo.GetSubmission(ctx, submissionID)
 }
 
 // RemoveSubmissionFile deletes a file from an editable submission (created or
 // rejected). The staged R2 object is deleted too; a canonical published object
 // is never touched, so removing a reference to live art only drops the row.
 func (s *Service) RemoveSubmissionFile(ctx context.Context, submissionID, userID uuid.UUID, objectKey string) error {
-	sub, err := s.repo.GetSubmissionByIDForUser(submissionID, userID)
+	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
 		return fmt.Errorf("submission not found")
 	}
@@ -738,7 +746,7 @@ func (s *Service) RemoveSubmissionFile(ctx context.Context, submissionID, userID
 	if strings.TrimSpace(objectKey) == "" {
 		return fmt.Errorf("object_key required")
 	}
-	file, err := s.repo.GetSubmissionFileByObjectKey(submissionID, objectKey)
+	file, err := s.repo.GetSubmissionFileByObjectKey(ctx, submissionID, objectKey)
 	if err != nil {
 		// Already removed: treat as success so a stale click is harmless.
 		if errors.Is(err, sql.ErrNoRows) {
@@ -751,7 +759,7 @@ func (s *Service) RemoveSubmissionFile(ctx context.Context, submissionID, userID
 			log.Warn().Err(err).Str("object", file.ObjectKey).Msg("failed to delete removed submission object")
 		}
 	}
-	return s.repo.DeleteSubmissionFile(file.ID)
+	return s.repo.DeleteSubmissionFile(ctx, file.ID)
 }
 
 // ensureUploaded verifies a submitted object actually exists in R2 and is within
@@ -827,11 +835,11 @@ func (s *Service) SetAvatar(ctx context.Context, userID uuid.UUID, objectKey str
 	if err := s.ensureUploaded(ctx, objectKey, objectKey); err != nil {
 		return nil, err
 	}
-	prev, err := s.repo.GetUserByID(userID)
+	prev, err := s.repo.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	updated, err := s.repo.SetUserAvatar(userID, objectKey)
+	updated, err := s.repo.SetUserAvatar(ctx, userID, objectKey)
 	if err != nil {
 		return nil, err
 	}
@@ -845,11 +853,11 @@ func (s *Service) SetAvatar(ctx context.Context, userID uuid.UUID, objectKey str
 
 // RemoveAvatar clears a user's avatar and deletes the object.
 func (s *Service) RemoveAvatar(ctx context.Context, userID uuid.UUID) (*models.User, error) {
-	prev, err := s.repo.GetUserByID(userID)
+	prev, err := s.repo.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	updated, err := s.repo.SetUserAvatar(userID, "")
+	updated, err := s.repo.SetUserAvatar(ctx, userID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -864,12 +872,12 @@ func (s *Service) RemoveAvatar(ctx context.Context, userID uuid.UUID) (*models.U
 // SubmitForReview finalizes a draft owned by the user, moving it from the
 // 'created' state to 'pending' so it shows up in the admin review queue.
 func (s *Service) SubmitForReview(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID) (*models.Submission, error) {
-	sub, err := s.repo.SubmitSubmission(submissionID, userID)
+	sub, err := s.repo.SubmitSubmission(ctx, submissionID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
 
-	files, err := s.repo.ListFiles(submissionID)
+	files, err := s.repo.ListFiles(ctx, submissionID)
 	if err != nil {
 		return nil, err
 	}
@@ -879,7 +887,7 @@ func (s *Service) SubmitForReview(ctx context.Context, submissionID uuid.UUID, u
 		return nil, fmt.Errorf("submission has no files")
 	}
 
-	if err := s.repo.AddLog(submissionID, models.LogActionSubmitted, sub.AnonUserID, "", "Submitted for review"); err != nil {
+	if err := s.repo.AddLog(ctx, submissionID, models.LogActionSubmitted, sub.AnonUserID, "", "Submitted for review"); err != nil {
 		return nil, err
 	}
 	return sub, nil
@@ -890,7 +898,7 @@ func (s *Service) SubmitForReview(ctx context.Context, submissionID uuid.UUID, u
 // status/limit/offset page the result; total is the unpaged count and totalXP
 // the lifetime XP earned from approved system art packs.
 func (s *Service) ListUserSubmissions(ctx context.Context, userID uuid.UUID, status string, limit, offset int) ([]models.SubmissionDetail, int64, int, error) {
-	list, total, err := s.repo.ListSubmissionsByUser(userID, status, limit, offset)
+	list, total, err := s.repo.ListSubmissionsByUser(ctx, userID, status, limit, offset)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -908,13 +916,13 @@ func (s *Service) ListUserSubmissions(ctx context.Context, userID uuid.UUID, sta
 	for i := range details {
 		ids = append(ids, details[i].ID)
 	}
-	if points, err := s.repo.SubmissionPointsByIDs(ids); err == nil {
+	if points, err := s.repo.SubmissionPointsByIDs(ctx, ids); err == nil {
 		for i := range details {
 			details[i].PointsEarned = points[details[i].ID]
 			details[i].BasePointsEarned = len(details[i].Files) * s.repo.Economy().Points.SAPImage
 		}
 	}
-	_, totalXP, err := s.repo.UserAwardedXPBySource(userID)
+	_, totalXP, err := s.repo.UserAwardedXPBySource(ctx, userID)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -928,9 +936,9 @@ func (s *Service) ListAdminSubmissions(ctx context.Context, status string) ([]mo
 	var list []models.Submission
 	var err error
 	if status == "" {
-		list, err = s.repo.ListReviewSubmissions()
+		list, err = s.repo.ListReviewSubmissions(ctx)
 	} else {
-		list, err = s.repo.ListSubmissions(status)
+		list, err = s.repo.ListSubmissions(ctx, status)
 	}
 	if err != nil {
 		return nil, err
@@ -942,7 +950,7 @@ func (s *Service) ListAdminSubmissions(ctx context.Context, status string) ([]mo
 	if err := s.decorateWithUsername(ctx, details); err != nil {
 		return nil, err
 	}
-	if err := s.decorateReplaces(details); err != nil {
+	if err := s.decorateReplaces(ctx, details); err != nil {
 		return nil, err
 	}
 	if err := s.decorateLogUsers(ctx, details); err != nil {
@@ -958,11 +966,11 @@ func (s *Service) loadDetails(ctx context.Context, list []models.Submission) ([]
 	for i := range list {
 		ids[i] = list[i].ID
 	}
-	filesByID, err := s.repo.ListFilesBySubmissionIDs(ids)
+	filesByID, err := s.repo.ListFilesBySubmissionIDs(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	logsByID, err := s.repo.ListLogsBySubmissionIDs(ids)
+	logsByID, err := s.repo.ListLogsBySubmissionIDs(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -995,7 +1003,7 @@ func (s *Service) decorateWithUsername(ctx context.Context, details []models.Sub
 			ids = append(ids, *details[i].ReviewedBy)
 		}
 	}
-	names, err := s.repo.UserNamesByID(ids)
+	names, err := s.repo.UserNamesByID(ctx, ids)
 	if err != nil {
 		return err
 	}
@@ -1026,7 +1034,7 @@ func (s *Service) decorateLogUsers(ctx context.Context, details []models.Submiss
 	if len(ids) == 0 {
 		return nil
 	}
-	names, err := s.repo.UserNamesByID(ids)
+	names, err := s.repo.UserNamesByID(ctx, ids)
 	if err != nil {
 		return err
 	}
@@ -1045,7 +1053,7 @@ func (s *Service) decorateLogUsers(ctx context.Context, details []models.Submiss
 // updated), while files carried over from a previous rejected revision are not
 // marked. Changed files that replace an already-published image get their
 // replaces_object_key resolved so the reviewer can compare old vs new.
-func (s *Service) decorateReplaces(details []models.SubmissionDetail) error {
+func (s *Service) decorateReplaces(ctx context.Context, details []models.SubmissionDetail) error {
 	packIDs := make([]string, 0, len(details))
 	seen := map[string]bool{}
 	for i := range details {
@@ -1055,7 +1063,7 @@ func (s *Service) decorateReplaces(details []models.SubmissionDetail) error {
 		seen[details[i].PackID] = true
 		packIDs = append(packIDs, details[i].PackID)
 	}
-	approvedKeys, err := s.repo.ListApprovedPackKeysByPacks(packIDs)
+	approvedKeys, err := s.repo.ListApprovedPackKeysByPacks(ctx, packIDs)
 	if err != nil {
 		return err
 	}
@@ -1081,7 +1089,7 @@ func (s *Service) decorateReplaces(details []models.SubmissionDetail) error {
 				f.ReplacesObjectKey = canonical
 				continue
 			}
-			prevKey, ok, err := s.repo.PackPreviousObjectKey(sub.PackID, sub.ID, f.Kind, f.SystemID)
+			prevKey, ok, err := s.repo.PackPreviousObjectKey(ctx, sub.PackID, sub.ID, f.Kind, f.SystemID)
 			if err != nil {
 				return err
 			}
@@ -1096,16 +1104,16 @@ func (s *Service) decorateReplaces(details []models.SubmissionDetail) error {
 // GetUserSubmissionDetail returns a single submission owned by the user,
 // with its files and logs.
 func (s *Service) GetUserSubmissionDetail(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID) (*models.SubmissionDetail, error) {
-	sub, err := s.repo.GetSubmissionByIDForUser(submissionID, userID)
+	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
 
-	files, err := s.repo.ListFiles(submissionID)
+	files, err := s.repo.ListFiles(ctx, submissionID)
 	if err != nil {
 		return nil, err
 	}
-	logs, err := s.repo.ListLogs(submissionID)
+	logs, err := s.repo.ListLogs(ctx, submissionID)
 	if err != nil {
 		return nil, err
 	}
@@ -1125,11 +1133,11 @@ func (s *Service) GetUserSubmissionDetail(ctx context.Context, submissionID uuid
 // (1.0 for the first approved revision, then 1.1, 1.2, ...).
 // blockSelfReview prevents a reviewer (non-admin) from approving or rejecting
 // their own submission. Full admins are trusted to review their own content.
-func (s *Service) blockSelfReview(ownerID *uuid.UUID, actorID uuid.UUID) error {
+func (s *Service) blockSelfReview(ctx context.Context, ownerID *uuid.UUID, actorID uuid.UUID) error {
 	if ownerID == nil || *ownerID == uuid.Nil || *ownerID != actorID {
 		return nil
 	}
-	user, err := s.repo.GetUserByID(actorID)
+	user, err := s.repo.GetUserByID(ctx, actorID)
 	if err != nil {
 		return nil // actor is an admin-table account, not the submission owner
 	}
@@ -1152,18 +1160,18 @@ func (s *Service) Approve(ctx context.Context, submissionID uuid.UUID, adminID u
 }
 
 func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, comment string) (*models.Submission, error) {
-	sub, err := s.repo.GetSubmission(submissionID)
+	sub, err := s.repo.GetSubmission(ctx, submissionID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
 	if sub.Status != models.StatusPending {
 		return nil, fmt.Errorf("submission is not pending")
 	}
-	if err := s.blockSelfReview(sub.UserID, adminID); err != nil {
+	if err := s.blockSelfReview(ctx, sub.UserID, adminID); err != nil {
 		return nil, err
 	}
 
-	n, err := s.repo.CountApprovedByPack(sub.PackID, sub.ID)
+	n, err := s.repo.CountApprovedByPack(ctx, sub.PackID, sub.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1185,24 +1193,24 @@ func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID u
 		// must carry the pack's current name, author, donation link and AI flag
 		// when it is approved, whatever it was saved with.
 		if sub.Contribution {
-			if err := tx.SyncContributionIdentity(submissionID); err != nil {
+			if err := tx.SyncContributionIdentity(ctx, submissionID); err != nil {
 				return err
 			}
 		}
 		var err error
-		if updated, err = tx.SetSubmissionStatus(submissionID, models.StatusApproved, adminID, version); err != nil {
+		if updated, err = tx.SetSubmissionStatus(ctx, submissionID, models.StatusApproved, adminID, version); err != nil {
 			return err
 		}
-		return tx.AddLog(submissionID, models.LogActionApproved, adminID.String(), "", detail)
+		return tx.AddLog(ctx, submissionID, models.LogActionApproved, adminID.String(), "", detail)
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	if sub.UserID != nil {
-		files, err := s.repo.ListFiles(submissionID)
+		files, err := s.repo.ListFiles(ctx, submissionID)
 		if err == nil && len(files) > 0 {
-			if err := s.awardXP(*sub.UserID, len(files)*s.repo.Economy().Points.SAPImage, "approved_sap_images", &submissionID); err != nil {
+			if err := s.awardXP(ctx, *sub.UserID, len(files)*s.repo.Economy().Points.SAPImage, "approved_sap_images", &submissionID); err != nil {
 				return nil, err
 			}
 		}
@@ -1221,7 +1229,7 @@ func (s *Service) moveSubmissionFilesToCanonical(ctx context.Context, packID str
 	if packID == "" {
 		return nil
 	}
-	files, err := s.repo.ListFiles(submissionID)
+	files, err := s.repo.ListFiles(ctx, submissionID)
 	if err != nil {
 		return err
 	}
@@ -1286,7 +1294,7 @@ func (s *Service) publishSubmissionFile(ctx context.Context, packID string, subm
 		// whole approval.
 		if isMissingSource(err) {
 			log.Warn().Str("object", f.ObjectKey).Msg("skipping missing submission object on approve")
-			return s.repo.DeleteSubmissionFile(f.ID)
+			return s.repo.DeleteSubmissionFile(ctx, f.ID)
 		}
 		return fmt.Errorf("download %s: %w", f.ObjectKey, err)
 	}
@@ -1327,13 +1335,13 @@ func (s *Service) publishObject(ctx context.Context, packID string, submissionID
 	// A submission may carry a duplicate row for the same system (one already
 	// canonical, one left in review); drop the other row so the unique
 	// (submission_id, object_key) constraint does not block the update.
-	if err := s.repo.DeleteSubmissionFileByObjectKey(submissionID, canonical, f.ID); err != nil {
+	if err := s.repo.DeleteSubmissionFileByObjectKey(ctx, submissionID, canonical, f.ID); err != nil {
 		return err
 	}
-	if err := s.repo.UpdateSubmissionFileObjectKey(f.ID, canonical); err != nil {
+	if err := s.repo.UpdateSubmissionFileObjectKey(ctx, f.ID, canonical); err != nil {
 		return err
 	}
-	return s.repo.UpdateSubmissionFileMime(f.ID, contentType)
+	return s.repo.UpdateSubmissionFileMime(ctx, f.ID, contentType)
 }
 
 // deleteSiblingCanonical removes the alternate-extension canonical object for a
@@ -1399,18 +1407,18 @@ func (s *Service) Reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 }
 
 func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, comment string) (*models.Submission, error) {
-	sub, err := s.repo.GetSubmission(submissionID)
+	sub, err := s.repo.GetSubmission(ctx, submissionID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
 	if sub.Status != models.StatusPending {
 		return nil, fmt.Errorf("submission is not pending")
 	}
-	if err := s.blockSelfReview(sub.UserID, adminID); err != nil {
+	if err := s.blockSelfReview(ctx, sub.UserID, adminID); err != nil {
 		return nil, err
 	}
 
-	files, err := s.repo.ListFiles(submissionID)
+	files, err := s.repo.ListFiles(ctx, submissionID)
 	if err != nil {
 		return nil, err
 	}
@@ -1424,12 +1432,12 @@ func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 		if err != nil {
 			return nil, fmt.Errorf("preserve rejected file: %w", err)
 		}
-		if err := s.repo.UpdateSubmissionFileObjectKey(f.ID, newKey); err != nil {
+		if err := s.repo.UpdateSubmissionFileObjectKey(ctx, f.ID, newKey); err != nil {
 			return nil, err
 		}
 	}
 
-	updated, err := s.repo.SetSubmissionStatus(submissionID, models.StatusRejected, adminID, "")
+	updated, err := s.repo.SetSubmissionStatus(ctx, submissionID, models.StatusRejected, adminID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1438,7 +1446,7 @@ func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 	if strings.TrimSpace(comment) != "" {
 		detail = fmt.Sprintf("Rejected by admin: %s", strings.TrimSpace(comment))
 	}
-	if err := s.repo.AddLog(submissionID, models.LogActionRejected, adminID.String(), "", detail); err != nil {
+	if err := s.repo.AddLog(ctx, submissionID, models.LogActionRejected, adminID.String(), "", detail); err != nil {
 		return nil, err
 	}
 
@@ -1450,10 +1458,10 @@ func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 // already-promoted canonical files) and then removes the submission row (cascade
 // to its file rows and logs). Admin only.
 func (s *Service) DeleteSubmission(ctx context.Context, submissionID uuid.UUID) error {
-	if _, err := s.repo.GetSubmission(submissionID); err != nil {
+	if _, err := s.repo.GetSubmission(ctx, submissionID); err != nil {
 		return fmt.Errorf("submission not found")
 	}
-	files, err := s.repo.ListFiles(submissionID)
+	files, err := s.repo.ListFiles(ctx, submissionID)
 	if err != nil {
 		return err
 	}
@@ -1466,7 +1474,7 @@ func (s *Service) DeleteSubmission(ctx context.Context, submissionID uuid.UUID) 
 			return fmt.Errorf("delete submission media: %w", err)
 		}
 	}
-	if err := s.repo.DeleteSubmission(submissionID); err != nil {
+	if err := s.repo.DeleteSubmission(ctx, submissionID); err != nil {
 		return err
 	}
 	return nil
@@ -1520,7 +1528,7 @@ func (s *Service) GetStorageUsage(ctx context.Context) (*StorageUsage, error) {
 		usage.StorageObjects = len(packs) + len(media)
 	}
 
-	dbSize, err := s.repo.GetDatabaseSize()
+	dbSize, err := s.repo.GetDatabaseSize(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get database size: %w", err)
 	}
@@ -1557,7 +1565,7 @@ func (s *Service) RefreshStorageUsage(ctx context.Context) error {
 // cached storage usage every hour.
 func (s *Service) StartStorageRefresh(ctx context.Context) {
 	go func() {
-		_ = s.RefreshStorageUsage(context.Background())
+		_ = s.RefreshStorageUsage(ctx)
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for {
@@ -1565,7 +1573,7 @@ func (s *Service) StartStorageRefresh(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = s.RefreshStorageUsage(context.Background())
+				_ = s.RefreshStorageUsage(ctx)
 			}
 		}
 	}()
@@ -1577,7 +1585,7 @@ func (s *Service) StartStorageRefresh(ctx context.Context) {
 // same name never picks up stale objects.
 func (s *Service) deletePackOrphans(ctx context.Context, packID string, excludeID uuid.UUID) error {
 	keep := map[string]bool{}
-	rows, err := s.repo.ListLivePackObjectKeys(packID, excludeID)
+	rows, err := s.repo.ListLivePackObjectKeys(ctx, packID, excludeID)
 	if err != nil {
 		return err
 	}
@@ -1607,7 +1615,7 @@ func (s *Service) deletePackOrphans(ctx context.Context, packID string, excludeI
 // deletes its files from R2. It only works while the pack is a draft or has
 // been rejected; it cannot be trashed while pending review or once approved.
 func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID) (*models.Submission, error) {
-	sub, err := s.repo.GetSubmissionByIDForUser(submissionID, userID)
+	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
@@ -1621,16 +1629,16 @@ func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid
 	if err := s.deletePackOrphans(ctx, sub.PackID, submissionID); err != nil {
 		return nil, err
 	}
-	if err := s.repo.DeleteSubmissionFiles(submissionID); err != nil {
+	if err := s.repo.DeleteSubmissionFiles(ctx, submissionID); err != nil {
 		return nil, err
 	}
 
-	updated, err := s.repo.TrashSubmission(submissionID, userID)
+	updated, err := s.repo.TrashSubmission(ctx, submissionID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("submission not found")
 	}
 
-	if err := s.repo.AddLog(submissionID, models.LogActionTrashed, sub.AnonUserID, "", "Moved to trash"); err != nil {
+	if err := s.repo.AddLog(ctx, submissionID, models.LogActionTrashed, sub.AnonUserID, "", "Moved to trash"); err != nil {
 		return nil, err
 	}
 
@@ -1643,8 +1651,8 @@ func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid
 // document. Packs without a registered preview fall back to a real published
 // background so the thumbnail is never a broken URL. It returns the packs and
 // the total number of approved packs (for pagination).
-func (s *Service) ListedApprovedPacks(sort string, limit, offset int) ([]models.Pack, int64, error) {
-	packs, total, err := s.repo.ListApprovedPacks(sort, limit, offset)
+func (s *Service) ListedApprovedPacks(ctx context.Context, sort string, limit, offset int) ([]models.Pack, int64, error) {
+	packs, total, err := s.repo.ListApprovedPacks(ctx, sort, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1655,15 +1663,15 @@ func (s *Service) ListedApprovedPacks(sort string, limit, offset int) ([]models.
 	for i, p := range packs {
 		packIDs[i] = p.PackID
 	}
-	backgrounds, err := s.repo.ListApprovedPackBackgrounds(packIDs)
+	backgrounds, err := s.repo.ListApprovedPackBackgrounds(ctx, packIDs)
 	if err != nil {
 		return nil, 0, err
 	}
-	contribCounts, err := s.repo.ListPendingPackContributionCounts(packIDs)
+	contribCounts, err := s.repo.ListPendingPackContributionCounts(ctx, packIDs)
 	if err != nil {
 		return nil, 0, err
 	}
-	contributors, err := s.repo.ListPackContributorNames(packIDs)
+	contributors, err := s.repo.ListPackContributorNames(ctx, packIDs)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1680,8 +1688,8 @@ func (s *Service) ListedApprovedPacks(sort string, limit, offset int) ([]models.
 // every published file with public URLs, pending contributions and contributor
 // names). It is a pure read: it does NOT bump the download counter, so casual
 // web browsing never inflates the count.
-func (s *Service) GetPackDetail(packID string) (*models.PackDetail, error) {
-	detail, err := s.repo.GetPackDetail(packID)
+func (s *Service) GetPackDetail(ctx context.Context, packID string) (*models.PackDetail, error) {
+	detail, err := s.repo.GetPackDetail(ctx, packID)
 	if err != nil {
 		return nil, err
 	}
@@ -1689,12 +1697,12 @@ func (s *Service) GetPackDetail(packID string) (*models.PackDetail, error) {
 	for i := range detail.Files {
 		detail.Files[i].URL = s.PublicURL(detail.Files[i].ObjectKey)
 	}
-	contribs, err := s.repo.ListPackContributions(packID)
+	contribs, err := s.repo.ListPackContributions(ctx, packID)
 	if err != nil {
 		return nil, err
 	}
 	detail.Contributions = contribs
-	contributors, err := s.repo.ListPackContributorNames([]string{packID})
+	contributors, err := s.repo.ListPackContributorNames(ctx, []string{packID})
 	if err != nil {
 		return nil, err
 	}
@@ -1705,12 +1713,12 @@ func (s *Service) GetPackDetail(packID string) (*models.PackDetail, error) {
 // DownloadPack returns the pack detail like GetPackDetail and bumps its
 // download counter. It is the "install/scrape" action: only front-ends that
 // actually install a pack should call it.
-func (s *Service) DownloadPack(packID string) (*models.PackDetail, error) {
-	detail, err := s.GetPackDetail(packID)
+func (s *Service) DownloadPack(ctx context.Context, packID string) (*models.PackDetail, error) {
+	detail, err := s.GetPackDetail(ctx, packID)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.repo.IncrementPackScrape(packID); err != nil {
+	if _, err := s.repo.IncrementPackScrape(ctx, packID); err != nil {
 		return nil, err
 	}
 	return detail, nil

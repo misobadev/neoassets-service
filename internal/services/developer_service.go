@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -33,7 +34,7 @@ func NewDeveloperService(repo *repository.Repository) *DeveloperService {
 
 // CreateApp registers a developer application and returns it with its plaintext
 // secret (shown only once).
-func (s *DeveloperService) CreateApp(userID uuid.UUID, req models.CreateDeveloperAppRequest) (*models.CreatedDeveloperApp, error) {
+func (s *DeveloperService) CreateApp(ctx context.Context, userID uuid.UUID, req models.CreateDeveloperAppRequest) (*models.CreatedDeveloperApp, error) {
 	name, err := credentialName(req.Name)
 	if err != nil {
 		return nil, err
@@ -57,14 +58,14 @@ func (s *DeveloperService) CreateApp(userID uuid.UUID, req models.CreateDevelope
 	if err != nil {
 		return nil, err
 	}
-	n, err := s.repo.CountDeveloperApps(userID)
+	n, err := s.repo.CountDeveloperApps(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 	if n >= maxDeveloperAppsPerUser {
 		return nil, fmt.Errorf("maximum of %d developer applications reached", maxDeveloperAppsPerUser)
 	}
-	app, err := s.repo.CreateDeveloperApp(
+	app, err := s.repo.CreateDeveloperApp(ctx,
 		userID, name, strings.TrimSpace(req.Description), strings.TrimSpace(req.HomepageURL),
 		clientID, auth.HashToken(secret), auth.HashToken(debugPassword),
 	)
@@ -76,12 +77,12 @@ func (s *DeveloperService) CreateApp(userID uuid.UUID, req models.CreateDevelope
 
 // ListApps returns the user's developer applications with their per-software
 // usage statistics attached.
-func (s *DeveloperService) ListApps(userID uuid.UUID) ([]models.DeveloperApp, error) {
-	apps, err := s.repo.ListDeveloperAppsByUser(userID)
+func (s *DeveloperService) ListApps(ctx context.Context, userID uuid.UUID) ([]models.DeveloperApp, error) {
+	apps, err := s.repo.ListDeveloperAppsByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	stats, err := s.repo.ListSoftwareStatsByUser(userID)
+	stats, err := s.repo.ListSoftwareStatsByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -94,13 +95,13 @@ func (s *DeveloperService) ListApps(userID uuid.UUID) ([]models.DeveloperApp, er
 }
 
 // RevokeApp revokes an application owned by the user.
-func (s *DeveloperService) RevokeApp(userID, id uuid.UUID) error {
-	return s.repo.RevokeDeveloperApp(id, userID)
+func (s *DeveloperService) RevokeApp(ctx context.Context, userID, id uuid.UUID) error {
+	return s.repo.RevokeDeveloperApp(ctx, id, userID)
 }
 
 // RotateApp issues a new secret and debug password for an app and returns them
 // with the plaintext values (shown only once).
-func (s *DeveloperService) RotateApp(userID, id uuid.UUID) (*models.CreatedDeveloperApp, error) {
+func (s *DeveloperService) RotateApp(ctx context.Context, userID, id uuid.UUID) (*models.CreatedDeveloperApp, error) {
 	secret, err := auth.GenerateSecret()
 	if err != nil {
 		return nil, err
@@ -109,7 +110,7 @@ func (s *DeveloperService) RotateApp(userID, id uuid.UUID) (*models.CreatedDevel
 	if err != nil {
 		return nil, err
 	}
-	app, err := s.repo.RotateDeveloperAppSecret(id, userID, auth.HashToken(secret), auth.HashToken(debugPassword))
+	app, err := s.repo.RotateDeveloperAppSecret(ctx, id, userID, auth.HashToken(secret), auth.HashToken(debugPassword))
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +119,7 @@ func (s *DeveloperService) RotateApp(userID, id uuid.UUID) (*models.CreatedDevel
 
 // CreateAPIKey issues a personal API key and returns it with the plaintext key
 // (shown only once).
-func (s *DeveloperService) CreateAPIKey(userID uuid.UUID, req models.CreateAPIKeyRequest) (*models.CreatedAPIKey, error) {
+func (s *DeveloperService) CreateAPIKey(ctx context.Context, userID uuid.UUID, req models.CreateAPIKeyRequest) (*models.CreatedAPIKey, error) {
 	name, err := credentialName(req.Name)
 	if err != nil {
 		return nil, err
@@ -127,7 +128,7 @@ func (s *DeveloperService) CreateAPIKey(userID uuid.UUID, req models.CreateAPIKe
 	if err != nil {
 		return nil, err
 	}
-	key, err := s.repo.CreateUserAPIKey(userID, name, prefix, hash)
+	key, err := s.repo.CreateUserAPIKey(ctx, userID, name, prefix, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -135,13 +136,13 @@ func (s *DeveloperService) CreateAPIKey(userID uuid.UUID, req models.CreateAPIKe
 }
 
 // ListAPIKeys returns the user's personal API keys.
-func (s *DeveloperService) ListAPIKeys(userID uuid.UUID) ([]models.UserAPIKey, error) {
-	return s.repo.ListUserAPIKeys(userID)
+func (s *DeveloperService) ListAPIKeys(ctx context.Context, userID uuid.UUID) ([]models.UserAPIKey, error) {
+	return s.repo.ListUserAPIKeys(ctx, userID)
 }
 
 // RevokeAPIKey revokes a personal API key owned by the user.
-func (s *DeveloperService) RevokeAPIKey(userID, id uuid.UUID) error {
-	return s.repo.RevokeUserAPIKey(id, userID)
+func (s *DeveloperService) RevokeAPIKey(ctx context.Context, userID, id uuid.UUID) error {
+	return s.repo.RevokeUserAPIKey(ctx, id, userID)
 }
 
 // credentialName trims and validates a credential's display name.

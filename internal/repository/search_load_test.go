@@ -119,11 +119,11 @@ func TestSearchStopsWithItsRequest(t *testing.T) {
 
 func testDeveloperApp(t *testing.T, r *Repository) *models.DeveloperApp {
 	t.Helper()
-	u, err := r.CreateUser(&models.User{Username: "d" + uuid.NewString()[:8], Email: uuid.NewString()[:8] + "@example.com", PasswordHash: "x"})
+	u, err := r.CreateUser(t.Context(), &models.User{Username: "d" + uuid.NewString()[:8], Email: uuid.NewString()[:8] + "@example.com", PasswordHash: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := r.CreateDeveloperApp(u.ID, "My Scraper", "", "", "cid-"+uuid.NewString(), "hash", "")
+	app, err := r.CreateDeveloperApp(t.Context(), u.ID, "My Scraper", "", "", "cid-"+uuid.NewString(), "hash", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,16 +153,16 @@ func TestSoftwareNamesPerAppAreCapped(t *testing.T) {
 	r, db := loadTestRepo(t)
 	app := testDeveloperApp(t, r)
 	for i := 0; i < maxSoftwareNamesPerApp; i++ {
-		if err := r.RecordSoftwareOutcome(app.ID, fmt.Sprintf("v%d", i), app.Name, "ok", 1); err != nil {
+		if err := r.RecordSoftwareOutcome(t.Context(), app.ID, fmt.Sprintf("v%d", i), app.Name, "ok", 1); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// A further new name is counted under the app's own name.
-	if err := r.RecordSoftwareOutcome(app.ID, "one-too-many", app.Name, "ok", 1); err != nil {
+	if err := r.RecordSoftwareOutcome(t.Context(), app.ID, "one-too-many", app.Name, "ok", 1); err != nil {
 		t.Fatal(err)
 	}
 	// A name already recorded keeps counting under its own row.
-	if err := r.RecordSoftwareOutcome(app.ID, "v0", app.Name, "ok", 3); err != nil {
+	if err := r.RecordSoftwareOutcome(t.Context(), app.ID, "v0", app.Name, "ok", 3); err != nil {
 		t.Fatal(err)
 	}
 	rows := softwareRows(t, db, app.ID)
@@ -181,10 +181,10 @@ func TestSoftwareNamesPerAppAreCapped(t *testing.T) {
 func TestScrapeOutcomesAddACount(t *testing.T) {
 	r, db := loadTestRepo(t)
 	app := testDeveloperApp(t, r)
-	if err := r.RecordScrapeOutcome(app.ID, "rate_limited", 5); err != nil {
+	if err := r.RecordScrapeOutcome(t.Context(), app.ID, "rate_limited", 5); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.RecordSoftwareOutcome(app.ID, "", app.Name, "rate_limited", 5); err != nil {
+	if err := r.RecordSoftwareOutcome(t.Context(), app.ID, "", app.Name, "rate_limited", 5); err != nil {
 		t.Fatal(err)
 	}
 	var calls, limited int64

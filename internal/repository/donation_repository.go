@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -15,9 +16,9 @@ const donationEventColumns = `id, platform, external_id, email, from_name, amoun
 // UpsertDonationEvent inserts a payment, or refreshes it when the platform
 // redelivers the same event. external_id is the platform transaction id, so
 // repeated webhooks are idempotent. An already-linked user_id is preserved.
-func (r *Repository) UpsertDonationEvent(ev *models.DonationEvent) (*models.DonationEvent, error) {
+func (r *Repository) UpsertDonationEvent(ctx context.Context, ev *models.DonationEvent) (*models.DonationEvent, error) {
 	var out models.DonationEvent
-	err := r.db.QueryRow(`
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO donation_events
 			(platform, external_id, email, from_name, amount_cents, currency, kind, tier_name, active, user_id, occurred_at, raw)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -46,8 +47,8 @@ func (r *Repository) UpsertDonationEvent(ev *models.DonationEvent) (*models.Dona
 
 // LinkDonationEventsByEmail attaches every unclaimed event with the given email
 // to the user and reports how many rows were linked.
-func (r *Repository) LinkDonationEventsByEmail(userID uuid.UUID, email string) (int64, error) {
-	res, err := r.db.Exec(
+func (r *Repository) LinkDonationEventsByEmail(ctx context.Context, userID uuid.UUID, email string) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
 		`UPDATE donation_events SET user_id = $1, updated_at = NOW()
 		 WHERE LOWER(email) = LOWER($2) AND user_id IS NULL`,
 		userID, email,
@@ -60,9 +61,9 @@ func (r *Repository) LinkDonationEventsByEmail(userID uuid.UUID, email string) (
 
 // HasPendingDonationsForEmail reports whether an unclaimed donation exists for
 // the email, used to decide whether a claim is worth starting.
-func (r *Repository) HasPendingDonationsForEmail(email string) (bool, error) {
+func (r *Repository) HasPendingDonationsForEmail(ctx context.Context, email string) (bool, error) {
 	var exists bool
-	err := r.db.QueryRow(
+	err := r.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM donation_events WHERE LOWER(email) = LOWER($1) AND user_id IS NULL)`,
 		email,
 	).Scan(&exists)
@@ -70,18 +71,18 @@ func (r *Repository) HasPendingDonationsForEmail(email string) (bool, error) {
 }
 
 // CountDonationsByUser returns how many donation events are linked to the user.
-func (r *Repository) CountDonationsByUser(userID uuid.UUID) (int, error) {
+func (r *Repository) CountDonationsByUser(ctx context.Context, userID uuid.UUID) (int, error) {
 	var n int
-	err := r.db.QueryRow(`SELECT COUNT(*) FROM donation_events WHERE user_id = $1`, userID).Scan(&n)
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM donation_events WHERE user_id = $1`, userID).Scan(&n)
 	return n, err
 }
 
 // RecomputeDonorStatus derives the user's donor status from their linked
 // donation events: an active subscription beats a one-time donation. A status
 // set manually by an admin is never overwritten. Returns the resulting status.
-func (r *Repository) RecomputeDonorStatus(userID uuid.UUID) (string, error) {
+func (r *Repository) RecomputeDonorStatus(ctx context.Context, userID uuid.UUID) (string, error) {
 	var current, source string
-	if err := r.db.QueryRow(`SELECT donor_status, donor_source FROM users WHERE id = $1`, userID).Scan(&current, &source); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT donor_status, donor_source FROM users WHERE id = $1`, userID).Scan(&current, &source); err != nil {
 		return "", fmt.Errorf("failed to read donor status: %w", err)
 	}
 	if source == models.DonorSourceAdmin {
@@ -89,7 +90,7 @@ func (r *Repository) RecomputeDonorStatus(userID uuid.UUID) (string, error) {
 	}
 
 	var hasSubscription, hasOneTime bool
-	if err := r.db.QueryRow(`
+	if err := r.db.QueryRowContext(ctx, `
 		SELECT
 			EXISTS(SELECT 1 FROM donation_events
 			       WHERE user_id = $1 AND kind = 'subscription' AND active
@@ -109,7 +110,7 @@ func (r *Repository) RecomputeDonorStatus(userID uuid.UUID) (string, error) {
 	if status == current {
 		return status, nil
 	}
-	if _, err := r.db.Exec(
+	if _, err := r.db.ExecContext(ctx,
 		`UPDATE users SET donor_status = $1, donor_source = 'auto', updated_at = NOW() WHERE id = $2`,
 		status, userID,
 	); err != nil {
@@ -121,8 +122,8 @@ func (r *Repository) RecomputeDonorStatus(userID uuid.UUID) (string, error) {
 // StaleSubscriptionUserIDs returns auto-managed monthly supporters whose latest
 // subscription payment is older than the grace window, so the background job
 // can downgrade them (Ko-fi never notifies when a membership ends).
-func (r *Repository) StaleSubscriptionUserIDs() ([]uuid.UUID, error) {
-	rows, err := r.db.Query(`
+func (r *Repository) StaleSubscriptionUserIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := r.db.QueryContext(ctx, `
 		SELECT u.id FROM users u
 		WHERE u.donor_source = 'auto'
 		  AND u.donor_status = 'monthly_supporter'
@@ -150,8 +151,8 @@ func (r *Repository) StaleSubscriptionUserIDs() ([]uuid.UUID, error) {
 // UpsertDonorClaim stores (or replaces) the pending claim for a user and resets
 // its attempt count, unless the user's previous claim is younger than cooldown.
 // It reports whether the claim was stored.
-func (r *Repository) UpsertDonorClaim(userID uuid.UUID, email, tokenHash string, expiresAt time.Time, cooldown time.Duration) (bool, error) {
-	res, err := r.db.Exec(`
+func (r *Repository) UpsertDonorClaim(ctx context.Context, userID uuid.UUID, email, tokenHash string, expiresAt time.Time, cooldown time.Duration) (bool, error) {
+	res, err := r.db.ExecContext(ctx, `
 		INSERT INTO donor_claims (user_id, email, token_hash, expires_at)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (user_id) DO UPDATE SET
@@ -174,8 +175,8 @@ func (r *Repository) UpsertDonorClaim(userID uuid.UUID, email, tokenHash string,
 // and returns the claim. Taking the attempt before the code is compared keeps
 // the limit exact even when several checks run at once. ok is false when there
 // is no claim or its attempts are used up.
-func (r *Repository) UseDonorClaimAttempt(userID uuid.UUID, maxAttempts int) (email, tokenHash string, expiresAt time.Time, ok bool, err error) {
-	err = r.db.QueryRow(`
+func (r *Repository) UseDonorClaimAttempt(ctx context.Context, userID uuid.UUID, maxAttempts int) (email, tokenHash string, expiresAt time.Time, ok bool, err error) {
+	err = r.db.QueryRowContext(ctx, `
 		UPDATE donor_claims SET attempts = attempts + 1
 		WHERE user_id = $1 AND attempts < $2
 		RETURNING email, token_hash, expires_at`,
@@ -191,7 +192,7 @@ func (r *Repository) UseDonorClaimAttempt(userID uuid.UUID, maxAttempts int) (em
 }
 
 // DeleteDonorClaim removes the pending claim for a user.
-func (r *Repository) DeleteDonorClaim(userID uuid.UUID) error {
-	_, err := r.db.Exec(`DELETE FROM donor_claims WHERE user_id = $1`, userID)
+func (r *Repository) DeleteDonorClaim(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM donor_claims WHERE user_id = $1`, userID)
 	return err
 }

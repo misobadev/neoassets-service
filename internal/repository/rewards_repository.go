@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -11,8 +12,8 @@ import (
 )
 
 // GetRewards returns the XP progression and unlocked limits for a user.
-func (r *Repository) GetRewards(userID uuid.UUID) (*models.Rewards, error) {
-	u, err := r.GetUserByID(userID)
+func (r *Repository) GetRewards(ctx context.Context, userID uuid.UUID) (*models.Rewards, error) {
+	u, err := r.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -46,9 +47,9 @@ func (r *Repository) GetRewards(userID uuid.UUID) (*models.Rewards, error) {
 
 // HasXPLedgerEntry reports whether a submission has already been credited, so
 // awarding stays idempotent per submission (a re-approval cannot double-credit).
-func (r *Repository) HasXPLedgerEntry(submissionID uuid.UUID) (bool, error) {
+func (r *Repository) HasXPLedgerEntry(ctx context.Context, submissionID uuid.UUID) (bool, error) {
 	var exists bool
-	if err := r.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM xp_ledger WHERE submission_id = $1)`, submissionID).Scan(&exists); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM xp_ledger WHERE submission_id = $1)`, submissionID).Scan(&exists); err != nil {
 		return false, fmt.Errorf("failed to check xp ledger: %w", err)
 	}
 	return exists, nil
@@ -57,12 +58,12 @@ func (r *Repository) HasXPLedgerEntry(submissionID uuid.UUID) (bool, error) {
 // SubmissionPointsByIDs returns the total XP awarded per submission id (the sum
 // of the ledger deltas), keyed by submission id. Used to show contributors how
 // many points each approved contribution earned.
-func (r *Repository) SubmissionPointsByIDs(ids []uuid.UUID) (map[uuid.UUID]int, error) {
+func (r *Repository) SubmissionPointsByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]int, error) {
 	out := map[uuid.UUID]int{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := r.db.Query(
+	rows, err := r.db.QueryContext(ctx,
 		`SELECT submission_id, SUM(delta) FROM xp_ledger
 		 WHERE submission_id = ANY($1) GROUP BY submission_id`, pq.Array(ids),
 	)
@@ -83,8 +84,8 @@ func (r *Repository) SubmissionPointsByIDs(ids []uuid.UUID) (map[uuid.UUID]int, 
 
 // UserAwardedXPBySource returns the lifetime XP a user earned from approved
 // metadata contributions and from approved system art pack contributions.
-func (r *Repository) UserAwardedXPBySource(userID uuid.UUID) (metadataXP, sapXP int, err error) {
-	if err = r.db.QueryRow(
+func (r *Repository) UserAwardedXPBySource(ctx context.Context, userID uuid.UUID) (metadataXP, sapXP int, err error) {
+	if err = r.db.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(x.delta), 0)
 		   FROM xp_ledger x
 		   JOIN metadata_submissions ms ON ms.id = x.submission_id
@@ -93,7 +94,7 @@ func (r *Repository) UserAwardedXPBySource(userID uuid.UUID) (metadataXP, sapXP 
 	).Scan(&metadataXP); err != nil {
 		return 0, 0, fmt.Errorf("failed to sum metadata xp: %w", err)
 	}
-	if err = r.db.QueryRow(
+	if err = r.db.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(x.delta), 0)
 		   FROM xp_ledger x
 		   JOIN submissions s ON s.id = x.submission_id
@@ -106,11 +107,11 @@ func (r *Repository) UserAwardedXPBySource(userID uuid.UUID) (metadataXP, sapXP 
 }
 
 // AwardXP credits a user's XP and records the reason in the ledger.
-func (r *Repository) AwardXP(userID uuid.UUID, delta int, reason string, submissionID *uuid.UUID) error {
+func (r *Repository) AwardXP(ctx context.Context, userID uuid.UUID, delta int, reason string, submissionID *uuid.UUID) error {
 	if delta == 0 {
 		return nil
 	}
-	tx, err := r.pool.Begin()
+	tx, err := r.pool.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -120,21 +121,21 @@ func (r *Repository) AwardXP(userID uuid.UUID, delta int, reason string, submiss
 	// the existence check and the insert can't interleave (a re-approval or two
 	// overlapping approvals never double-credit).
 	if submissionID != nil {
-		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "xp:"+submissionID.String()); err != nil {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "xp:"+submissionID.String()); err != nil {
 			return err
 		}
 		var exists bool
-		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM xp_ledger WHERE submission_id = $1)`, *submissionID).Scan(&exists); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM xp_ledger WHERE submission_id = $1)`, *submissionID).Scan(&exists); err != nil {
 			return fmt.Errorf("failed to check xp ledger: %w", err)
 		}
 		if exists {
 			return nil
 		}
 	}
-	if _, err := tx.Exec(`UPDATE users SET xp = xp + $1, updated_at = NOW() WHERE id = $2`, delta, userID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET xp = xp + $1, updated_at = NOW() WHERE id = $2`, delta, userID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO xp_ledger (user_id, delta, reason, submission_id) VALUES ($1, $2, $3, $4)`,
 		userID, delta, reason, submissionID,
 	); err != nil {

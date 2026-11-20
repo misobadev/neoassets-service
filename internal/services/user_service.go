@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -53,7 +54,7 @@ func NewUserService(repo *repository.Repository, mailer *email.Sender, jwtSecret
 // Register validates the payload, creates the user and sends a verification
 // email. No JWT is issued until the email is verified, so an unverified account
 // cannot use the API. It never fails because the email could not be sent.
-func (s *UserService) Register(req models.RegisterRequest) (*models.AuthResult, error) {
+func (s *UserService) Register(ctx context.Context, req models.RegisterRequest) (*models.AuthResult, error) {
 	req.Username = strings.TrimSpace(req.Username)
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
@@ -67,17 +68,17 @@ func (s *UserService) Register(req models.RegisterRequest) (*models.AuthResult, 
 		return nil, fmt.Errorf("password must be at least 8 characters")
 	}
 
-	if _, err := s.repo.GetUserByUsername(req.Username); err == nil {
+	if _, err := s.repo.GetUserByUsername(ctx, req.Username); err == nil {
 		return nil, fmt.Errorf("username already exists")
 	} else if err != sql.ErrNoRows {
 		return nil, err
 	}
-	if exists, err := s.repo.UsernameExists(req.Username); err != nil {
+	if exists, err := s.repo.UsernameExists(ctx, req.Username); err != nil {
 		return nil, err
 	} else if exists {
 		return nil, fmt.Errorf("username already exists")
 	}
-	if _, err := s.repo.GetUserByEmail(req.Email); err == nil {
+	if _, err := s.repo.GetUserByEmail(ctx, req.Email); err == nil {
 		return nil, fmt.Errorf("email already exists")
 	} else if err != sql.ErrNoRows {
 		return nil, err
@@ -97,7 +98,7 @@ func (s *UserService) Register(req models.RegisterRequest) (*models.AuthResult, 
 	now := time.Now()
 	expires := now.Add(verificationTokenTTL)
 
-	user, err := s.repo.CreateUser(&models.User{
+	user, err := s.repo.CreateUser(ctx, &models.User{
 		Username:                 req.Username,
 		Email:                    req.Email,
 		PasswordHash:             hash,
@@ -123,10 +124,10 @@ func (s *UserService) Register(req models.RegisterRequest) (*models.AuthResult, 
 
 // Login authenticates a user and returns a JWT. Admins get an extra admin
 // token so they can use the admin panel from the same session.
-func (s *UserService) Login(req models.UserLoginRequest) (*models.AuthResult, error) {
+func (s *UserService) Login(ctx context.Context, req models.UserLoginRequest) (*models.AuthResult, error) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
-	user, err := s.repo.GetUserByEmail(req.Email)
+	user, err := s.repo.GetUserByEmail(ctx, req.Email)
 	if err != nil {
 		log.Warn().Str("email", req.Email).Msg("failed login: unknown email")
 		return nil, fmt.Errorf("invalid credentials")
@@ -165,8 +166,8 @@ func (s *UserService) Login(req models.UserLoginRequest) (*models.AuthResult, er
 func (s *UserService) TokenTTL() time.Duration { return s.tokenTTL }
 
 // VerifyEmail marks a user's email as verified using the emailed token.
-func (s *UserService) VerifyEmail(token string) error {
-	user, err := s.repo.GetUserByVerificationToken(auth.HashToken(token))
+func (s *UserService) VerifyEmail(ctx context.Context, token string) error {
+	user, err := s.repo.GetUserByVerificationToken(ctx, auth.HashToken(token))
 	if err != nil {
 		return fmt.Errorf("invalid verification token")
 	}
@@ -177,41 +178,41 @@ func (s *UserService) VerifyEmail(token string) error {
 		return fmt.Errorf("verification token has expired")
 	}
 
-	ok, err := s.repo.MarkEmailVerified(user.ID, auth.HashToken(token))
+	ok, err := s.repo.MarkEmailVerified(ctx, user.ID, auth.HashToken(token))
 	if err != nil {
 		return err
 	}
 	if !ok {
 		// The link may have been opened twice (or by a mail scanner first).
-		if current, err := s.repo.GetUserByID(user.ID); err == nil && current.EmailVerified {
+		if current, err := s.repo.GetUserByID(ctx, user.ID); err == nil && current.EmailVerified {
 			return nil
 		}
 		return fmt.Errorf("invalid verification token")
 	}
 	// Attach donations already made with this email so users who donated before
 	// registering get their donor benefits automatically.
-	s.linkPendingDonations(user.ID, user.Email)
+	s.linkPendingDonations(ctx, user.ID, user.Email)
 	return nil
 }
 
 // linkPendingDonations attaches unclaimed donations matching the account email
 // and refreshes the donor status. Safe to call repeatedly: linking is a no-op
 // once every matching event is claimed.
-func (s *UserService) linkPendingDonations(userID uuid.UUID, email string) {
-	if _, err := s.repo.LinkDonationEventsByEmail(userID, email); err != nil {
+func (s *UserService) linkPendingDonations(ctx context.Context, userID uuid.UUID, email string) {
+	if _, err := s.repo.LinkDonationEventsByEmail(ctx, userID, email); err != nil {
 		log.Warn().Err(err).Str("user_id", userID.String()).Msg("failed to link pending donations")
 		return
 	}
-	if _, err := s.repo.RecomputeDonorStatus(userID); err != nil {
+	if _, err := s.repo.RecomputeDonorStatus(ctx, userID); err != nil {
 		log.Warn().Err(err).Str("user_id", userID.String()).Msg("failed to refresh donor status")
 	}
 }
 
 // ResendVerification issues a fresh verification token and emails it. The
 // response is generic to avoid revealing whether an account exists.
-func (s *UserService) ResendVerification(email string) error {
+func (s *UserService) ResendVerification(ctx context.Context, email string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
-	user, err := s.repo.GetUserByEmail(email)
+	user, err := s.repo.GetUserByEmail(ctx, email)
 	if err != nil {
 		// Do not reveal whether the account exists.
 		return nil
@@ -227,7 +228,7 @@ func (s *UserService) ResendVerification(email string) error {
 		return err
 	}
 	expires := time.Now().Add(verificationTokenTTL)
-	ok, err := s.repo.SetEmailVerificationToken(user.ID, user.Email, auth.HashToken(token), expires)
+	ok, err := s.repo.SetEmailVerificationToken(ctx, user.ID, user.Email, auth.HashToken(token), expires)
 	if err != nil {
 		return err
 	}
@@ -246,9 +247,9 @@ func (s *UserService) ResendVerification(email string) error {
 
 // ForgotPassword issues a reset token and emails it. Unknown emails still get
 // a success response to avoid account enumeration.
-func (s *UserService) ForgotPassword(email string) error {
+func (s *UserService) ForgotPassword(ctx context.Context, email string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
-	user, err := s.repo.GetUserByEmail(email)
+	user, err := s.repo.GetUserByEmail(ctx, email)
 	if err != nil {
 		return nil
 	}
@@ -266,7 +267,7 @@ func (s *UserService) ForgotPassword(email string) error {
 		return err
 	}
 	expires := time.Now().Add(resetTokenTTL)
-	ok, err := s.repo.SetPasswordResetToken(user.ID, user.Email, auth.HashToken(token), expires)
+	ok, err := s.repo.SetPasswordResetToken(ctx, user.ID, user.Email, auth.HashToken(token), expires)
 	if err != nil {
 		return err
 	}
@@ -284,7 +285,7 @@ func (s *UserService) ForgotPassword(email string) error {
 }
 
 // ResetPassword sets a new password using the emailed token.
-func (s *UserService) ResetPassword(token, newPassword string) error {
+func (s *UserService) ResetPassword(ctx context.Context, token, newPassword string) error {
 	if token == "" {
 		return fmt.Errorf("reset token is required")
 	}
@@ -292,7 +293,7 @@ func (s *UserService) ResetPassword(token, newPassword string) error {
 		return fmt.Errorf("password must be at least 8 characters")
 	}
 
-	user, err := s.repo.GetUserByPasswordResetToken(auth.HashToken(token))
+	user, err := s.repo.GetUserByPasswordResetToken(ctx, auth.HashToken(token))
 	if err != nil {
 		return fmt.Errorf("invalid or expired reset token")
 	}
@@ -306,7 +307,7 @@ func (s *UserService) ResetPassword(token, newPassword string) error {
 	}
 	// Consumes the token and revokes every previously issued token for this
 	// account; a token already used (or expired meanwhile) changes nothing.
-	ok, err := s.repo.ResetPasswordWithToken(user.ID, auth.HashToken(token), hash)
+	ok, err := s.repo.ResetPasswordWithToken(ctx, user.ID, auth.HashToken(token), hash)
 	if err != nil {
 		return err
 	}
@@ -317,8 +318,8 @@ func (s *UserService) ResetPassword(token, newPassword string) error {
 }
 
 // GetUserByID returns a user by ID.
-func (s *UserService) GetUserByID(id uuid.UUID) (*models.User, error) {
-	user, err := s.repo.GetUserByID(id)
+func (s *UserService) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
 	}
@@ -329,8 +330,8 @@ func (s *UserService) GetUserByID(id uuid.UUID) (*models.User, error) {
 // version from the database in a single lookup. It backs the defense-in-depth
 // authorization checks so a stale token claim (role, or a token revoked by a
 // password change) can never be trusted.
-func (s *UserService) UserAuthState(id uuid.UUID) (role string, verified bool, tokenVersion int, err error) {
-	user, err := s.repo.GetUserByID(id)
+func (s *UserService) UserAuthState(ctx context.Context, id uuid.UUID) (role string, verified bool, tokenVersion int, err error) {
+	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
 		return "", false, 0, err
 	}
@@ -339,13 +340,13 @@ func (s *UserService) UserAuthState(id uuid.UUID) (role string, verified bool, t
 
 // SetDonorStatus updates a user's donor status (none | supporter | monthly_supporter).
 // Donations only grant extra threads, never XP or rank.
-func (s *UserService) SetDonorStatus(id uuid.UUID, status string) (*models.User, error) {
+func (s *UserService) SetDonorStatus(ctx context.Context, id uuid.UUID, status string) (*models.User, error) {
 	switch status {
 	case models.DonorNone, models.DonorSupporter, models.DonorMonthlySupporter:
 	default:
 		return nil, fmt.Errorf("invalid donor status %q", status)
 	}
-	updated, err := s.repo.SetDonorStatus(id, status)
+	updated, err := s.repo.SetDonorStatus(ctx, id, status)
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
 	}
@@ -354,8 +355,8 @@ func (s *UserService) SetDonorStatus(id uuid.UUID, status string) (*models.User,
 }
 
 // ListUsers returns every non-hidden user (NeoBot excluded). Admin only.
-func (s *UserService) ListUsers() ([]models.User, error) {
-	list, err := s.repo.ListUsers()
+func (s *UserService) ListUsers(ctx context.Context) ([]models.User, error) {
+	list, err := s.repo.ListUsers(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -369,20 +370,20 @@ func (s *UserService) ListUsers() ([]models.User, error) {
 
 // SetUserRole updates a user's role (user | reviewer | admin). Admin only.
 // The protected root account can never be demoted below admin.
-func (s *UserService) SetUserRole(id uuid.UUID, role string) (*models.User, error) {
+func (s *UserService) SetUserRole(ctx context.Context, id uuid.UUID, role string) (*models.User, error) {
 	switch role {
 	case models.RoleUser, models.RoleReviewer, models.RoleAdmin:
 	default:
 		return nil, fmt.Errorf("invalid role %q", role)
 	}
-	user, err := s.repo.GetUserByID(id)
+	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
 	}
 	if s.protectedAdminEmail != "" && strings.EqualFold(user.Email, s.protectedAdminEmail) {
 		return nil, fmt.Errorf("this account's role is locked and cannot be changed")
 	}
-	updated, err := s.repo.SetUserRole(id, role)
+	updated, err := s.repo.SetUserRole(ctx, id, role)
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
 	}
@@ -392,8 +393,8 @@ func (s *UserService) SetUserRole(id uuid.UUID, role string) (*models.User, erro
 
 // UpdateProfile updates a user's username and/or email. Fields may be empty to
 // leave them unchanged. Usernames are required to be present and unique.
-func (s *UserService) UpdateProfile(id uuid.UUID, username, email string) (*models.User, error) {
-	user, err := s.repo.GetUserByID(id)
+func (s *UserService) UpdateProfile(ctx context.Context, id uuid.UUID, username, email string) (*models.User, error) {
+	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
 	}
@@ -403,7 +404,7 @@ func (s *UserService) UpdateProfile(id uuid.UUID, username, email string) (*mode
 		if !usernameRegex.MatchString(uname) {
 			return nil, fmt.Errorf("username must be 3-20 alphanumeric characters")
 		}
-		exists, err := s.repo.UsernameExistsExcluding(uname, id)
+		exists, err := s.repo.UsernameExistsExcluding(ctx, uname, id)
 		if err != nil {
 			return nil, err
 		}
@@ -417,7 +418,7 @@ func (s *UserService) UpdateProfile(id uuid.UUID, username, email string) (*mode
 		if !emailRegex.MatchString(newEmail) {
 			return nil, fmt.Errorf("invalid email address")
 		}
-		exists, err := s.repo.EmailExistsExcluding(newEmail, id)
+		exists, err := s.repo.EmailExistsExcluding(ctx, newEmail, id)
 		if err != nil {
 			return nil, err
 		}
@@ -446,7 +447,7 @@ func (s *UserService) UpdateProfile(id uuid.UUID, username, email string) (*mode
 			Expires:   time.Now().Add(verificationTokenTTL),
 		}
 	}
-	ok, err := s.repo.UpdateProfile(id, update)
+	ok, err := s.repo.UpdateProfile(ctx, id, update)
 	if err != nil {
 		return nil, err
 	}
@@ -462,12 +463,12 @@ func (s *UserService) UpdateProfile(id uuid.UUID, username, email string) (*mode
 			log.Error().Str("email", newEmail).Err(err).Msg("failed to send verification email after email change")
 		}
 	}
-	return s.repo.GetUserByID(id)
+	return s.repo.GetUserByID(ctx, id)
 }
 
 // ChangePassword updates a user's password after verifying the current one.
-func (s *UserService) ChangePassword(id uuid.UUID, currentPassword, newPassword string) error {
-	user, err := s.repo.GetUserByID(id)
+func (s *UserService) ChangePassword(ctx context.Context, id uuid.UUID, currentPassword, newPassword string) error {
+	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("user not found")
 	}
@@ -483,7 +484,7 @@ func (s *UserService) ChangePassword(id uuid.UUID, currentPassword, newPassword 
 	}
 	// Applies only if the password is still the one just checked, and revokes
 	// every previously issued token for this account.
-	ok, err := s.repo.ChangePasswordHash(user.ID, user.PasswordHash, hash)
+	ok, err := s.repo.ChangePasswordHash(ctx, user.ID, user.PasswordHash, hash)
 	if err != nil {
 		return err
 	}

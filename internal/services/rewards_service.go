@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"github.com/google/uuid"
 
 	"neoassets/internal/economy"
@@ -12,16 +13,16 @@ import (
 var textMetadataKeys = []string{"name", "description", "region", "genre", "developer", "publisher", "release_year", "rating", "type"}
 
 // Rewards returns a user's XP progression and the scraping limits it unlocks.
-func (s *Service) Rewards(userID uuid.UUID) (*models.Rewards, error) {
-	return s.repo.GetRewards(userID)
+func (s *Service) Rewards(ctx context.Context, userID uuid.UUID) (*models.Rewards, error) {
+	return s.repo.GetRewards(ctx, userID)
 }
 
 // awardXP credits a user's XP for an approved contribution, applying the donor
 // XP bonus (supporter +25%, monthly supporter +50%). Donations never grant rank.
 // Awards are idempotent per submission so a re-approval cannot double-credit.
-func (s *Service) awardXP(userID uuid.UUID, baseXP int, reason string, submissionID *uuid.UUID) error {
+func (s *Service) awardXP(ctx context.Context, userID uuid.UUID, baseXP int, reason string, submissionID *uuid.UUID) error {
 	if submissionID != nil {
-		exists, err := s.repo.HasXPLedgerEntry(*submissionID)
+		exists, err := s.repo.HasXPLedgerEntry(ctx, *submissionID)
 		if err != nil {
 			return err
 		}
@@ -29,14 +30,14 @@ func (s *Service) awardXP(userID uuid.UUID, baseXP int, reason string, submissio
 			return nil
 		}
 	}
-	user, err := s.repo.GetUserByID(userID)
+	user, err := s.repo.GetUserByID(ctx, userID)
 	if err != nil {
 		return err
 	}
 	econ := s.repo.Economy()
 	pct := econ.DonorXPBonusPct(user.DonorStatus)
 	delta := economy.ApplyXPBonus(baseXP, pct)
-	return s.repo.AwardXP(userID, delta, reason, submissionID)
+	return s.repo.AwardXP(ctx, userID, delta, reason, submissionID)
 }
 
 // PublicConfig returns the runtime rewards/scrape configuration so the web UI

@@ -24,17 +24,17 @@ func scrapeSubject(r *http.Request) (*auth.ScrapeSubject, bool) {
 func (h *Handler) ListScrapeSystems(w http.ResponseWriter, r *http.Request) {
 	// Free endpoint, but report the current quota state for convenience.
 	if subject, ok := scrapeSubject(r); ok {
-		if acct, err := h.scrapeSvc.Account(subject); err == nil {
+		if acct, err := h.scrapeSvc.Account(r.Context(), subject); err == nil {
 			writeQuotaHeaders(w, &acct.Quota)
 		}
 	}
-	list, err := h.scrapeSvc.ListSystems()
+	list, err := h.scrapeSvc.ListSystems(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list systems")
 		return
 	}
 	if subject, ok := scrapeSubject(r); ok {
-		h.scrapeSvc.RecordOutcome(subject, "ok")
+		h.scrapeSvc.RecordOutcome(r.Context(), subject, "ok")
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"systems": list})
 }
@@ -54,12 +54,12 @@ func (h *Handler) ScrapeGames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	quota, err := h.scrapeSvc.ConsumeQuota(subject)
+	quota, err := h.scrapeSvc.ConsumeQuota(r.Context(), subject)
 	if quota != nil {
 		writeQuotaHeaders(w, quota)
 	}
 	if errors.Is(err, services.ErrQuotaExceeded) {
-		h.scrapeSvc.RecordOutcome(subject, "quota_exceeded")
+		h.scrapeSvc.RecordOutcome(r.Context(), subject, "quota_exceeded")
 		writeError(w, http.StatusTooManyRequests, "daily scrape quota exceeded")
 		return
 	}
@@ -74,9 +74,9 @@ func (h *Handler) ScrapeGames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if game == nil {
-		h.scrapeSvc.RecordOutcome(subject, "not_found")
+		h.scrapeSvc.RecordOutcome(r.Context(), subject, "not_found")
 	} else {
-		h.scrapeSvc.RecordOutcome(subject, "ok")
+		h.scrapeSvc.RecordOutcome(r.Context(), subject, "ok")
 	}
 	// With a family selector, report the system the game actually belongs to.
 	systemID := query.SystemID
@@ -94,17 +94,17 @@ func (h *Handler) ScrapeGames(w http.ResponseWriter, r *http.Request) {
 // system and game counts. It does not consume quota.
 func (h *Handler) ListScrapeFamilies(w http.ResponseWriter, r *http.Request) {
 	if subject, ok := scrapeSubject(r); ok {
-		if acct, err := h.scrapeSvc.Account(subject); err == nil {
+		if acct, err := h.scrapeSvc.Account(r.Context(), subject); err == nil {
 			writeQuotaHeaders(w, &acct.Quota)
 		}
 	}
-	list, err := h.scrapeSvc.ListFamilies()
+	list, err := h.scrapeSvc.ListFamilies(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list families")
 		return
 	}
 	if subject, ok := scrapeSubject(r); ok {
-		h.scrapeSvc.RecordOutcome(subject, "ok")
+		h.scrapeSvc.RecordOutcome(r.Context(), subject, "ok")
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"families": list})
 }
@@ -113,17 +113,17 @@ func (h *Handler) ListScrapeFamilies(w http.ResponseWriter, r *http.Request) {
 // system and game counts. It does not consume quota.
 func (h *Handler) ListScrapeGroups(w http.ResponseWriter, r *http.Request) {
 	if subject, ok := scrapeSubject(r); ok {
-		if acct, err := h.scrapeSvc.Account(subject); err == nil {
+		if acct, err := h.scrapeSvc.Account(r.Context(), subject); err == nil {
 			writeQuotaHeaders(w, &acct.Quota)
 		}
 	}
-	list, err := h.scrapeSvc.ListGroups()
+	list, err := h.scrapeSvc.ListGroups(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list groups")
 		return
 	}
 	if subject, ok := scrapeSubject(r); ok {
-		h.scrapeSvc.RecordOutcome(subject, "ok")
+		h.scrapeSvc.RecordOutcome(r.Context(), subject, "ok")
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"groups": list})
 }
@@ -132,13 +132,13 @@ func (h *Handler) ListScrapeGroups(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListScrapePopular(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	systemID := strings.TrimSpace(r.URL.Query().Get("system_id"))
-	list, err := h.scrapeSvc.PopularGames(systemID, limit)
+	list, err := h.scrapeSvc.PopularGames(r.Context(), systemID, limit)
 	if err != nil {
 		writeServerError(w, http.StatusBadRequest, "failed to load popular games", err)
 		return
 	}
 	if subject, ok := scrapeSubject(r); ok {
-		h.scrapeSvc.RecordOutcome(subject, "ok")
+		h.scrapeSvc.RecordOutcome(r.Context(), subject, "ok")
 	}
 	writeJSON(w, http.StatusOK, models.ScrapePopularResponse{Games: list})
 }
@@ -151,13 +151,13 @@ func (h *Handler) ScrapeAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	acct, err := h.scrapeSvc.Account(subject)
+	acct, err := h.scrapeSvc.Account(r.Context(), subject)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load account")
 		return
 	}
 	writeQuotaHeaders(w, &acct.Quota)
-	h.scrapeSvc.RecordOutcome(subject, "ok")
+	h.scrapeSvc.RecordOutcome(r.Context(), subject, "ok")
 	writeJSON(w, http.StatusOK, acct)
 }
 

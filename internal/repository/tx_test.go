@@ -15,7 +15,7 @@ func TestWithTxCommitsOrRollsBack(t *testing.T) {
 	r := NewRepository(testdb.Open(t, "repository_review"))
 	ctx := context.Background()
 	newUser := func(tx *Repository) uuid.UUID {
-		u, err := tx.CreateUser(&models.User{
+		u, err := tx.CreateUser(ctx, &models.User{
 			Username:     "tx" + uuid.NewString()[:8],
 			Email:        uuid.NewString()[:8] + "@example.com",
 			PasswordHash: "hash",
@@ -34,7 +34,7 @@ func TestWithTxCommitsOrRollsBack(t *testing.T) {
 	}); !errors.Is(err, boom) {
 		t.Fatalf("got %v, want boom", err)
 	}
-	if _, err := r.GetUserByID(rolledBack); err == nil {
+	if _, err := r.GetUserByID(ctx, rolledBack); err == nil {
 		t.Fatal("a write inside a failed transaction was kept")
 	}
 
@@ -51,7 +51,7 @@ func TestWithTxCommitsOrRollsBack(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.GetUserByID(committed); err != nil {
+	if _, err := r.GetUserByID(ctx, committed); err != nil {
 		t.Fatalf("committed write missing: %v", err)
 	}
 }

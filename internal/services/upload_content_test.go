@@ -212,7 +212,7 @@ func contentTestService(t *testing.T, bucket r2.Client) (*Service, *repository.R
 
 func contentTestUser(t *testing.T, repo *repository.Repository, role string) *models.User {
 	t.Helper()
-	u, err := repo.CreateUser(&models.User{
+	u, err := repo.CreateUser(t.Context(), &models.User{
 		Username:      "u" + uuid.NewString()[:8],
 		Email:         uuid.NewString()[:8] + "@example.com",
 		PasswordHash:  "hash",
@@ -222,7 +222,7 @@ func contentTestUser(t *testing.T, repo *repository.Repository, role string) *mo
 		t.Fatal(err)
 	}
 	if role != models.RoleUser {
-		if _, err := repo.SetUserRole(u.ID, role); err != nil {
+		if _, err := repo.SetUserRole(t.Context(), u.ID, role); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -233,11 +233,11 @@ func contentTestUser(t *testing.T, repo *repository.Repository, role string) *mo
 func approvedPack(t *testing.T, repo *repository.Repository, owner, reviewer uuid.UUID, donationURL string) string {
 	t.Helper()
 	packID := "pack-" + uuid.NewString()[:8]
-	id, err := repo.CreateSubmission(packID, "Original Name", "Original Author", "first", donationURL, owner.String(), false, &owner, false)
+	id, err := repo.CreateSubmission(t.Context(), packID, "Original Name", "Original Author", "first", donationURL, owner.String(), false, &owner, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.SetSubmissionStatus(id, models.StatusApproved, reviewer, "1.0"); err != nil {
+	if _, err := repo.SetSubmissionStatus(t.Context(), id, models.StatusApproved, reviewer, "1.0"); err != nil {
 		t.Fatal(err)
 	}
 	return packID
@@ -246,14 +246,14 @@ func approvedPack(t *testing.T, repo *repository.Repository, owner, reviewer uui
 func pendingSubmissionWithFile(t *testing.T, repo *repository.Repository, owner uuid.UUID, kind, fileName, declaredType string, data []byte, bucket *storeR2) (string, uuid.UUID) {
 	t.Helper()
 	packID := "pack-" + uuid.NewString()[:8]
-	id, err := repo.CreateSubmission(packID, "Pack "+packID, "Author", "", "", owner.String(), false, &owner, false)
+	id, err := repo.CreateSubmission(t.Context(), packID, "Pack "+packID, "Author", "", "", owner.String(), false, &owner, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := reviewObjectKey(packID, fileName)
 	bucket.objects[key] = data
 	bucket.types[key] = declaredType
-	if err := repo.AddFile(id, key, fileName, strings.TrimSuffix(fileName, getExt(fileName)), kind, declaredType, int64(len(data))); err != nil {
+	if err := repo.AddFile(t.Context(), id, key, fileName, strings.TrimSuffix(fileName, getExt(fileName)), kind, declaredType, int64(len(data))); err != nil {
 		t.Fatal(err)
 	}
 	return packID, id
@@ -277,7 +277,7 @@ func TestApprovedThemeIsPublishedAsJSON(t *testing.T) {
 	if len(bucket.copies) != 0 {
 		t.Fatalf("theme was copied with the uploader's metadata: %v", bucket.copies)
 	}
-	files, err := repo.ListFiles(id)
+	files, err := repo.ListFiles(t.Context(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestContributionDraftKeepsThePacksIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Submissions are created pending; a contributor edits one after a rejection.
-	if _, err := repo.SetSubmissionStatus(sub.ID, models.StatusRejected, reviewer.ID, ""); err != nil {
+	if _, err := repo.SetSubmissionStatus(t.Context(), sub.ID, models.StatusRejected, reviewer.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := s.UpdateSubmission(context.Background(), sub.ID, contributor.ID, models.CreateSubmissionRequest{
@@ -368,7 +368,7 @@ func TestApprovedContributionKeepsThePacksIdentityAndOwner(t *testing.T) {
 	packID := approvedPack(t, repo, owner.ID, reviewer.ID, "https://ko-fi.com/owner")
 
 	// A contribution draft saved before this fix can still carry other values.
-	id, err := repo.CreateSubmission(packID, "Renamed", "Someone Else", "new art", "https://example.com/other", contributor.ID.String(), true, &contributor.ID, true)
+	id, err := repo.CreateSubmission(t.Context(), packID, "Renamed", "Someone Else", "new art", "https://example.com/other", contributor.ID.String(), true, &contributor.ID, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestApprovedContributionKeepsThePacksIdentityAndOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	detail, err := s.GetPackDetail(packID)
+	detail, err := s.GetPackDetail(t.Context(), packID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestApprovedContributionKeepsThePacksIdentityAndOwner(t *testing.T) {
 	if detail.SubmittedBy != owner.Username {
 		t.Fatalf("submitted_by = %q, want the pack's owner %q", detail.SubmittedBy, owner.Username)
 	}
-	packs, _, err := s.ListedApprovedPacks("created", 100, 0)
+	packs, _, err := s.ListedApprovedPacks(t.Context(), "created", 100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestNewPacksNeedAnHTTPSDonationURL(t *testing.T) {
 		t.Fatalf("donation_url stored as %q", sub.DonationURL)
 	}
 	reviewer := contentTestUser(t, repo, models.RoleReviewer)
-	if _, err := repo.SetSubmissionStatus(sub.ID, models.StatusRejected, reviewer.ID, ""); err != nil {
+	if _, err := repo.SetSubmissionStatus(t.Context(), sub.ID, models.StatusRejected, reviewer.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.UpdateSubmission(context.Background(), sub.ID, owner.ID, models.CreateSubmissionRequest{
@@ -445,21 +445,21 @@ func TestPackResponsesDropUnsafeStoredDonationURLs(t *testing.T) {
 	unsafe := approvedPack(t, repo, owner.ID, reviewer.ID, "data:text/plain,hello")
 	legacy := approvedPack(t, repo, owner.ID, reviewer.ID, "ko-fi.com/someone")
 
-	detail, err := s.GetPackDetail(unsafe)
+	detail, err := s.GetPackDetail(t.Context(), unsafe)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if detail.DonationURL != "" {
 		t.Fatalf("detail serves donation_url %q", detail.DonationURL)
 	}
-	detail, err = s.GetPackDetail(legacy)
+	detail, err = s.GetPackDetail(t.Context(), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if detail.DonationURL != "https://ko-fi.com/someone" {
 		t.Fatalf("legacy donation_url served as %q", detail.DonationURL)
 	}
-	packs, _, err := s.ListedApprovedPacks("created", 100, 0)
+	packs, _, err := s.ListedApprovedPacks(t.Context(), "created", 100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,12 +496,12 @@ func TestEveryUploadPathRefusesPageTypes(t *testing.T) {
 	if _, err := testdb.Open(t, "services_upload").Exec(`INSERT INTO metadata_systems (id, name) VALUES ($1, $1)`, systemID); err != nil {
 		t.Fatal(err)
 	}
-	metaID, err := repo.CreateMetadataSubmission(nil, &systemID, owner.ID, "edit", []byte(`{}`))
+	metaID, err := repo.CreateMetadataSubmission(ctx, nil, &systemID, owner.ID, "edit", []byte(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	packID := "pack-" + uuid.NewString()[:8]
-	packSub, err := repo.CreateSubmission(packID, "Pack "+packID, "A", "", "", owner.ID.String(), false, &owner.ID, false)
+	packSub, err := repo.CreateSubmission(ctx, packID, "Pack "+packID, "A", "", "", owner.ID.String(), false, &owner.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +534,7 @@ func TestEveryUploadPathRefusesPageTypes(t *testing.T) {
 	}
 
 	// Registering an uploaded file checks its declared type too.
-	if _, err := repo.SetSubmissionStatus(packSub, models.StatusRejected, reviewer.ID, ""); err != nil {
+	if _, err := repo.SetSubmissionStatus(ctx, packSub, models.StatusRejected, reviewer.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	key := reviewObjectKey(packID, "nes.png")
@@ -566,7 +566,7 @@ func TestApproveChecksThemesBeforePublishingAnything(t *testing.T) {
 	themeKey := reviewObjectKey(packID, "theme.json")
 	bucket.objects[themeKey] = []byte(`not json`)
 	time.Sleep(10 * time.Millisecond) // files publish in created_at order
-	if err := repo.AddFile(id, themeKey, "theme.json", "", models.KindTheme, "application/json", 8); err != nil {
+	if err := repo.AddFile(t.Context(), id, themeKey, "theme.json", "", models.KindTheme, "application/json", 8); err != nil {
 		t.Fatal(err)
 	}
 
@@ -596,7 +596,7 @@ func TestCreateSubmissionRefusesPageTypesBeforeSaving(t *testing.T) {
 	if err == nil {
 		t.Fatal("a file declared as text/html was registered")
 	}
-	if inUse, err := repo.PackIDInUse(packID); err != nil || inUse {
+	if inUse, err := repo.PackIDInUse(t.Context(), packID); err != nil || inUse {
 		t.Fatalf("a refused submission was saved (in use %v, %v)", inUse, err)
 	}
 }
@@ -609,14 +609,14 @@ func TestSubmittedByFallsBackWithoutThePacksOwnSubmission(t *testing.T) {
 	reviewer := contentTestUser(t, repo, models.RoleReviewer)
 
 	packID := "pack-" + uuid.NewString()[:8]
-	id, err := repo.CreateSubmission(packID, "Name", "Author", "", "", contributor.ID.String(), false, &contributor.ID, true)
+	id, err := repo.CreateSubmission(t.Context(), packID, "Name", "Author", "", "", contributor.ID.String(), false, &contributor.ID, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.SetSubmissionStatus(id, models.StatusApproved, reviewer.ID, "1.0"); err != nil {
+	if _, err := repo.SetSubmissionStatus(t.Context(), id, models.StatusApproved, reviewer.ID, "1.0"); err != nil {
 		t.Fatal(err)
 	}
-	detail, err := s.GetPackDetail(packID)
+	detail, err := s.GetPackDetail(t.Context(), packID)
 	if err != nil {
 		t.Fatal(err)
 	}
