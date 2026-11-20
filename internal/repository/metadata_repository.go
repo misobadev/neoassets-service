@@ -1114,7 +1114,7 @@ func (r *Repository) listMedia(where string, arg interface{}) ([]models.Media, e
 // change to an existing game/system, or "new_game" for a brand-new game.
 func (r *Repository) CreateMetadataSubmission(gameID *uuid.UUID, systemID *string, userID uuid.UUID, kind string, payload []byte) (uuid.UUID, error) {
 	if kind == "" {
-		kind = "edit"
+		kind = models.MetadataKindEdit
 	}
 	var id uuid.UUID
 	err := r.db.QueryRow(

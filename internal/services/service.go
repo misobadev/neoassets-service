@@ -340,7 +340,7 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		}
 	}
 
-	if err := s.repo.AddLog(id, "submitted", anonID, "", "Submission submitted for review"); err != nil {
+	if err := s.repo.AddLog(id, models.LogActionSubmitted, anonID, "", "Submission submitted for review"); err != nil {
 		return nil, err
 	}
 
@@ -646,7 +646,7 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 		return nil, err
 	}
 
-	if err := s.repo.AddLog(submissionID, "upload_initiated", sub.AnonUserID, "", objectKey); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionUploadInitiated, sub.AnonUserID, "", objectKey); err != nil {
 		return nil, err
 	}
 
@@ -685,7 +685,7 @@ func (s *Service) UpdateSubmission(ctx context.Context, submissionID uuid.UUID, 
 		return nil, fmt.Errorf("submission not found")
 	}
 
-	if err := s.repo.AddLog(submissionID, "updated", sub.AnonUserID, "", "Submission saved"); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionUpdated, sub.AnonUserID, "", "Submission saved"); err != nil {
 		return nil, err
 	}
 
@@ -879,7 +879,7 @@ func (s *Service) SubmitForReview(ctx context.Context, submissionID uuid.UUID, u
 		return nil, fmt.Errorf("submission has no files")
 	}
 
-	if err := s.repo.AddLog(submissionID, "submitted", sub.AnonUserID, "", "Submitted for review"); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionSubmitted, sub.AnonUserID, "", "Submitted for review"); err != nil {
 		return nil, err
 	}
 	return sub, nil
@@ -1193,7 +1193,7 @@ func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID u
 		if updated, err = tx.SetSubmissionStatus(submissionID, models.StatusApproved, adminID, version); err != nil {
 			return err
 		}
-		return tx.AddLog(submissionID, "approved", adminID.String(), "", detail)
+		return tx.AddLog(submissionID, models.LogActionApproved, adminID.String(), "", detail)
 	})
 	if err != nil {
 		return nil, err
@@ -1438,7 +1438,7 @@ func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 	if strings.TrimSpace(comment) != "" {
 		detail = fmt.Sprintf("Rejected by admin: %s", strings.TrimSpace(comment))
 	}
-	if err := s.repo.AddLog(submissionID, "rejected", adminID.String(), "", detail); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionRejected, adminID.String(), "", detail); err != nil {
 		return nil, err
 	}
 
@@ -1630,7 +1630,7 @@ func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid
 		return nil, fmt.Errorf("submission not found")
 	}
 
-	if err := s.repo.AddLog(submissionID, "trashed", sub.AnonUserID, "", "Moved to trash"); err != nil {
+	if err := s.repo.AddLog(submissionID, models.LogActionTrashed, sub.AnonUserID, "", "Moved to trash"); err != nil {
 		return nil, err
 	}
 

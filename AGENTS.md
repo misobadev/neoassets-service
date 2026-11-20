@@ -21,9 +21,12 @@ internal/services           business logic (service.go, user_service.go,
                             metadata_service.go, scrape_service.go,
                             developer_service.go)
 internal/handlers           HTTP handlers (scrape_handlers.go, developer_handlers.go)
+internal/httpx              shared HTTP helpers: JSON/Error, Decode, DecodeOptional, PathUUID
+internal/economy            rewards/scrape economy (threads, quotas, XP points) as a value
+internal/testdb             per-package migrated test databases
 internal/systems            embedded system catalog (+ systems.json)
 pkg/auth                    JWT + password helpers, scrape credentials/middleware
-pkg/r2                      Cloudflare R2 S3 client
+pkg/r2                      Cloudflare R2 S3 client (pkg/r2/r2test: in-memory fake)
 migrations/*                golang-migrate files, run automatically at boot
 ```
 
@@ -252,6 +255,24 @@ the user credential is optional and falls back to guest mode.
   retranslate` (and `/systems/{id}/retranslate`) regenerate translations from the
   stored English description. The importer's bulk path uses `translate_nllb.py`
   instead.
+
+## Code conventions
+
+- **Handlers** decode bodies with `httpx.Decode` (or `httpx.DecodeOptional`
+  when the body may be omitted) and parse path ids with `httpx.PathUUID`; they
+  report service errors with `writeClientError`, which keeps business messages
+  but never returns storage errors verbatim (a missing row becomes
+  `not found`, database failures a logged 500).
+- **Transactions**: multi-write operations run in `repo.WithTx(ctx, fn)`; the
+  `*Repository` passed to `fn` shares one transaction (nested calls join it).
+  `ApplyMetadataSubmission` and the pack approval writes use it. R2 moves stay
+  outside the transaction.
+- **Economy**: `economy.Config` is built once in `cmd` from the environment
+  (`economyFromConfig`) and given to the repository (`repository.WithEconomy`);
+  services read it with `repo.Economy()`. There are no economy globals.
+- **Constants**: metadata kinds (`models.MetadataKindEdit`,
+  `models.MetadataKindNewGame`) and submission log actions
+  (`models.LogAction*`) are constants; don't use the string literals.
 
 ## Reviews and XP (concurrency)
 
