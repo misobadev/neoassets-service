@@ -226,6 +226,13 @@ var stableIDs = map[string]bool{gameMarioID: true, gameZeldaID: true}
 
 // normalize pretty-prints a JSON body and masks values that change per run
 // (generated ids and timestamps).
+// lastmodRe masks sitemap dates (seeded rows are stamped with the run's date)
+// and testHostRe the test server's random port.
+var (
+	lastmodRe  = regexp.MustCompile(`<lastmod>\d{4}-\d{2}-\d{2}</lastmod>`)
+	testHostRe = regexp.MustCompile(`http://127\.0\.0\.1:\d+`)
+)
+
 func normalize(body []byte) string {
 	var v any
 	out := string(body)
@@ -242,6 +249,8 @@ func normalize(body []byte) string {
 	out = timeRe.ReplaceAllString(out, "<time>")
 	out = dateRe.ReplaceAllString(out, `"<date>"`)
 	out = keyRandRe.ReplaceAllString(out, "/<rand>/")
+	out = lastmodRe.ReplaceAllString(out, "<lastmod><date></lastmod>")
+	out = testHostRe.ReplaceAllString(out, "http://<api>")
 	return out
 }
 
@@ -289,6 +298,11 @@ func TestHTTPPublicEndpoints(t *testing.T) {
 		{"metadata_genres", "/api/v1/metadata/genres"},
 		{"metadata_regions", "/api/v1/metadata/regions"},
 		{"dashboard", "/api/v1/dashboard"},
+		{"sitemap_index", "/sitemap.xml"},
+		{"sitemap_pages", "/sitemaps/pages.xml"},
+		{"sitemap_games", "/sitemaps/games-1.xml"},
+		{"sitemap_games_past_end", "/sitemaps/games-2.xml"},
+		{"sitemap_games_bad_page", "/sitemaps/games-0.xml"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			golden(t, "public_"+tc.name, c.do(http.MethodGet, tc.path, nil))

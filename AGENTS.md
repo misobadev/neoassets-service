@@ -280,6 +280,10 @@ the user credential is optional and falls back to guest mode.
 - **Translator**: the description translator is built from
   `TRANSLATE_WORKER_URL`/`TRANSLATE_WORKER_TOKEN` in `cmd` and injected with
   `services.WithTranslator`.
+- **Sitemaps**: `internal/sitemap` serves `/sitemap.xml` (an index),
+  `/sitemaps/pages.xml` (static pages, systems, approved packs) and
+  `/sitemaps/games-{n}.xml` (40,000 games each). URLs point at
+  `FRONTEND_URL`; the web's robots.txt references this sitemap.
 - **Constants**: metadata kinds (`models.MetadataKindEdit`,
   `models.MetadataKindNewGame`) and submission log actions
   (`models.LogAction*`) are constants; don't use the string literals.
