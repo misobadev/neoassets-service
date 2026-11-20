@@ -87,6 +87,9 @@ func main() {
 
 	cfg := loadConfig()
 	validateSecrets(cfg)
+	if cfg.ProtectedAdminEmail == "" {
+		log.Warn().Msg("PROTECTED_ADMIN_EMAIL is not set: no admin account is protected from demotion or deletion")
+	}
 	// The CDN whose client-address header the per-IP rate limits trust.
 	if err := handlers.ConfigureCDN(cfg.CDNIPRanges, cfg.CDNClientIPHeader); err != nil {
 		log.Fatal().Err(err).Msg("Invalid CDN configuration")
@@ -232,7 +235,7 @@ func loadConfig() *Config {
 		R2PublicBase:          getEnvOrDefault("R2_PUBLIC_BASE_URL", "https://cdn.neoassets.dev"),
 		AdminEmail:            getEnvOrDefault("ADMIN_SEED_EMAIL", ""),
 		AdminPassword:         getEnvOrDefault("ADMIN_SEED_PASSWORD", ""),
-		ProtectedAdminEmail:   getEnvOrDefault("PROTECTED_ADMIN_EMAIL", "miguel.soto@neostation.dev"),
+		ProtectedAdminEmail:   strings.TrimSpace(os.Getenv("PROTECTED_ADMIN_EMAIL")),
 		SkipEmailVerification: getEnvOrDefault("SKIP_EMAIL_VERIFICATION", "false") == "true",
 		SMTPHost:              getEnvOrDefault("SMTP_HOST", ""),
 		SMTPPort:              getEnvInt("SMTP_PORT", 587),
