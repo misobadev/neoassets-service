@@ -51,7 +51,7 @@ func (h *Handler) RequireAdmin(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		role, _, tokenVersion, err := h.userSvc.UserAuthState(id)
+		role, _, tokenVersion, err := h.userSvc.UserAuthState(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return
@@ -79,7 +79,7 @@ func (h *Handler) RequireReviewer(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		role, _, tokenVersion, err := h.userSvc.UserAuthState(id)
+		role, _, tokenVersion, err := h.userSvc.UserAuthState(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return
@@ -105,7 +105,7 @@ func (h *Handler) RequireVerifiedUser(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		_, verified, tokenVersion, err := h.userSvc.UserAuthState(id)
+		_, verified, tokenVersion, err := h.userSvc.UserAuthState(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return

@@ -58,7 +58,7 @@ func (s *DonationService) PatreonEnabled() bool { return s.patreonSecret != "" }
 // HandleKofi validates and stores a Ko-fi payment. It is idempotent: the same
 // transaction id is only ever stored once. When the donor email matches a
 // registered account the donor status is refreshed immediately.
-func (s *DonationService) HandleKofi(raw []byte) error {
+func (s *DonationService) HandleKofi(ctx context.Context, raw []byte) error {
 	if !s.KofiEnabled() {
 		return fmt.Errorf("ko-fi webhook is not configured")
 	}
@@ -108,16 +108,16 @@ func (s *DonationService) HandleKofi(raw []byte) error {
 		OccurredAt:  parseKofiTime(p.Timestamp),
 		Raw:         raw,
 	}
-	if u, err := s.repo.GetUserByEmail(email); err == nil {
+	if u, err := s.repo.GetUserByEmail(ctx, email); err == nil {
 		ev.UserID = &u.ID
 	}
 
-	saved, err := s.repo.UpsertDonationEvent(ev)
+	saved, err := s.repo.UpsertDonationEvent(ctx, ev)
 	if err != nil {
 		return err
 	}
 	if saved.UserID != nil {
-		if _, err := s.repo.RecomputeDonorStatus(*saved.UserID); err != nil {
+		if _, err := s.repo.RecomputeDonorStatus(ctx, *saved.UserID); err != nil {
 			return err
 		}
 	}
@@ -128,7 +128,7 @@ func (s *DonationService) HandleKofi(raw []byte) error {
 // recurring, so every event is a subscription: active while patron_status is
 // active_patron, inactive after members:delete or a downgrade. The email in the
 // payload is matched to an account just like Ko-fi.
-func (s *DonationService) HandlePatreon(event, signature string, raw []byte) error {
+func (s *DonationService) HandlePatreon(ctx context.Context, event, signature string, raw []byte) error {
 	if !s.PatreonEnabled() {
 		return fmt.Errorf("patreon webhook is not configured")
 	}
@@ -179,17 +179,17 @@ func (s *DonationService) HandlePatreon(event, signature string, raw []byte) err
 		Raw:         raw,
 	}
 	if email != "" {
-		if u, err := s.repo.GetUserByEmail(email); err == nil {
+		if u, err := s.repo.GetUserByEmail(ctx, email); err == nil {
 			ev.UserID = &u.ID
 		}
 	}
 
-	saved, err := s.repo.UpsertDonationEvent(ev)
+	saved, err := s.repo.UpsertDonationEvent(ctx, ev)
 	if err != nil {
 		return err
 	}
 	if saved.UserID != nil {
-		if _, err := s.repo.RecomputeDonorStatus(*saved.UserID); err != nil {
+		if _, err := s.repo.RecomputeDonorStatus(ctx, *saved.UserID); err != nil {
 			return err
 		}
 	}
@@ -200,7 +200,7 @@ func (s *DonationService) HandlePatreon(event, signature string, raw []byte) err
 // dashboard supporters export). Each item is upserted idempotently by
 // external_id, matched to a user by email, and the donor status is recomputed.
 // It returns how many events were imported and how many users were relinked.
-func (s *DonationService) ImportDonations(items []models.DonationImportItem) (imported, linked, skipped int, err error) {
+func (s *DonationService) ImportDonations(ctx context.Context, items []models.DonationImportItem) (imported, linked, skipped int, err error) {
 	userIDs := map[uuid.UUID]bool{}
 	for _, it := range items {
 		email := normalizeEmail(it.Email)
@@ -240,10 +240,10 @@ func (s *DonationService) ImportDonations(items []models.DonationImportItem) (im
 		if ev.Currency == "" {
 			ev.Currency = "USD"
 		}
-		if u, err := s.repo.GetUserByEmail(email); err == nil {
+		if u, err := s.repo.GetUserByEmail(ctx, email); err == nil {
 			ev.UserID = &u.ID
 		}
-		saved, err := s.repo.UpsertDonationEvent(ev)
+		saved, err := s.repo.UpsertDonationEvent(ctx, ev)
 		if err != nil {
 			return imported, linked, skipped, err
 		}
@@ -253,7 +253,7 @@ func (s *DonationService) ImportDonations(items []models.DonationImportItem) (im
 		}
 	}
 	for id := range userIDs {
-		if _, err := s.repo.RecomputeDonorStatus(id); err != nil {
+		if _, err := s.repo.RecomputeDonorStatus(ctx, id); err != nil {
 			return imported, linked, skipped, err
 		}
 		linked++
@@ -289,7 +289,7 @@ func parseImportTime(ts string) *time.Time {
 // address has unclaimed donations: a claim is stored either way (and counts
 // toward the cooldown), but the code is only emailed when there is something
 // to claim.
-func (s *DonationService) ClaimStart(userID uuid.UUID, email string) error {
+func (s *DonationService) ClaimStart(ctx context.Context, userID uuid.UUID, email string) error {
 	email = normalizeEmail(email)
 	if email == "" {
 		return fmt.Errorf("invalid email address")
@@ -297,11 +297,11 @@ func (s *DonationService) ClaimStart(userID uuid.UUID, email string) error {
 	if s.mailer == nil {
 		return fmt.Errorf("email delivery is not configured")
 	}
-	pending, err := s.repo.HasPendingDonationsForEmail(email)
+	pending, err := s.repo.HasPendingDonationsForEmail(ctx, email)
 	if err != nil {
 		return err
 	}
-	user, err := s.repo.GetUserByID(userID)
+	user, err := s.repo.GetUserByID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("user not found")
 	}
@@ -309,7 +309,7 @@ func (s *DonationService) ClaimStart(userID uuid.UUID, email string) error {
 	if err != nil {
 		return err
 	}
-	stored, err := s.repo.UpsertDonorClaim(userID, email, auth.HashToken(code), time.Now().Add(donorClaimTTL), donorClaimCooldown)
+	stored, err := s.repo.UpsertDonorClaim(ctx, userID, email, auth.HashToken(code), time.Now().Add(donorClaimTTL), donorClaimCooldown)
 	if err != nil {
 		return err
 	}
@@ -331,10 +331,10 @@ func (s *DonationService) ClaimStart(userID uuid.UUID, email string) error {
 
 // ClaimVerify validates the code, links every pending donation for the email to
 // the user and refreshes the donor status. Returns the number of events linked.
-func (s *DonationService) ClaimVerify(userID uuid.UUID, email, code string) (int64, error) {
+func (s *DonationService) ClaimVerify(ctx context.Context, userID uuid.UUID, email, code string) (int64, error) {
 	email = normalizeEmail(email)
 	// Every check uses up one of the claim's attempts, whatever its outcome.
-	claimEmail, hash, expires, ok, err := s.repo.UseDonorClaimAttempt(userID, donorClaimMaxAttempts)
+	claimEmail, hash, expires, ok, err := s.repo.UseDonorClaimAttempt(ctx, userID, donorClaimMaxAttempts)
 	if err != nil {
 		log.Error().Err(err).Str("user_id", userID.String()).Msg("failed to check donor claim")
 		return 0, fmt.Errorf("could not check the claim code, please try again")
@@ -352,22 +352,22 @@ func (s *DonationService) ClaimVerify(userID uuid.UUID, email, code string) (int
 		return 0, fmt.Errorf("invalid claim code")
 	}
 
-	n, err := s.repo.LinkDonationEventsByEmail(userID, email)
+	n, err := s.repo.LinkDonationEventsByEmail(ctx, userID, email)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := s.repo.RecomputeDonorStatus(userID); err != nil {
+	if _, err := s.repo.RecomputeDonorStatus(ctx, userID); err != nil {
 		return 0, err
 	}
-	_ = s.repo.DeleteDonorClaim(userID)
+	_ = s.repo.DeleteDonorClaim(ctx, userID)
 	return n, nil
 }
 
 // LinkPendingForEmail attaches any donations already made with the account email
 // and refreshes the donor status. Called after an email is verified so users who
 // donated before registering get their benefits automatically.
-func (s *DonationService) LinkPendingForEmail(userID uuid.UUID, email string) {
-	n, err := s.repo.LinkDonationEventsByEmail(userID, normalizeEmail(email))
+func (s *DonationService) LinkPendingForEmail(ctx context.Context, userID uuid.UUID, email string) {
+	n, err := s.repo.LinkDonationEventsByEmail(ctx, userID, normalizeEmail(email))
 	if err != nil {
 		log.Warn().Err(err).Str("user_id", userID.String()).Msg("failed to link pending donations")
 		return
@@ -375,21 +375,21 @@ func (s *DonationService) LinkPendingForEmail(userID uuid.UUID, email string) {
 	if n == 0 {
 		return
 	}
-	if _, err := s.repo.RecomputeDonorStatus(userID); err != nil {
+	if _, err := s.repo.RecomputeDonorStatus(ctx, userID); err != nil {
 		log.Warn().Err(err).Str("user_id", userID.String()).Msg("failed to refresh donor status")
 	}
 }
 
 // ExpireStaleSubscriptions downgrades auto-managed monthly supporters whose last
 // subscription payment fell outside the grace window.
-func (s *DonationService) ExpireStaleSubscriptions() {
-	ids, err := s.repo.StaleSubscriptionUserIDs()
+func (s *DonationService) ExpireStaleSubscriptions(ctx context.Context) {
+	ids, err := s.repo.StaleSubscriptionUserIDs(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to list stale donor subscriptions")
 		return
 	}
 	for _, id := range ids {
-		if _, err := s.repo.RecomputeDonorStatus(id); err != nil {
+		if _, err := s.repo.RecomputeDonorStatus(ctx, id); err != nil {
 			log.Warn().Err(err).Str("user_id", id.String()).Msg("failed to downgrade donor status")
 		}
 	}
@@ -402,7 +402,7 @@ func (s *DonationService) ExpireStaleSubscriptions() {
 // hours until the context is cancelled.
 func (s *DonationService) StartExpiryJob(ctx context.Context) {
 	go func() {
-		s.ExpireStaleSubscriptions()
+		s.ExpireStaleSubscriptions(ctx)
 		ticker := time.NewTicker(6 * time.Hour)
 		defer ticker.Stop()
 		for {
@@ -410,7 +410,7 @@ func (s *DonationService) StartExpiryJob(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.ExpireStaleSubscriptions()
+				s.ExpireStaleSubscriptions(ctx)
 			}
 		}
 	}()

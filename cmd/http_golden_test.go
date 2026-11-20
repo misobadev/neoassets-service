@@ -73,7 +73,7 @@ func newAPIHarness(t *testing.T) *apiHarness {
 	seedCatalog(t, db)
 
 	bucket := r2test.NewMemory()
-	a, err := buildApp(cfg, db, bucket, nil)
+	a, err := buildApp(t.Context(), cfg, db, bucket, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

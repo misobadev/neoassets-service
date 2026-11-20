@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -28,7 +29,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 }
 
 // CreateUser inserts a new user and returns it.
-func (r *Repository) CreateUser(u *models.User) (*models.User, error) {
+func (r *Repository) CreateUser(ctx context.Context, u *models.User) (*models.User, error) {
 	now := time.Now()
 	if u.Role == "" {
 		u.Role = models.RoleUser
@@ -37,7 +38,7 @@ func (r *Repository) CreateUser(u *models.User) (*models.User, error) {
 		u.DonorStatus = models.DonorNone
 	}
 	var id uuid.UUID
-	err := r.db.QueryRow(
+	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO users (username, email, password_hash, role, hidden, xp, donor_status, email_verified,
 			email_verification_token, email_verification_expires_at, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -55,27 +56,27 @@ func (r *Repository) CreateUser(u *models.User) (*models.User, error) {
 }
 
 // GetUserByID returns a user by ID, or sql.ErrNoRows.
-func (r *Repository) GetUserByID(id uuid.UUID) (*models.User, error) {
-	row := r.db.QueryRow(`SELECT `+userColumns+` FROM users WHERE id = $1`, id)
+func (r *Repository) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = $1`, id)
 	return scanUser(row)
 }
 
 // GetUserByEmail returns a user by email, or sql.ErrNoRows.
-func (r *Repository) GetUserByEmail(email string) (*models.User, error) {
-	row := r.db.QueryRow(`SELECT `+userColumns+` FROM users WHERE email = $1`, email)
+func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE email = $1`, email)
 	return scanUser(row)
 }
 
 // GetUserByUsername returns a user by username, or sql.ErrNoRows.
-func (r *Repository) GetUserByUsername(username string) (*models.User, error) {
-	row := r.db.QueryRow(`SELECT `+userColumns+` FROM users WHERE username = $1`, username)
+func (r *Repository) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE username = $1`, username)
 	return scanUser(row)
 }
 
 // UsernameExists reports whether any user (case-insensitively) has the username.
-func (r *Repository) UsernameExists(username string) (bool, error) {
+func (r *Repository) UsernameExists(ctx context.Context, username string) (bool, error) {
 	var exists bool
-	err := r.db.QueryRow(
+	err := r.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(username) = LOWER($1))`, username,
 	).Scan(&exists)
 	return exists, err
@@ -83,9 +84,9 @@ func (r *Repository) UsernameExists(username string) (bool, error) {
 
 // UsernameExistsExcluding reports whether any other user (case-insensitively)
 // has the username, ignoring the given id.
-func (r *Repository) UsernameExistsExcluding(username string, excludeID uuid.UUID) (bool, error) {
+func (r *Repository) UsernameExistsExcluding(ctx context.Context, username string, excludeID uuid.UUID) (bool, error) {
 	var exists bool
-	err := r.db.QueryRow(
+	err := r.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(username) = LOWER($1) AND id <> $2)`,
 		username, excludeID,
 	).Scan(&exists)
@@ -93,9 +94,9 @@ func (r *Repository) UsernameExistsExcluding(username string, excludeID uuid.UUI
 }
 
 // EmailExistsExcluding reports whether any other user has the email, ignoring id.
-func (r *Repository) EmailExistsExcluding(email string, excludeID uuid.UUID) (bool, error) {
+func (r *Repository) EmailExistsExcluding(ctx context.Context, email string, excludeID uuid.UUID) (bool, error) {
 	var exists bool
-	err := r.db.QueryRow(
+	err := r.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) AND id <> $2)`,
 		email, excludeID,
 	).Scan(&exists)
@@ -104,8 +105,8 @@ func (r *Repository) EmailExistsExcluding(email string, excludeID uuid.UUID) (bo
 
 // GetUserByVerificationToken returns a user by email verification token,
 // or sql.ErrNoRows.
-func (r *Repository) GetUserByVerificationToken(token string) (*models.User, error) {
-	row := r.db.QueryRow(
+func (r *Repository) GetUserByVerificationToken(ctx context.Context, token string) (*models.User, error) {
+	row := r.db.QueryRowContext(ctx,
 		`SELECT `+userColumns+` FROM users WHERE email_verification_token = $1`,
 		token,
 	)
@@ -114,8 +115,8 @@ func (r *Repository) GetUserByVerificationToken(token string) (*models.User, err
 
 // GetUserByPasswordResetToken returns a user by password reset token,
 // or sql.ErrNoRows.
-func (r *Repository) GetUserByPasswordResetToken(token string) (*models.User, error) {
-	row := r.db.QueryRow(
+func (r *Repository) GetUserByPasswordResetToken(ctx context.Context, token string) (*models.User, error) {
+	row := r.db.QueryRowContext(ctx,
 		`SELECT `+userColumns+` FROM users WHERE password_reset_token = $1`,
 		token,
 	)
@@ -146,7 +147,7 @@ type EmailVerification struct {
 // UpdateProfile applies a profile change in a single statement, writing only
 // the fields it changes. A new email also cancels any pending password reset,
 // whose link went to the previous address. It reports whether the user exists.
-func (r *Repository) UpdateProfile(id uuid.UUID, p ProfileUpdate) (bool, error) {
+func (r *Repository) UpdateProfile(ctx context.Context, id uuid.UUID, p ProfileUpdate) (bool, error) {
 	reset := p.Verification != nil
 	if reset && p.Email == "" {
 		return false, fmt.Errorf("an email verification reset needs a new email")
@@ -156,7 +157,7 @@ func (r *Repository) UpdateProfile(id uuid.UUID, p ProfileUpdate) (bool, error) 
 	if reset {
 		tokenHash, expires = &p.Verification.TokenHash, &p.Verification.Expires
 	}
-	return r.execOne(
+	return r.execOne(ctx,
 		`UPDATE users SET
 			username = COALESCE(NULLIF($1, ''), username),
 			email = COALESCE(NULLIF($2, ''), email),
@@ -174,8 +175,8 @@ func (r *Repository) UpdateProfile(id uuid.UUID, p ProfileUpdate) (bool, error) 
 // SetEmailVerificationToken stores a new verification token if the account
 // still has the email the caller read and is still unverified, so the token is
 // only ever mailed to the address it can verify. It reports whether it applied.
-func (r *Repository) SetEmailVerificationToken(id uuid.UUID, email, tokenHash string, expires time.Time) (bool, error) {
-	return r.execOne(
+func (r *Repository) SetEmailVerificationToken(ctx context.Context, id uuid.UUID, email, tokenHash string, expires time.Time) (bool, error) {
+	return r.execOne(ctx,
 		`UPDATE users SET email_verification_token = $3, email_verification_expires_at = $4, updated_at = NOW()
 		 WHERE id = $1 AND email = $2 AND NOT email_verified`,
 		id, email, tokenHash, expires,
@@ -184,8 +185,8 @@ func (r *Repository) SetEmailVerificationToken(id uuid.UUID, email, tokenHash st
 
 // MarkEmailVerified verifies the email if tokenHash is still the account's
 // unexpired verification token, consuming it. It reports whether it applied.
-func (r *Repository) MarkEmailVerified(id uuid.UUID, tokenHash string) (bool, error) {
-	return r.execOne(
+func (r *Repository) MarkEmailVerified(ctx context.Context, id uuid.UUID, tokenHash string) (bool, error) {
+	return r.execOne(ctx,
 		`UPDATE users SET email_verified = TRUE, email_verification_token = NULL,
 			email_verification_expires_at = NULL, updated_at = NOW()
 		 WHERE id = $1 AND email_verification_token = $2 AND email_verification_expires_at > NOW()`,
@@ -196,8 +197,8 @@ func (r *Repository) MarkEmailVerified(id uuid.UUID, tokenHash string) (bool, er
 // SetPasswordResetToken stores a new password reset token if the account still
 // has the email the caller read (the one the token is mailed to). It reports
 // whether it applied.
-func (r *Repository) SetPasswordResetToken(id uuid.UUID, email, tokenHash string, expires time.Time) (bool, error) {
-	return r.execOne(
+func (r *Repository) SetPasswordResetToken(ctx context.Context, id uuid.UUID, email, tokenHash string, expires time.Time) (bool, error) {
+	return r.execOne(ctx,
 		`UPDATE users SET password_reset_token = $3, password_reset_expires_at = $4, updated_at = NOW()
 		 WHERE id = $1 AND email = $2`,
 		id, email, tokenHash, expires,
@@ -207,8 +208,8 @@ func (r *Repository) SetPasswordResetToken(id uuid.UUID, email, tokenHash string
 // ResetPasswordWithToken sets a new password hash if tokenHash is still the
 // account's unexpired reset token, consuming it and revoking every issued
 // token. It reports whether it applied.
-func (r *Repository) ResetPasswordWithToken(id uuid.UUID, tokenHash, newHash string) (bool, error) {
-	return r.execOne(
+func (r *Repository) ResetPasswordWithToken(ctx context.Context, id uuid.UUID, tokenHash, newHash string) (bool, error) {
+	return r.execOne(ctx,
 		`UPDATE users SET password_hash = $3, password_reset_token = NULL, password_reset_expires_at = NULL,
 			token_version = token_version + 1, updated_at = NOW()
 		 WHERE id = $1 AND password_reset_token = $2 AND password_reset_expires_at > NOW()`,
@@ -219,8 +220,8 @@ func (r *Repository) ResetPasswordWithToken(id uuid.UUID, tokenHash, newHash str
 // ChangePasswordHash replaces the password hash if it is still checkedHash
 // (the one the current password was verified against), revoking every issued
 // token. It reports whether it applied.
-func (r *Repository) ChangePasswordHash(id uuid.UUID, checkedHash, newHash string) (bool, error) {
-	return r.execOne(
+func (r *Repository) ChangePasswordHash(ctx context.Context, id uuid.UUID, checkedHash, newHash string) (bool, error) {
+	return r.execOne(ctx,
 		`UPDATE users SET password_hash = $3, token_version = token_version + 1, updated_at = NOW()
 		 WHERE id = $1 AND password_hash = $2`,
 		id, checkedHash, newHash,
@@ -229,8 +230,8 @@ func (r *Repository) ChangePasswordHash(id uuid.UUID, checkedHash, newHash strin
 
 // execOne runs a conditional single-row update and reports whether a row
 // matched.
-func (r *Repository) execOne(query string, args ...interface{}) (bool, error) {
-	res, err := r.db.Exec(query, args...)
+func (r *Repository) execOne(ctx context.Context, query string, args ...interface{}) (bool, error) {
+	res, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, err
 	}
@@ -242,26 +243,26 @@ func (r *Repository) execOne(query string, args ...interface{}) (bool, error) {
 }
 
 // SetDonorStatus updates a user's donor status and returns the updated user.
-func (r *Repository) SetDonorStatus(id uuid.UUID, status string) (*models.User, error) {
-	if _, err := r.db.Exec(`UPDATE users SET donor_status = $1, updated_at = NOW() WHERE id = $2`, status, id); err != nil {
+func (r *Repository) SetDonorStatus(ctx context.Context, id uuid.UUID, status string) (*models.User, error) {
+	if _, err := r.db.ExecContext(ctx, `UPDATE users SET donor_status = $1, updated_at = NOW() WHERE id = $2`, status, id); err != nil {
 		return nil, err
 	}
-	return r.GetUserByID(id)
+	return r.GetUserByID(ctx, id)
 }
 
 // SetUserAvatar stores the R2 object key of a user's avatar and returns the
 // updated user.
-func (r *Repository) SetUserAvatar(id uuid.UUID, avatarKey string) (*models.User, error) {
-	if _, err := r.db.Exec(`UPDATE users SET avatar_key = $1, updated_at = NOW() WHERE id = $2`, avatarKey, id); err != nil {
+func (r *Repository) SetUserAvatar(ctx context.Context, id uuid.UUID, avatarKey string) (*models.User, error) {
+	if _, err := r.db.ExecContext(ctx, `UPDATE users SET avatar_key = $1, updated_at = NOW() WHERE id = $2`, avatarKey, id); err != nil {
 		return nil, err
 	}
-	return r.GetUserByID(id)
+	return r.GetUserByID(ctx, id)
 }
 
 // ListUsers returns all non-hidden users (for role management). NeoBot (hidden)
 // is never returned.
-func (r *Repository) ListUsers() ([]models.User, error) {
-	rows, err := r.db.Query(`SELECT ` + userColumns + ` FROM users WHERE NOT hidden ORDER BY username`)
+func (r *Repository) ListUsers(ctx context.Context) ([]models.User, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+userColumns+` FROM users WHERE NOT hidden ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -278,19 +279,19 @@ func (r *Repository) ListUsers() ([]models.User, error) {
 }
 
 // SetUserRole updates a user's role and returns the updated user.
-func (r *Repository) SetUserRole(id uuid.UUID, role string) (*models.User, error) {
-	if _, err := r.db.Exec(`UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2`, role, id); err != nil {
+func (r *Repository) SetUserRole(ctx context.Context, id uuid.UUID, role string) (*models.User, error) {
+	if _, err := r.db.ExecContext(ctx, `UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2`, role, id); err != nil {
 		return nil, err
 	}
-	return r.GetUserByID(id)
+	return r.GetUserByID(ctx, id)
 }
 
 // EnsureNeoBot creates the hidden NeoBot integration user if it does not exist.
 // NeoBot is the origin/source of imported catalog data and is excluded from
 // every list. Returns its id.
-func (r *Repository) EnsureNeoBot(passwordHash string) (uuid.UUID, error) {
+func (r *Repository) EnsureNeoBot(ctx context.Context, passwordHash string) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := r.db.QueryRow(
+	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO users (username, email, password_hash, role, hidden, email_verified)
 		 VALUES ('NeoBot', 'neobot@neostation.dev', $1, 'user', true, true)
 		 ON CONFLICT (email) DO UPDATE SET hidden = true

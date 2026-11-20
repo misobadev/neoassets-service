@@ -82,7 +82,7 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListPacks(w http.ResponseWriter, r *http.Request) {
 	sort := r.URL.Query().Get("sort")
 	limit, offset := parseLimitOffset(r)
-	packs, total, err := h.svc.ListedApprovedPacks(sort, limit, offset)
+	packs, total, err := h.svc.ListedApprovedPacks(r.Context(), sort, limit, offset)
 	if err != nil {
 		writeServerError(w, http.StatusInternalServerError, "failed to list packs", err)
 		return
@@ -95,7 +95,7 @@ func (h *Handler) ListPacks(w http.ResponseWriter, r *http.Request) {
 // counter; use the /download endpoint to register an install.
 func (h *Handler) GetPack(w http.ResponseWriter, r *http.Request) {
 	packID := chi.URLParam(r, "packID")
-	detail, err := h.svc.GetPackDetail(packID)
+	detail, err := h.svc.GetPackDetail(r.Context(), packID)
 	if err != nil {
 		writeServerError(w, http.StatusNotFound, "pack not found", err)
 		return
@@ -107,7 +107,7 @@ func (h *Handler) GetPack(w http.ResponseWriter, r *http.Request) {
 // its download counter. Front-ends call this when they actually install a pack.
 func (h *Handler) DownloadPack(w http.ResponseWriter, r *http.Request) {
 	packID := chi.URLParam(r, "packID")
-	detail, err := h.svc.DownloadPack(packID)
+	detail, err := h.svc.DownloadPack(r.Context(), packID)
 	if err != nil {
 		writeServerError(w, http.StatusNotFound, "pack not found", err)
 		return
@@ -241,7 +241,7 @@ func (h *Handler) RemoveSubmissionFile(w http.ResponseWriter, r *http.Request) {
 
 // DashStats returns the app home leaderboards and recent published content.
 func (h *Handler) DashStats(w http.ResponseWriter, r *http.Request) {
-	d, err := h.svc.Dashboard()
+	d, err := h.svc.Dashboard(r.Context())
 	if err != nil {
 		writeServerError(w, http.StatusInternalServerError, "failed to load dashboard", err)
 		return
@@ -251,7 +251,7 @@ func (h *Handler) DashStats(w http.ResponseWriter, r *http.Request) {
 
 // GetRewards returns the authenticated user's XP progression and unlocked limits.
 func (h *Handler) GetRewards(w http.ResponseWriter, r *http.Request) {
-	rw, err := h.svc.Rewards(userFromRequest(r))
+	rw, err := h.svc.Rewards(r.Context(), userFromRequest(r))
 	if err != nil {
 		writeServerError(w, http.StatusInternalServerError, "failed to load rewards", err)
 		return
@@ -267,7 +267,7 @@ func (h *Handler) PublicProfile(w http.ResponseWriter, r *http.Request) {
 	if claims, ok := auth.UserFromContext(r.Context()); ok {
 		requester = &claims.UserID
 	}
-	p, err := h.svc.PublicProfile(username, requester)
+	p, err := h.svc.PublicProfile(r.Context(), username, requester)
 	if err != nil {
 		writeClientError(w, http.StatusNotFound, err)
 		return
@@ -277,7 +277,7 @@ func (h *Handler) PublicProfile(w http.ResponseWriter, r *http.Request) {
 
 // Follow makes the authenticated user follow a user.
 func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
-	if err := h.svc.Follow(userFromRequest(r), chi.URLParam(r, "username")); err != nil {
+	if err := h.svc.Follow(r.Context(), userFromRequest(r), chi.URLParam(r, "username")); err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -286,7 +286,7 @@ func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
 
 // Unfollow removes a follow relationship.
 func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
-	if err := h.svc.Unfollow(userFromRequest(r), chi.URLParam(r, "username")); err != nil {
+	if err := h.svc.Unfollow(r.Context(), userFromRequest(r), chi.URLParam(r, "username")); err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -295,7 +295,7 @@ func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
 
 // Followers lists the usernames following a user.
 func (h *Handler) Followers(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.Followers(chi.URLParam(r, "username"))
+	list, err := h.svc.Followers(r.Context(), chi.URLParam(r, "username"))
 	if err != nil {
 		writeClientError(w, http.StatusNotFound, err)
 		return
@@ -305,7 +305,7 @@ func (h *Handler) Followers(w http.ResponseWriter, r *http.Request) {
 
 // Following lists the usernames a user follows.
 func (h *Handler) Following(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.Following(chi.URLParam(r, "username"))
+	list, err := h.svc.Following(r.Context(), chi.URLParam(r, "username"))
 	if err != nil {
 		writeClientError(w, http.StatusNotFound, err)
 		return
@@ -315,7 +315,7 @@ func (h *Handler) Following(w http.ResponseWriter, r *http.Request) {
 
 // UserSubmissions lists a user's latest submissions (SAP + metadata).
 func (h *Handler) UserSubmissions(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.RecentSubmissions(chi.URLParam(r, "username"), 10)
+	list, err := h.svc.RecentSubmissions(r.Context(), chi.URLParam(r, "username"), 10)
 	if err != nil {
 		writeClientError(w, http.StatusNotFound, err)
 		return
@@ -325,7 +325,7 @@ func (h *Handler) UserSubmissions(w http.ResponseWriter, r *http.Request) {
 
 // ListUsers returns every non-hidden user, for admin role management.
 func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
-	list, err := h.userSvc.ListUsers()
+	list, err := h.userSvc.ListUsers(r.Context())
 	if err != nil {
 		writeServerError(w, http.StatusInternalServerError, "failed to list users", err)
 		return
@@ -345,7 +345,7 @@ func (h *Handler) SetUserRole(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &body) {
 		return
 	}
-	user, err := h.userSvc.SetUserRole(id, body.Role)
+	user, err := h.userSvc.SetUserRole(r.Context(), id, body.Role)
 	if err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
@@ -366,7 +366,7 @@ func (h *Handler) SetDonorStatus(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &body) {
 		return
 	}
-	user, err := h.userSvc.SetDonorStatus(id, body.Status)
+	user, err := h.userSvc.SetDonorStatus(r.Context(), id, body.Status)
 	if err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
@@ -448,7 +448,7 @@ func (h *Handler) AdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	admin, err := h.svc.Login(req.Email, req.Password)
+	admin, err := h.svc.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return

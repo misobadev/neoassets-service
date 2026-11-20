@@ -80,7 +80,7 @@ func newMailer(cfg *Config) *email.Sender {
 // migrated database, the object store and the mailer (nil disables account
 // emails). It also seeds the configured admin and the hidden NeoBot user.
 // main and the HTTP tests share it, so tests exercise the production wiring.
-func buildApp(cfg *Config, db *sql.DB, bucket r2.Client, mailer *email.Sender) (*app, error) {
+func buildApp(ctx context.Context, cfg *Config, db *sql.DB, bucket r2.Client, mailer *email.Sender) (*app, error) {
 	repo := repository.NewRepository(db, repository.WithEconomy(economyFromConfig(cfg)))
 
 	// The embedded system catalog used for validation and by the web endpoint
@@ -90,12 +90,13 @@ func buildApp(cfg *Config, db *sql.DB, bucket r2.Client, mailer *email.Sender) (
 		return nil, fmt.Errorf("load system catalog: %w", err)
 	}
 
-	if err := seedAdmin(cfg, repo); err != nil {
+	if err := seedAdmin(ctx, cfg, repo); err != nil {
 		return nil, err
 	}
-	seedNeoBot(repo)
+	seedNeoBot(ctx, repo)
 
-	svc := services.NewService(repo, bucket, cfg.R2PublicBase, cfg.JWTSecret, catalog)
+	svc := services.NewService(repo, bucket, cfg.R2PublicBase, cfg.JWTSecret, catalog,
+		services.WithTranslator(services.NewTranslator(cfg.TranslateWorkerURL, cfg.TranslateWorkerToken)))
 	userSvc := services.NewUserService(repo, mailer, cfg.JWTSecret, userSessionTTL, cfg.ProtectedAdminEmail)
 	userSvc.SkipEmailVerification = cfg.SkipEmailVerification
 	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, cfg.ScrapeRPMPerThread, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
@@ -122,7 +123,7 @@ func (a *app) startJobs(ctx context.Context) {
 }
 
 // seedAdmin ensures the initial admin account from the environment exists.
-func seedAdmin(cfg *Config, repo *repository.Repository) error {
+func seedAdmin(ctx context.Context, cfg *Config, repo *repository.Repository) error {
 	if cfg.AdminEmail == "" || cfg.AdminPassword == "" {
 		return nil
 	}
@@ -130,7 +131,7 @@ func seedAdmin(cfg *Config, repo *repository.Repository) error {
 	if err != nil {
 		return fmt.Errorf("hash seed admin password: %w", err)
 	}
-	if err := repo.EnsureAdmin(cfg.AdminEmail, hash); err != nil {
+	if err := repo.EnsureAdmin(ctx, cfg.AdminEmail, hash); err != nil {
 		return fmt.Errorf("seed admin: %w", err)
 	}
 	log.Info().Msg("Seed admin ensured")
@@ -141,7 +142,7 @@ func seedAdmin(cfg *Config, repo *repository.Repository) error {
 // origin of imported catalog data and is never shown in lists or leaderboards.
 // Its password is a random value so nobody can log in as it. Failures are
 // logged, not fatal, as before.
-func seedNeoBot(repo *repository.Repository) {
+func seedNeoBot(ctx context.Context, repo *repository.Repository) {
 	buf := make([]byte, 16)
 	_, _ = rand.Read(buf)
 	nbHash, err := auth.HashPassword("neobot-system-" + hex.EncodeToString(buf))
@@ -149,7 +150,7 @@ func seedNeoBot(repo *repository.Repository) {
 		log.Warn().Err(err).Msg("Failed to hash NeoBot password")
 		return
 	}
-	neobotID, err := repo.EnsureNeoBot(nbHash)
+	neobotID, err := repo.EnsureNeoBot(ctx, nbHash)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to seed NeoBot user")
 		return

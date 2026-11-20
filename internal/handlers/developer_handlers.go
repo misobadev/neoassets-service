@@ -15,7 +15,7 @@ import (
 
 // ListDeveloperApps returns the current user's developer applications.
 func (h *Handler) ListDeveloperApps(w http.ResponseWriter, r *http.Request) {
-	list, err := h.devSvc.ListApps(userFromRequest(r))
+	list, err := h.devSvc.ListApps(r.Context(), userFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list developer apps")
 		return
@@ -30,7 +30,7 @@ func (h *Handler) CreateDeveloperApp(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &req) {
 		return
 	}
-	app, err := h.devSvc.CreateApp(userFromRequest(r), req)
+	app, err := h.devSvc.CreateApp(r.Context(), userFromRequest(r), req)
 	if err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
@@ -44,7 +44,7 @@ func (h *Handler) RevokeDeveloperApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.devSvc.RevokeApp(userFromRequest(r), id); err != nil {
+	if err := h.devSvc.RevokeApp(r.Context(), userFromRequest(r), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "developer app not found")
 			return
@@ -62,7 +62,7 @@ func (h *Handler) RotateDeveloperApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	app, err := h.devSvc.RotateApp(userFromRequest(r), id)
+	app, err := h.devSvc.RotateApp(r.Context(), userFromRequest(r), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "developer app not found")
@@ -80,7 +80,7 @@ func (h *Handler) RotateDeveloperApp(w http.ResponseWriter, r *http.Request) {
 
 // ListAPIKeys returns the current user's personal API keys.
 func (h *Handler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	list, err := h.devSvc.ListAPIKeys(userFromRequest(r))
+	list, err := h.devSvc.ListAPIKeys(r.Context(), userFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list API keys")
 		return
@@ -95,7 +95,7 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &req) {
 		return
 	}
-	key, err := h.devSvc.CreateAPIKey(userFromRequest(r), req)
+	key, err := h.devSvc.CreateAPIKey(r.Context(), userFromRequest(r), req)
 	if err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
@@ -109,7 +109,7 @@ func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.devSvc.RevokeAPIKey(userFromRequest(r), id); err != nil {
+	if err := h.devSvc.RevokeAPIKey(r.Context(), userFromRequest(r), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "API key not found")
 			return

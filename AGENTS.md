@@ -270,6 +270,16 @@ the user credential is optional and falls back to guest mode.
 - **Economy**: `economy.Config` is built once in `cmd` from the environment
   (`economyFromConfig`) and given to the repository (`repository.WithEconomy`);
   services read it with `repo.Economy()`. There are no economy globals.
+- **Context**: every repository method that touches the database takes
+  `ctx context.Context` first and uses the `*Context` database/sql calls;
+  services pass their `ctx` through and handlers pass `r.Context()`. Reads are
+  cancelled when the client disconnects; `handlers.DetachWrites` keeps write
+  requests (anything but GET/HEAD/OPTIONS) running to the end, within the
+  request deadline, so a review or upload is never left half applied.
+  Background jobs use the jobs context from `main`.
+- **Translator**: the description translator is built from
+  `TRANSLATE_WORKER_URL`/`TRANSLATE_WORKER_TOKEN` in `cmd` and injected with
+  `services.WithTranslator`.
 - **Constants**: metadata kinds (`models.MetadataKindEdit`,
   `models.MetadataKindNewGame`) and submission log actions
   (`models.LogAction*`) are constants; don't use the string literals.

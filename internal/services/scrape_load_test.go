@@ -59,7 +59,7 @@ func TestRateLimitedRequestsAreNotWrittenOneByOne(t *testing.T) {
 	s := &ScrapeService{}
 	app := uuid.New()
 	for i := 0; i < 3; i++ {
-		s.record(app, "v1", "My App", "rate_limited")
+		s.record(t.Context(), app, "v1", "My App", "rate_limited")
 	}
 	got := s.refused.drain()
 	if len(got) != 1 || got[0].count != 3 {

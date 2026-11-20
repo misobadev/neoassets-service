@@ -19,7 +19,7 @@ func testRepo(t *testing.T) *Repository {
 
 func testUser(t *testing.T, r *Repository) *models.User {
 	t.Helper()
-	u, err := r.CreateUser(&models.User{
+	u, err := r.CreateUser(t.Context(), &models.User{
 		Username:     "u" + uuid.NewString()[:8],
 		Email:        uuid.NewString()[:8] + "@example.com",
 		PasswordHash: "hash-0",
@@ -32,7 +32,7 @@ func testUser(t *testing.T, r *Repository) *models.User {
 
 func mustGet(t *testing.T, r *Repository, id uuid.UUID) *models.User {
 	t.Helper()
-	u, err := r.GetUserByID(id)
+	u, err := r.GetUserByID(t.Context(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,11 +45,11 @@ func TestProfileUpdateLeavesOtherColumnsAlone(t *testing.T) {
 	r := testRepo(t)
 	u := testUser(t, r)
 
-	if ok, err := r.ChangePasswordHash(u.ID, "hash-0", "hash-1"); err != nil || !ok {
+	if ok, err := r.ChangePasswordHash(t.Context(), u.ID, "hash-0", "hash-1"); err != nil || !ok {
 		t.Fatalf("password change: ok=%v err=%v", ok, err)
 	}
 	newName, newEmail := "renamed"+uuid.NewString()[:4], "new-"+u.Email
-	ok, err := r.UpdateProfile(u.ID, ProfileUpdate{
+	ok, err := r.UpdateProfile(t.Context(), u.ID, ProfileUpdate{
 		Username:     newName,
 		Email:        newEmail,
 		Verification: &EmailVerification{TokenHash: "verify", Expires: time.Now().Add(time.Hour)},
@@ -75,20 +75,20 @@ func TestProfileUpdateKeepsConcurrentVerification(t *testing.T) {
 	r := testRepo(t)
 	u := testUser(t, r)
 
-	if ok, err := r.SetEmailVerificationToken(u.ID, u.Email, "verify", time.Now().Add(time.Hour)); err != nil || !ok {
+	if ok, err := r.SetEmailVerificationToken(t.Context(), u.ID, u.Email, "verify", time.Now().Add(time.Hour)); err != nil || !ok {
 		t.Fatalf("token: ok=%v err=%v", ok, err)
 	}
-	if ok, err := r.MarkEmailVerified(u.ID, "verify"); err != nil || !ok {
+	if ok, err := r.MarkEmailVerified(t.Context(), u.ID, "verify"); err != nil || !ok {
 		t.Fatalf("verify: ok=%v err=%v", ok, err)
 	}
-	if _, err := r.UpdateProfile(u.ID, ProfileUpdate{Username: "renamed" + uuid.NewString()[:4], Email: "new-" + u.Email}); err != nil {
+	if _, err := r.UpdateProfile(t.Context(), u.ID, ProfileUpdate{Username: "renamed" + uuid.NewString()[:4], Email: "new-" + u.Email}); err != nil {
 		t.Fatal(err)
 	}
 	got := mustGet(t, r, u.ID)
 	if !got.EmailVerified || got.EmailVerificationToken != nil {
 		t.Fatalf("verification lost: verified=%v token=%v", got.EmailVerified, got.EmailVerificationToken)
 	}
-	if ok, err := r.MarkEmailVerified(u.ID, "verify"); err != nil || ok {
+	if ok, err := r.MarkEmailVerified(t.Context(), u.ID, "verify"); err != nil || ok {
 		t.Fatalf("verification token reused: ok=%v err=%v", ok, err)
 	}
 }
@@ -97,16 +97,16 @@ func TestMarkEmailVerifiedNeedsTheCurrentUnexpiredToken(t *testing.T) {
 	r := testRepo(t)
 	u := testUser(t, r)
 
-	if _, err := r.SetEmailVerificationToken(u.ID, u.Email, "verify", time.Now().Add(-time.Minute)); err != nil {
+	if _, err := r.SetEmailVerificationToken(t.Context(), u.ID, u.Email, "verify", time.Now().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := r.MarkEmailVerified(u.ID, "verify"); ok {
+	if ok, _ := r.MarkEmailVerified(t.Context(), u.ID, "verify"); ok {
 		t.Fatal("an expired token verified the email")
 	}
-	if _, err := r.SetEmailVerificationToken(u.ID, u.Email, "verify", time.Now().Add(time.Hour)); err != nil {
+	if _, err := r.SetEmailVerificationToken(t.Context(), u.ID, u.Email, "verify", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := r.MarkEmailVerified(u.ID, "other"); ok {
+	if ok, _ := r.MarkEmailVerified(t.Context(), u.ID, "other"); ok {
 		t.Fatal("a wrong token verified the email")
 	}
 	if mustGet(t, r, u.ID).EmailVerified {
@@ -121,16 +121,16 @@ func TestTokensAreTiedToTheEmailRead(t *testing.T) {
 	u := testUser(t, r)
 	oldEmail := u.Email
 
-	if _, err := r.UpdateProfile(u.ID, ProfileUpdate{
+	if _, err := r.UpdateProfile(t.Context(), u.ID, ProfileUpdate{
 		Email:        "new-" + oldEmail,
 		Verification: &EmailVerification{TokenHash: "for-new", Expires: time.Now().Add(time.Hour)},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := r.SetEmailVerificationToken(u.ID, oldEmail, "for-old", time.Now().Add(time.Hour)); err != nil || ok {
+	if ok, err := r.SetEmailVerificationToken(t.Context(), u.ID, oldEmail, "for-old", time.Now().Add(time.Hour)); err != nil || ok {
 		t.Fatalf("verification token stored for the old email: ok=%v err=%v", ok, err)
 	}
-	if ok, err := r.SetPasswordResetToken(u.ID, oldEmail, "reset", time.Now().Add(time.Hour)); err != nil || ok {
+	if ok, err := r.SetPasswordResetToken(t.Context(), u.ID, oldEmail, "reset", time.Now().Add(time.Hour)); err != nil || ok {
 		t.Fatalf("reset token stored for the old email: ok=%v err=%v", ok, err)
 	}
 	got := mustGet(t, r, u.ID)
@@ -145,36 +145,36 @@ func TestEmailChangeCancelsPendingReset(t *testing.T) {
 	r := testRepo(t)
 	u := testUser(t, r)
 
-	if ok, err := r.SetPasswordResetToken(u.ID, u.Email, "reset", time.Now().Add(time.Hour)); err != nil || !ok {
+	if ok, err := r.SetPasswordResetToken(t.Context(), u.ID, u.Email, "reset", time.Now().Add(time.Hour)); err != nil || !ok {
 		t.Fatalf("reset token: ok=%v err=%v", ok, err)
 	}
-	if _, err := r.UpdateProfile(u.ID, ProfileUpdate{Email: "new-" + u.Email}); err != nil {
+	if _, err := r.UpdateProfile(t.Context(), u.ID, ProfileUpdate{Email: "new-" + u.Email}); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustGet(t, r, u.ID); got.PasswordResetToken != nil || got.PasswordResetExpires != nil {
 		t.Fatalf("pending reset kept: token=%v expires=%v", got.PasswordResetToken, got.PasswordResetExpires)
 	}
-	if ok, err := r.ResetPasswordWithToken(u.ID, "reset", "hash-1"); err != nil || ok {
+	if ok, err := r.ResetPasswordWithToken(t.Context(), u.ID, "reset", "hash-1"); err != nil || ok {
 		t.Fatalf("reset after an email change applied: ok=%v err=%v", ok, err)
 	}
 	// A username-only change leaves a pending reset alone.
-	if _, err := r.SetPasswordResetToken(u.ID, "new-"+u.Email, "reset2", time.Now().Add(time.Hour)); err != nil {
+	if _, err := r.SetPasswordResetToken(t.Context(), u.ID, "new-"+u.Email, "reset2", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.UpdateProfile(u.ID, ProfileUpdate{Username: "renamed" + uuid.NewString()[:4]}); err != nil {
+	if _, err := r.UpdateProfile(t.Context(), u.ID, ProfileUpdate{Username: "renamed" + uuid.NewString()[:4]}); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := r.ResetPasswordWithToken(u.ID, "reset2", "hash-1"); !ok {
+	if ok, _ := r.ResetPasswordWithToken(t.Context(), u.ID, "reset2", "hash-1"); !ok {
 		t.Fatal("a username change cancelled the reset")
 	}
 }
 
 func TestUpdateProfileReportsAMissingUser(t *testing.T) {
 	r := testRepo(t)
-	if ok, err := r.UpdateProfile(uuid.New(), ProfileUpdate{Username: "nobody" + uuid.NewString()[:4]}); err != nil || ok {
+	if ok, err := r.UpdateProfile(t.Context(), uuid.New(), ProfileUpdate{Username: "nobody" + uuid.NewString()[:4]}); err != nil || ok {
 		t.Fatalf("missing user: ok=%v err=%v", ok, err)
 	}
-	if _, err := r.UpdateProfile(uuid.New(), ProfileUpdate{Verification: &EmailVerification{}}); err == nil {
+	if _, err := r.UpdateProfile(t.Context(), uuid.New(), ProfileUpdate{Verification: &EmailVerification{}}); err == nil {
 		t.Fatal("a verification reset without an email was accepted")
 	}
 }
@@ -183,13 +183,13 @@ func TestTokenVersionBumpsAccumulate(t *testing.T) {
 	r := testRepo(t)
 	u := testUser(t, r)
 
-	if ok, err := r.SetPasswordResetToken(u.ID, u.Email, "reset", time.Now().Add(time.Hour)); err != nil || !ok {
+	if ok, err := r.SetPasswordResetToken(t.Context(), u.ID, u.Email, "reset", time.Now().Add(time.Hour)); err != nil || !ok {
 		t.Fatalf("reset token: ok=%v err=%v", ok, err)
 	}
-	if ok, err := r.ResetPasswordWithToken(u.ID, "reset", "hash-1"); err != nil || !ok {
+	if ok, err := r.ResetPasswordWithToken(t.Context(), u.ID, "reset", "hash-1"); err != nil || !ok {
 		t.Fatalf("reset: ok=%v err=%v", ok, err)
 	}
-	if ok, err := r.ChangePasswordHash(u.ID, "hash-1", "hash-2"); err != nil || !ok {
+	if ok, err := r.ChangePasswordHash(t.Context(), u.ID, "hash-1", "hash-2"); err != nil || !ok {
 		t.Fatalf("change: ok=%v err=%v", ok, err)
 	}
 	if got := mustGet(t, r, u.ID).TokenVersion; got != u.TokenVersion+2 {
@@ -203,10 +203,10 @@ func TestChangePasswordHashRequiresTheCheckedHash(t *testing.T) {
 	r := testRepo(t)
 	u := testUser(t, r)
 
-	if ok, _ := r.ChangePasswordHash(u.ID, "hash-0", "hash-1"); !ok {
+	if ok, _ := r.ChangePasswordHash(t.Context(), u.ID, "hash-0", "hash-1"); !ok {
 		t.Fatal("first change refused")
 	}
-	if ok, err := r.ChangePasswordHash(u.ID, "hash-0", "hash-2"); err != nil || ok {
+	if ok, err := r.ChangePasswordHash(t.Context(), u.ID, "hash-0", "hash-2"); err != nil || ok {
 		t.Fatalf("a change based on the old hash applied: ok=%v err=%v", ok, err)
 	}
 	if got := mustGet(t, r, u.ID).PasswordHash; got != "hash-1" {
@@ -218,13 +218,13 @@ func TestResetTokenIsSingleUse(t *testing.T) {
 	r := testRepo(t)
 	u := testUser(t, r)
 
-	if _, err := r.SetPasswordResetToken(u.ID, u.Email, "reset", time.Now().Add(time.Hour)); err != nil {
+	if _, err := r.SetPasswordResetToken(t.Context(), u.ID, u.Email, "reset", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := r.ResetPasswordWithToken(u.ID, "reset", "hash-1"); !ok {
+	if ok, _ := r.ResetPasswordWithToken(t.Context(), u.ID, "reset", "hash-1"); !ok {
 		t.Fatal("first use refused")
 	}
-	if ok, err := r.ResetPasswordWithToken(u.ID, "reset", "hash-2"); err != nil || ok {
+	if ok, err := r.ResetPasswordWithToken(t.Context(), u.ID, "reset", "hash-2"); err != nil || ok {
 		t.Fatalf("token reused: ok=%v err=%v", ok, err)
 	}
 	if got := mustGet(t, r, u.ID); got.PasswordHash != "hash-1" || got.PasswordResetToken != nil {
@@ -236,10 +236,10 @@ func TestExpiredResetTokenIsRefused(t *testing.T) {
 	r := testRepo(t)
 	u := testUser(t, r)
 
-	if _, err := r.SetPasswordResetToken(u.ID, u.Email, "reset", time.Now().Add(-time.Minute)); err != nil {
+	if _, err := r.SetPasswordResetToken(t.Context(), u.ID, u.Email, "reset", time.Now().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := r.ResetPasswordWithToken(u.ID, "reset", "hash-1"); err != nil || ok {
+	if ok, err := r.ResetPasswordWithToken(t.Context(), u.ID, "reset", "hash-1"); err != nil || ok {
 		t.Fatalf("expired token accepted: ok=%v err=%v", ok, err)
 	}
 }

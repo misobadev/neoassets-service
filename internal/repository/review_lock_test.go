@@ -57,7 +57,7 @@ func TestWithReviewLockReturnsTheCallbackError(t *testing.T) {
 // Overlapping awards for one submission credit the user exactly once.
 func TestAwardXPOncePerSubmissionUnderConcurrency(t *testing.T) {
 	r := NewRepository(testdb.Open(t, "repository_review"))
-	u, err := r.CreateUser(&models.User{
+	u, err := r.CreateUser(t.Context(), &models.User{
 		Username:     "xp" + uuid.NewString()[:8],
 		Email:        uuid.NewString()[:8] + "@example.com",
 		PasswordHash: "hash",
@@ -73,7 +73,7 @@ func TestAwardXPOncePerSubmissionUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- r.AwardXP(u.ID, 50, "approved_metadata", &sub)
+			errs <- r.AwardXP(t.Context(), u.ID, 50, "approved_metadata", &sub)
 		}()
 	}
 	wg.Wait()
@@ -84,7 +84,7 @@ func TestAwardXPOncePerSubmissionUnderConcurrency(t *testing.T) {
 		}
 	}
 
-	got, err := r.GetUserByID(u.ID)
+	got, err := r.GetUserByID(t.Context(), u.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,13 +100,13 @@ func TestAwardXPOncePerSubmissionUnderConcurrency(t *testing.T) {
 	}
 
 	// Awards without a submission are not deduplicated.
-	if err := r.AwardXP(u.ID, 5, "manual", nil); err != nil {
+	if err := r.AwardXP(t.Context(), u.ID, 5, "manual", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.AwardXP(u.ID, 5, "manual", nil); err != nil {
+	if err := r.AwardXP(t.Context(), u.ID, 5, "manual", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := r.GetUserByID(u.ID); got.XP != 60 {
+	if got, _ := r.GetUserByID(t.Context(), u.ID); got.XP != 60 {
 		t.Fatalf("xp = %d, want 60", got.XP)
 	}
 }

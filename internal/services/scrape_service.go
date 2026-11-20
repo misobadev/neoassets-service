@@ -115,7 +115,7 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		}
 	}
 
-	app, err := s.repo.GetDeveloperAppByClientID(creds.ClientID)
+	app, err := s.repo.GetDeveloperAppByClientID(ctx, creds.ClientID)
 	if err != nil {
 		return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid developer credentials"}
 	}
@@ -127,14 +127,14 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 	}
 	// Avoid a write on every request: only refresh last_used_at when stale.
 	if app.LastUsedAt == nil || time.Since(*app.LastUsedAt) > time.Minute {
-		_ = s.repo.TouchDeveloperAppLastUsed(creds.ClientID)
+		_ = s.repo.TouchDeveloperAppLastUsed(ctx, creds.ClientID)
 	}
 
 	// Enforce a generous per-app rate limit before resolving the optional user
 	// credential, so a garbage user credential cannot force an unbounded DB
 	// lookup without any throttling. The real per-subject limit is applied below.
 	if !s.limiterFor("pre:"+app.ClientID, s.preCheckRPM()).Allow() {
-		s.record(app.ID, resolveSoftwareName(creds.SoftwareName, app.Name), app.Name, "rate_limited")
+		s.record(ctx, app.ID, resolveSoftwareName(creds.SoftwareName, app.Name), app.Name, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded"}
 	}
 
@@ -150,7 +150,7 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 	}
 
 	if creds.UserCredential != "" {
-		user, err := s.resolveUser(creds.UserCredential)
+		user, err := s.resolveUser(ctx, creds.UserCredential)
 		if err != nil {
 			return nil, err
 		}
@@ -170,16 +170,16 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 			return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid debug password"}
 		}
 		log.Warn().Str("app", app.ClientID).Msg("scrape debug mode used")
-		used, err := s.repo.IncrementDebugUsage(utcDay(), app.ID)
+		used, err := s.repo.IncrementDebugUsage(ctx, utcDay(), app.ID)
 		if err != nil {
 			return nil, &auth.AuthError{Status: http.StatusInternalServerError, Message: "debug mode unavailable"}
 		}
 		if used > maxDebugCallsPerDay {
-			s.record(app.ID, subject.SoftwareName, app.Name, "rate_limited")
+			s.record(ctx, app.ID, subject.SoftwareName, app.Name, "rate_limited")
 			return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "debug daily limit exceeded"}
 		}
-		_ = s.repo.IncrementDebugCalls(app.ID)
-		_ = s.repo.RecordSoftwareOutcome(app.ID, subject.SoftwareName, app.Name, "debug", 1)
+		_ = s.repo.IncrementDebugCalls(ctx, app.ID)
+		_ = s.repo.RecordSoftwareOutcome(ctx, app.ID, subject.SoftwareName, app.Name, "debug", 1)
 		subject.Debug = true
 		subject.ForceUsed = creds.ForceUsed
 		subject.ForceRateLimit = creds.ForceRateLimit
@@ -190,11 +190,11 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 	}
 
 	if subject.Debug && subject.ForceRateLimit {
-		s.record(app.ID, subject.SoftwareName, app.Name, "rate_limited")
+		s.record(ctx, app.ID, subject.SoftwareName, app.Name, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded (debug)"}
 	}
 	if !s.allowSubject(subject) {
-		s.record(app.ID, subject.SoftwareName, app.Name, "rate_limited")
+		s.record(ctx, app.ID, subject.SoftwareName, app.Name, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded"}
 	}
 	return subject, nil
@@ -204,29 +204,29 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 // software; fallback is the app's name, used when the software name can't get
 // its own row). Rate-limited requests are only counted here and written by the
 // next batch. Failures are logged but never break the request.
-func (s *ScrapeService) record(appID uuid.UUID, software, fallback, outcome string) {
+func (s *ScrapeService) record(ctx context.Context, appID uuid.UUID, software, fallback, outcome string) {
 	if outcome == "rate_limited" {
 		s.refused.add(appID, software, fallback)
 		return
 	}
-	s.write(appID, software, fallback, outcome, 1)
+	s.write(ctx, appID, software, fallback, outcome, 1)
 }
 
-func (s *ScrapeService) write(appID uuid.UUID, software, fallback, outcome string, n int64) {
-	if err := s.repo.RecordScrapeOutcome(appID, outcome, n); err != nil {
+func (s *ScrapeService) write(ctx context.Context, appID uuid.UUID, software, fallback, outcome string, n int64) {
+	if err := s.repo.RecordScrapeOutcome(ctx, appID, outcome, n); err != nil {
 		log.Warn().Err(err).Str("outcome", outcome).Msg("failed to record scrape outcome")
 	}
-	if err := s.repo.RecordSoftwareOutcome(appID, software, fallback, outcome, n); err != nil {
+	if err := s.repo.RecordSoftwareOutcome(ctx, appID, software, fallback, outcome, n); err != nil {
 		log.Warn().Err(err).Str("outcome", outcome).Msg("failed to record software outcome")
 	}
 }
 
 // RecordOutcome exposes outcome recording to handlers.
-func (s *ScrapeService) RecordOutcome(subject *auth.ScrapeSubject, outcome string) {
+func (s *ScrapeService) RecordOutcome(ctx context.Context, subject *auth.ScrapeSubject, outcome string) {
 	if subject == nil || subject.ClientDBID == uuid.Nil {
 		return
 	}
-	s.record(subject.ClientDBID, subject.SoftwareName, subject.ClientName, outcome)
+	s.record(ctx, subject.ClientDBID, subject.SoftwareName, subject.ClientName, outcome)
 }
 
 // refusalFlushInterval is how often batched rate-limited counts are written.
@@ -304,16 +304,16 @@ func (s *ScrapeService) StartRefusalFlush(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.FlushRefusals()
+				s.FlushRefusals(ctx)
 			}
 		}
 	}()
 }
 
 // FlushRefusals writes the batched rate-limited counts now.
-func (s *ScrapeService) FlushRefusals() {
+func (s *ScrapeService) FlushRefusals(ctx context.Context) {
 	for _, r := range s.refused.drain() {
-		s.write(r.app, r.software, r.fallback, "rate_limited", r.count)
+		s.write(ctx, r.app, r.software, r.fallback, "rate_limited", r.count)
 	}
 }
 
@@ -340,20 +340,20 @@ func resolveSoftwareName(name, fallback string) string {
 
 // resolveUser validates a user credential, which may be a personal API key or an
 // existing user JWT.
-func (s *ScrapeService) resolveUser(credential string) (*models.User, error) {
+func (s *ScrapeService) resolveUser(ctx context.Context, credential string) (*models.User, error) {
 	if strings.HasPrefix(credential, auth.APIKeyPrefix) {
 		prefix := credential
 		if len(prefix) > auth.APIKeyPrefixLen {
 			prefix = prefix[:auth.APIKeyPrefixLen]
 		}
-		key, err := s.repo.GetUserAPIKeyByPrefix(prefix)
+		key, err := s.repo.GetUserAPIKeyByPrefix(ctx, prefix)
 		if err != nil || !auth.CheckTokenHash(credential, key.KeyHash) {
 			return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user API key"}
 		}
 		if key.LastUsedAt == nil || time.Since(*key.LastUsedAt) > time.Minute {
-			_ = s.repo.TouchUserAPIKeyLastUsed(key.ID)
+			_ = s.repo.TouchUserAPIKeyLastUsed(ctx, key.ID)
 		}
-		user, err := s.repo.GetUserByID(key.UserID)
+		user, err := s.repo.GetUserByID(ctx, key.UserID)
 		if err != nil {
 			return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user credential"}
 		}
@@ -367,7 +367,7 @@ func (s *ScrapeService) resolveUser(credential string) (*models.User, error) {
 	if err != nil {
 		return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user credential"}
 	}
-	user, err := s.repo.GetUserByID(claims.UserID)
+	user, err := s.repo.GetUserByID(ctx, claims.UserID)
 	if err != nil || !userTokenCurrent(claims, user) {
 		return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user credential"}
 	}
@@ -428,18 +428,18 @@ func (s *ScrapeService) limiterFor(key string, rpm int) *rate.Limiter {
 }
 
 // ListSystems returns the metadata system catalog.
-func (s *ScrapeService) ListSystems() ([]models.MetadataSystem, error) {
-	return s.meta.ListMetadataSystems()
+func (s *ScrapeService) ListSystems(ctx context.Context) ([]models.MetadataSystem, error) {
+	return s.meta.ListMetadataSystems(ctx)
 }
 
 // ListFamilies returns the broad system families (e.g. "arcade") with counts.
-func (s *ScrapeService) ListFamilies() ([]models.MetadataFamily, error) {
-	return s.meta.ListFamilies()
+func (s *ScrapeService) ListFamilies(ctx context.Context) ([]models.MetadataFamily, error) {
+	return s.meta.ListFamilies(ctx)
 }
 
 // ListGroups returns the system groups (e.g. "mame-fbneo") with counts.
-func (s *ScrapeService) ListGroups() ([]models.MetadataGroup, error) {
-	return s.meta.ListGroups()
+func (s *ScrapeService) ListGroups(ctx context.Context) ([]models.MetadataGroup, error) {
+	return s.meta.ListGroups(ctx)
 }
 
 // parenTagRegex and bracketTagRegex strip filename tags such as "(USA)" or
@@ -453,7 +453,7 @@ var (
 // Exactly one of SystemID, Family or Group must be set; a family/group expands
 // to all its systems (e.g. "arcade" -> every arcade board, "mame-fbneo" -> the
 // boards that run on MAME/FBNeo).
-func (s *ScrapeService) resolveSystems(q models.ScrapeGameQuery) ([]string, error) {
+func (s *ScrapeService) resolveSystems(ctx context.Context, q models.ScrapeGameQuery) ([]string, error) {
 	systemID := strings.TrimSpace(q.SystemID)
 	family := strings.TrimSpace(q.Family)
 	group := strings.TrimSpace(q.Group)
@@ -473,7 +473,7 @@ func (s *ScrapeService) resolveSystems(q models.ScrapeGameQuery) ([]string, erro
 
 	switch {
 	case systemID != "":
-		sys, err := s.repo.GetMetadataSystem(systemID)
+		sys, err := s.repo.GetMetadataSystem(ctx, systemID)
 		if err != nil {
 			return nil, fmt.Errorf("unknown system_id %q", systemID)
 		}
@@ -482,7 +482,7 @@ func (s *ScrapeService) resolveSystems(q models.ScrapeGameQuery) ([]string, erro
 		// covers every arcade board).
 		if sys.Virtual {
 			if g := strings.TrimSpace(sys.Group); g != "" {
-				ids, err := s.meta.ListSystemIDsByGroup(g)
+				ids, err := s.meta.ListSystemIDsByGroup(ctx, g)
 				if err != nil {
 					return nil, err
 				}
@@ -491,7 +491,7 @@ func (s *ScrapeService) resolveSystems(q models.ScrapeGameQuery) ([]string, erro
 				}
 			}
 			if f := strings.TrimSpace(sys.Family); f != "" {
-				ids, err := s.meta.ListSystemIDsByFamily(f)
+				ids, err := s.meta.ListSystemIDsByFamily(ctx, f)
 				if err != nil {
 					return nil, err
 				}
@@ -503,7 +503,7 @@ func (s *ScrapeService) resolveSystems(q models.ScrapeGameQuery) ([]string, erro
 		}
 		return []string{systemID}, nil
 	case family != "":
-		ids, err := s.meta.ListSystemIDsByFamily(family)
+		ids, err := s.meta.ListSystemIDsByFamily(ctx, family)
 		if err != nil {
 			return nil, err
 		}
@@ -512,7 +512,7 @@ func (s *ScrapeService) resolveSystems(q models.ScrapeGameQuery) ([]string, erro
 		}
 		return ids, nil
 	default:
-		ids, err := s.meta.ListSystemIDsByGroup(group)
+		ids, err := s.meta.ListSystemIDsByGroup(ctx, group)
 		if err != nil {
 			return nil, err
 		}
@@ -529,7 +529,7 @@ func (s *ScrapeService) resolveSystems(q models.ScrapeGameQuery) ([]string, erro
 // returns the game (nil when nothing matched) and how it was matched ("hash" or
 // "name").
 func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery) (*models.ScrapeGame, string, error) {
-	systemIDs, err := s.resolveSystems(q)
+	systemIDs, err := s.resolveSystems(ctx, q)
 	if err != nil {
 		return nil, "", err
 	}
@@ -543,7 +543,7 @@ func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery)
 	if hasHash {
 		var games []models.Game
 		for _, systemID := range systemIDs {
-			found, err := s.meta.LookupGame(q.CRC, q.MD5, q.SHA1, q.SHA256, systemID)
+			found, err := s.meta.LookupGame(ctx, q.CRC, q.MD5, q.SHA1, q.SHA256, systemID)
 			if err != nil {
 				return nil, "", err
 			}
@@ -553,7 +553,7 @@ func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery)
 			// A hash can match several entries (e.g. a base game and its hacks);
 			// prefer the official one, and use the name to disambiguate when the
 			// client sent both.
-			return s.oneGame(bestMatch(games, name).ID, q), "hash", nil
+			return s.oneGame(ctx, bestMatch(games, name).ID, q), "hash", nil
 		}
 		// A hash miss with no name to fall back on is a genuine not-found.
 		if name == "" {
@@ -576,7 +576,7 @@ func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery)
 	if best == nil {
 		return nil, "name", nil
 	}
-	return s.oneGame(best.ID, q), "name", nil
+	return s.oneGame(ctx, best.ID, q), "name", nil
 }
 
 // cleanGameName normalizes a filename-style game name so a ROM name matches
@@ -606,22 +606,22 @@ func cleanGameName(name string) string {
 
 // oneGame loads a game's full detail, maps it to the scrape payload and bumps
 // its scrape counter. It returns nil when the game cannot be loaded.
-func (s *ScrapeService) oneGame(id uuid.UUID, q models.ScrapeGameQuery) *models.ScrapeGame {
-	detail, err := s.meta.GetGame(id, "")
+func (s *ScrapeService) oneGame(ctx context.Context, id uuid.UUID, q models.ScrapeGameQuery) *models.ScrapeGame {
+	detail, err := s.meta.GetGame(ctx, id, "")
 	if err != nil {
 		return nil
 	}
-	out := s.toScrapeGame(detail, q)
-	out.Scrapes = s.bumpScrape(id)
+	out := s.toScrapeGame(ctx, detail, q)
+	out.Scrapes = s.bumpScrape(ctx, id)
 	return &out
 }
 
 // bumpScrape increments the game's scrape counter and returns the new count.
-func (s *ScrapeService) bumpScrape(gameID uuid.UUID) int64 {
+func (s *ScrapeService) bumpScrape(ctx context.Context, gameID uuid.UUID) int64 {
 	if s.repo == nil {
 		return 0
 	}
-	n, err := s.repo.IncrementGameScrape(gameID)
+	n, err := s.repo.IncrementGameScrape(ctx, gameID)
 	if err != nil {
 		log.Warn().Err(err).Str("game", gameID.String()).Msg("failed to increment game scrape")
 		return 0
@@ -682,7 +682,7 @@ func typeBonus(t string) int {
 }
 
 // PopularGames returns the most scraped games, optionally scoped to a system.
-func (s *ScrapeService) PopularGames(systemID string, limit int) ([]models.PopularGame, error) {
+func (s *ScrapeService) PopularGames(ctx context.Context, systemID string, limit int) ([]models.PopularGame, error) {
 	if limit <= 0 {
 		limit = defaultPopularLimit
 	}
@@ -691,18 +691,18 @@ func (s *ScrapeService) PopularGames(systemID string, limit int) ([]models.Popul
 	}
 	systemID = strings.TrimSpace(systemID)
 	if systemID != "" {
-		if _, err := s.repo.GetMetadataSystem(systemID); err != nil {
+		if _, err := s.repo.GetMetadataSystem(ctx, systemID); err != nil {
 			return nil, fmt.Errorf("unknown system_id %q", systemID)
 		}
 	}
-	return s.repo.ListPopularGames(systemID, limit)
+	return s.repo.ListPopularGames(ctx, systemID, limit)
 }
 
 // toScrapeGame maps an internal game detail into the public scraping payload,
 // resolving media object keys into public CDN URLs and optionally filtering the
 // media kinds. The ROM list is only included when requested (`roms=true`);
 // otherwise just the count is returned to keep the payload light.
-func (s *ScrapeService) toScrapeGame(d *models.GameDetail, q models.ScrapeGameQuery) models.ScrapeGame {
+func (s *ScrapeService) toScrapeGame(ctx context.Context, d *models.GameDetail, q models.ScrapeGameQuery) models.ScrapeGame {
 	want := map[string]bool{}
 	for _, k := range q.Media {
 		if k != "" {
@@ -738,7 +738,7 @@ func (s *ScrapeService) toScrapeGame(d *models.GameDetail, q models.ScrapeGameQu
 		Type:         d.Type,
 		RomCount:     len(d.Roms),
 		Media:        media,
-		Descriptions: s.descriptionsByLang(d.Game),
+		Descriptions: s.descriptionsByLang(ctx, d.Game),
 	}
 
 	if len(d.Roms) > 0 {
@@ -759,17 +759,17 @@ func (s *ScrapeService) toScrapeGame(d *models.GameDetail, q models.ScrapeGameQu
 
 // descriptionsByLang builds the per-language description map: the base English
 // description plus every enabled language's translation (empty when missing).
-func (s *ScrapeService) descriptionsByLang(game models.Game) map[string]string {
+func (s *ScrapeService) descriptionsByLang(ctx context.Context, game models.Game) map[string]string {
 	out := map[string]string{"en": game.Description}
 	if s.repo == nil {
 		return out
 	}
 
-	langs, err := s.repo.ListLanguages()
+	langs, err := s.repo.ListLanguages(ctx)
 	if err != nil {
 		return out
 	}
-	translations, err := s.repo.GameDescriptionsByLang(game.ID)
+	translations, err := s.repo.GameDescriptionsByLang(ctx, game.ID)
 	if err != nil {
 		translations = nil
 	}
@@ -784,7 +784,7 @@ func (s *ScrapeService) descriptionsByLang(game models.Game) map[string]string {
 
 // ConsumeQuota increments the daily quota for the subject and returns the
 // resulting quota state. It returns ErrQuotaExceeded when the limit is reached.
-func (s *ScrapeService) ConsumeQuota(subject *auth.ScrapeSubject) (*models.ScrapeQuota, error) {
+func (s *ScrapeService) ConsumeQuota(ctx context.Context, subject *auth.ScrapeSubject) (*models.ScrapeQuota, error) {
 	day := utcDay()
 	subjectType, subjectID := usageKey(subject)
 
@@ -794,7 +794,7 @@ func (s *ScrapeService) ConsumeQuota(subject *auth.ScrapeSubject) (*models.Scrap
 		used = *subject.ForceUsed
 	} else {
 		var err error
-		used, err = s.repo.IncrementScrapeUsage(day, subjectType, subjectID)
+		used, err = s.repo.IncrementScrapeUsage(ctx, day, subjectType, subjectID)
 		if err != nil {
 			return nil, err
 		}
@@ -808,10 +808,10 @@ func (s *ScrapeService) ConsumeQuota(subject *auth.ScrapeSubject) (*models.Scrap
 }
 
 // Account returns the current subject and its quota state without consuming it.
-func (s *ScrapeService) Account(subject *auth.ScrapeSubject) (*models.ScrapeAccount, error) {
+func (s *ScrapeService) Account(ctx context.Context, subject *auth.ScrapeSubject) (*models.ScrapeAccount, error) {
 	day := utcDay()
 	subjectType, subjectID := usageKey(subject)
-	used, err := s.repo.GetScrapeUsage(day, subjectType, subjectID)
+	used, err := s.repo.GetScrapeUsage(ctx, day, subjectType, subjectID)
 	if err != nil {
 		return nil, err
 	}

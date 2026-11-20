@@ -17,7 +17,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.userSvc.Register(req)
+	result, err := h.userSvc.Register(r.Context(), req)
 	if err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
@@ -33,7 +33,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.userSvc.Login(req)
+	result, err := h.userSvc.Login(r.Context(), req)
 	if err != nil {
 		writeClientError(w, http.StatusUnauthorized, err)
 		return
@@ -59,7 +59,7 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.userSvc.VerifyEmail(req.Token); err != nil {
+	if err := h.userSvc.VerifyEmail(r.Context(), req.Token); err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -76,7 +76,7 @@ func (h *Handler) VerifyEmailByLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.userSvc.VerifyEmail(token); err != nil {
+	if err := h.userSvc.VerifyEmail(r.Context(), token); err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -91,7 +91,7 @@ func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.userSvc.ResendVerification(req.Email); err != nil {
+	if err := h.userSvc.ResendVerification(r.Context(), req.Email); err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -107,7 +107,7 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.userSvc.ForgotPassword(req.Email); err != nil {
+	if err := h.userSvc.ForgotPassword(r.Context(), req.Email); err != nil {
 		writeClientError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -122,7 +122,7 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.userSvc.ResetPassword(req.Token, req.NewPassword); err != nil {
+	if err := h.userSvc.ResetPassword(r.Context(), req.Token, req.NewPassword); err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -138,7 +138,7 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.userSvc.GetUserByID(claims.UserID)
+	user, err := h.userSvc.GetUserByID(r.Context(), claims.UserID)
 	if err != nil {
 		writeClientError(w, http.StatusNotFound, err)
 		return
@@ -161,7 +161,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &req) {
 		return
 	}
-	user, err := h.userSvc.UpdateProfile(claims.UserID, req.Username, req.Email)
+	user, err := h.userSvc.UpdateProfile(r.Context(), claims.UserID, req.Username, req.Email)
 	if err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
@@ -183,7 +183,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if !httpx.Decode(w, r, &req) {
 		return
 	}
-	if err := h.userSvc.ChangePassword(claims.UserID, req.CurrentPassword, req.NewPassword); err != nil {
+	if err := h.userSvc.ChangePassword(r.Context(), claims.UserID, req.CurrentPassword, req.NewPassword); err != nil {
 		writeClientError(w, http.StatusBadRequest, err)
 		return
 	}
