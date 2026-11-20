@@ -1,0 +1,105 @@
+200
+{
+  "genres": [
+    {
+      "id": "action",
+      "name": "Action",
+      "sort_order": 1
+    },
+    {
+      "id": "adventure",
+      "name": "Adventure",
+      "sort_order": 2
+    },
+    {
+      "id": "beat-em-up",
+      "name": "Beat 'em Up",
+      "sort_order": 3
+    },
+    {
+      "id": "fighting",
+      "name": "Fighting",
+      "sort_order": 4
+    },
+    {
+      "id": "platformer",
+      "name": "Platformer",
+      "sort_order": 5
+    },
+    {
+      "id": "puzzle",
+      "name": "Puzzle",
+      "sort_order": 6
+    },
+    {
+      "id": "racing",
+      "name": "Racing",
+      "sort_order": 7
+    },
+    {
+      "id": "rpg",
+      "name": "Role-Playing (RPG)",
+      "sort_order": 8
+    },
+    {
+      "id": "shooter",
+      "name": "Shooter",
+      "sort_order": 9
+    },
+    {
+      "id": "shoot-em-up",
+      "name": "Shoot 'em Up",
+      "sort_order": 10
+    },
+    {
+      "id": "simulation",
+      "name": "Simulation",
+      "sort_order": 11
+    },
+    {
+      "id": "sports",
+      "name": "Sports",
+      "sort_order": 12
+    },
+    {
+      "id": "strategy",
+      "name": "Strategy",
+      "sort_order": 13
+    },
+    {
+      "id": "music",
+      "name": "Music \u0026 Rhythm",
+      "sort_order": 14
+    },
+    {
+      "id": "board-card",
+      "name": "Board \u0026 Card",
+      "sort_order": 15
+    },
+    {
+      "id": "pinball",
+      "name": "Pinball",
+      "sort_order": 16
+    },
+    {
+      "id": "educational",
+      "name": "Educational",
+      "sort_order": 17
+    },
+    {
+      "id": "quiz",
+      "name": "Quiz",
+      "sort_order": 18
+    },
+    {
+      "id": "compilation",
+      "name": "Compilation",
+      "sort_order": 19
+    },
+    {
+      "id": "miscellaneous",
+      "name": "Miscellaneous",
+      "sort_order": 20
+    }
+  ]
+}

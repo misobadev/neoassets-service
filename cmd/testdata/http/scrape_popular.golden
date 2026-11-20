@@ -1,0 +1,19 @@
+200
+{
+  "games": [
+    {
+      "id": "00000000-0000-4000-8000-0000000000a1",
+      "last_scraped_at": "<time>",
+      "name": "Super Mario World",
+      "scrapes": 2,
+      "system_id": "snes"
+    },
+    {
+      "id": "00000000-0000-4000-8000-0000000000a2",
+      "last_scraped_at": "<time>",
+      "name": "The Legend of Zelda: A Link to the Past",
+      "scrapes": 2,
+      "system_id": "snes"
+    }
+  ]
+}

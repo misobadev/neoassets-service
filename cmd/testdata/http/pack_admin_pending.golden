@@ -1,0 +1,39 @@
+200
+{
+  "submissions": [
+    {
+      "admin_version": "",
+      "ai": false,
+      "anon_user_id": "<uuid>",
+      "author": "Artist",
+      "base_points_earned": 0,
+      "contribution": false,
+      "created_at": "<time>",
+      "description": "A test pack.",
+      "donation_url": "https://ko-fi.com/artist",
+      "files": null,
+      "id": "<uuid>",
+      "logs": [
+        {
+          "action": "submitted",
+          "created_at": "<time>",
+          "detail": "Submission submitted for review",
+          "id": "<uuid>",
+          "submission_id": "<uuid>",
+          "user_agent": "",
+          "user_id": "<uuid>",
+          "user_name": "artist"
+        }
+      ],
+      "name": "Rejected Pack",
+      "pack_id": "rejected-pack",
+      "points_earned": 0,
+      "reviewed_at": null,
+      "reviewed_by": null,
+      "status": "pending",
+      "submitted_by": "artist",
+      "user_id": "<uuid>",
+      "version": ""
+    }
+  ]
+}

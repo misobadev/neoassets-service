@@ -1,0 +1,4 @@
+401
+{
+  "error": "Authorization header required"
+}
