@@ -28,6 +28,6 @@
   "scrapes": 0,
   "system_id": "snes",
   "system_name": "Super Nintendo Entertainment System",
-  "type": "game",
+  "type": "base",
   "updated_at": "<time>"
 }

@@ -1,0 +1,21 @@
+201
+{
+  "base_points_earned": 0,
+  "created_at": "<time>",
+  "game_id": "00000000-0000-4000-8000-0000000000a1",
+  "id": "<uuid>",
+  "kind": "edit",
+  "old_media": [],
+  "old_payload": {},
+  "payload": {
+    "description": "An updated description.",
+    "publisher": "Nintendo of America"
+  },
+  "points_earned": 0,
+  "review_comment": "",
+  "reviewed_at": null,
+  "reviewed_by": null,
+  "status": "pending",
+  "system_id": null,
+  "user_id": "<uuid>"
+}

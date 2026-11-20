@@ -1713,6 +1713,16 @@ func (r *Repository) UpdateMetadataSubmissionFileRegion(fileID uuid.UUID, region
 // ApplyMetadataSubmission copies approved files into media and applies the
 // editable payload to the target game or system.
 func (r *Repository) ApplyMetadataSubmission(id uuid.UUID) error {
+	// Every field and media change of the submission is applied in one
+	// transaction, so a failure part-way leaves the game unchanged.
+	return r.WithTx(context.Background(), func(tx *Repository) error {
+		return tx.applyMetadataSubmission(id)
+	})
+}
+
+// applyMetadataSubmission does the work of ApplyMetadataSubmission on r, which
+// is expected to be inside a transaction.
+func (r *Repository) applyMetadataSubmission(id uuid.UUID) error {
 	sub, err := r.GetMetadataSubmission(id)
 	if err != nil {
 		return err

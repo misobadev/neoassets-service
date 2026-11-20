@@ -3,7 +3,7 @@
   "systems": [
     {
       "aftermarket": 0,
-      "base": 0,
+      "base": 2,
       "bootleg": 0,
       "created_at": "<time>",
       "description": "A 16-bit home console.",

@@ -1,0 +1,33 @@
+200
+{
+  "submissions": [
+    {
+      "base_points_earned": 20,
+      "change_kinds": [
+        "description",
+        "publisher"
+      ],
+      "created_at": "<time>",
+      "game_id": "00000000-0000-4000-8000-0000000000a1",
+      "game_name": "Super Mario World",
+      "id": "<uuid>",
+      "kind": "edit",
+      "old_media": [],
+      "old_payload": {},
+      "payload": {
+        "description": "An updated description.",
+        "publisher": "Nintendo of America"
+      },
+      "points_earned": 0,
+      "review_comment": "",
+      "reviewed_at": null,
+      "reviewed_by": null,
+      "status": "pending",
+      "submitted_by_name": "writer",
+      "system_id": "snes",
+      "user_id": "<uuid>"
+    }
+  ],
+  "total": 1,
+  "total_xp": 0
+}

@@ -207,7 +207,7 @@ func (r *Repository) AwardXP(userID uuid.UUID, delta int, reason string, submiss
 	if delta == 0 {
 		return nil
 	}
-	tx, err := r.db.Begin()
+	tx, err := r.pool.Begin()
 	if err != nil {
 		return err
 	}

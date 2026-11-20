@@ -1,0 +1,23 @@
+200
+{
+  "games": [
+    {
+      "created_at": "<time>",
+      "description": "",
+      "developer": "",
+      "genre": "",
+      "id": "<uuid>",
+      "name": "Golden Test Quest",
+      "publisher": "Test Co",
+      "rating": 0,
+      "release_month": null,
+      "release_year": null,
+      "scrapes": 0,
+      "system_id": "snes",
+      "system_name": "Super Nintendo Entertainment System",
+      "type": "base",
+      "updated_at": "<time>"
+    }
+  ],
+  "total": 1
+}

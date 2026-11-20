@@ -1173,25 +1173,29 @@ func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID u
 		return nil, err
 	}
 
-	// Packs are listed from their latest approved row, so a contribution must
-	// carry the pack's current name, author, donation link and AI flag when it
-	// is approved, whatever it was saved with.
-	if sub.Contribution {
-		if err := s.repo.SyncContributionIdentity(submissionID); err != nil {
-			return nil, err
-		}
-	}
-
-	updated, err := s.repo.SetSubmissionStatus(submissionID, models.StatusApproved, adminID, version)
-	if err != nil {
-		return nil, err
-	}
-
 	detail := "Approved by admin"
 	if strings.TrimSpace(comment) != "" {
 		detail = fmt.Sprintf("Approved by admin: %s", strings.TrimSpace(comment))
 	}
-	if err := s.repo.AddLog(submissionID, "approved", adminID.String(), "", detail); err != nil {
+	// The identity sync, the status change and its log entry are written
+	// together, so an approval is never half-recorded.
+	var updated *models.Submission
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		// Packs are listed from their latest approved row, so a contribution
+		// must carry the pack's current name, author, donation link and AI flag
+		// when it is approved, whatever it was saved with.
+		if sub.Contribution {
+			if err := tx.SyncContributionIdentity(submissionID); err != nil {
+				return err
+			}
+		}
+		var err error
+		if updated, err = tx.SetSubmissionStatus(submissionID, models.StatusApproved, adminID, version); err != nil {
+			return err
+		}
+		return tx.AddLog(submissionID, "approved", adminID.String(), "", detail)
+	})
+	if err != nil {
 		return nil, err
 	}
 

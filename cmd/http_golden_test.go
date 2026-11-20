@@ -109,8 +109,8 @@ func seedCatalog(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO metadata_systems (id, name, short_name, family, description)
 		VALUES ('snes', 'Super Nintendo Entertainment System', 'SNES', 'console', 'A 16-bit home console.')`)
 	mustExec(t, db, `INSERT INTO games (id, system_id, name, description, release_year, publisher, developer, genre, type)
-		VALUES ($1, 'snes', 'Super Mario World', 'A platform game.', 1990, 'Nintendo', 'Nintendo EAD', 'Platform', 'game'),
-		       ($2, 'snes', 'The Legend of Zelda: A Link to the Past', 'An action adventure.', 1991, 'Nintendo', 'Nintendo EAD', 'Adventure', 'game')`,
+		VALUES ($1, 'snes', 'Super Mario World', 'A platform game.', 1990, 'Nintendo', 'Nintendo EAD', 'Platform', 'base'),
+		       ($2, 'snes', 'The Legend of Zelda: A Link to the Past', 'An action adventure.', 1991, 'Nintendo', 'Nintendo EAD', 'Adventure', 'base')`,
 		gameMarioID, gameZeldaID)
 	mustExec(t, db, `INSERT INTO roms (game_id, name, size, crc, md5, sha1)
 		VALUES ($1, 'Super Mario World (USA).sfc', 524288, 'b19ed489', '', ''),
@@ -565,4 +565,50 @@ func TestHTTPCreatePackWithMissingUploadLeavesNothing(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("%d submission rows after a refused create, want 0", n)
 	}
+}
+
+// TestHTTPMetadataLifecycle walks text-only metadata contributions through
+// create, submit and review: an edit of an existing game (applied in one
+// transaction) and a brand-new game.
+func TestHTTPMetadataLifecycle(t *testing.T) {
+	h := newAPIHarness(t)
+	h.seedUser("writer", "user")
+	h.seedUser("reviewer", "admin")
+	writer := h.client()
+	writer.login("writer")
+	admin := h.client()
+	admin.login("reviewer")
+
+	edit := writer.do(http.MethodPost, "/api/v1/metadata/submissions", map[string]any{
+		"game_id": gameMarioID, "kind": "edit",
+		"payload": map[string]any{"publisher": "Nintendo of America", "description": "An updated description."},
+	})
+	golden(t, "metadata_create_edit", edit)
+	editID := edit.field(t, "id")
+	golden(t, "metadata_submit_edit", writer.do(http.MethodPost, "/api/v1/metadata/submissions/"+editID+"/submit", nil))
+	golden(t, "metadata_my_list", writer.do(http.MethodGet, "/api/v1/auth/metadata/submissions", nil))
+	golden(t, "metadata_admin_list", admin.do(http.MethodGet, "/api/v1/admin/metadata/submissions?status=pending", nil))
+	golden(t, "metadata_approve_edit", admin.do(http.MethodPost, "/api/v1/admin/metadata/submissions/"+editID+"/approve",
+		map[string]string{"comment": "Thanks."}))
+	golden(t, "metadata_approve_edit_again", admin.do(http.MethodPost, "/api/v1/admin/metadata/submissions/"+editID+"/approve", nil))
+	golden(t, "metadata_game_after_edit", h.client().do(http.MethodGet, "/api/v1/metadata/games/"+gameMarioID, nil))
+
+	newGame := writer.do(http.MethodPost, "/api/v1/metadata/submissions", map[string]any{
+		"system_id": "snes", "kind": "new_game",
+		"payload": map[string]any{"name": "Golden Test Quest", "type": "base", "publisher": "Test Co"},
+	})
+	golden(t, "metadata_create_new_game", newGame)
+	newID := newGame.field(t, "id")
+	writer.do(http.MethodPost, "/api/v1/metadata/submissions/"+newID+"/submit", nil)
+	golden(t, "metadata_approve_new_game", admin.do(http.MethodPost, "/api/v1/admin/metadata/submissions/"+newID+"/approve", nil))
+	golden(t, "metadata_search_new_game", h.client().do(http.MethodGet, "/api/v1/metadata/games?q=golden+test+quest", nil))
+
+	rejected := writer.do(http.MethodPost, "/api/v1/metadata/submissions", map[string]any{
+		"game_id": gameZeldaID, "kind": "edit", "payload": map[string]any{"publisher": "Nobody"},
+	})
+	rejectedID := rejected.field(t, "id")
+	writer.do(http.MethodPost, "/api/v1/metadata/submissions/"+rejectedID+"/submit", nil)
+	golden(t, "metadata_reject", admin.do(http.MethodPost, "/api/v1/admin/metadata/submissions/"+rejectedID+"/reject",
+		map[string]string{"comment": "No."}))
+	golden(t, "metadata_writer_rewards", writer.do(http.MethodGet, "/api/v1/rewards", nil))
 }
