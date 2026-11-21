@@ -1481,6 +1481,45 @@ func (s *Service) DeleteSubmission(ctx context.Context, submissionID uuid.UUID) 
 	return nil
 }
 
+// DeletePack removes a published pack completely: every revision and
+// contribution in the database and every object under packs/{packID}/ in
+// storage. Objects are deleted first, so a storage failure leaves the pack in
+// place and the deletion can be retried.
+func (s *Service) DeletePack(ctx context.Context, packID string) error {
+	if !packIDRegex.MatchString(packID) {
+		return apperr.Invalid("invalid pack id")
+	}
+	if _, err := s.repo.GetApprovedPackMeta(ctx, packID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apperr.NotFound("pack not found")
+		}
+		return err
+	}
+	dbKeys, err := s.repo.ListPackObjectKeys(ctx, packID)
+	if err != nil {
+		return err
+	}
+	stored, err := s.r2.ListKeys(ctx, "packs/"+packID+"/")
+	if err != nil {
+		return fmt.Errorf("list pack objects %s: %w", packID, err)
+	}
+	seen := make(map[string]bool, len(dbKeys)+len(stored))
+	keys := make([]string, 0, len(dbKeys)+len(stored))
+	for _, k := range append(dbKeys, stored...) {
+		if k != "" && !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	if err := s.r2.DeleteObjects(ctx, keys); err != nil {
+		return fmt.Errorf("delete pack media %s: %w", packID, err)
+	}
+	if _, err := s.repo.DeletePack(ctx, packID); err != nil {
+		return err
+	}
+	return nil
+}
+
 // StorageUsage is the storage usage breakdown between object storage and the
 // metadata database.
 type StorageUsage struct {

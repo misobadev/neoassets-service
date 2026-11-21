@@ -435,6 +435,18 @@ func TestHTTPPackLifecycle(t *testing.T) {
 	golden(t, "pack_public_download", h.client().do(http.MethodGet, "/api/v1/packs/approved-pack/download", nil))
 	golden(t, "pack_trash_approved", artist.do(http.MethodPost, "/api/v1/submissions/"+approved+"/trash", nil))
 	golden(t, "pack_artist_rewards", artist.do(http.MethodGet, "/api/v1/rewards", nil))
+
+	// Only an admin can delete a whole pack; it removes the database rows and
+	// every stored object of the pack.
+	golden(t, "pack_delete_as_user", artist.do(http.MethodDelete, "/api/v1/admin/packs/approved-pack", nil))
+	golden(t, "pack_delete", admin.do(http.MethodDelete, "/api/v1/admin/packs/approved-pack", nil))
+	golden(t, "pack_delete_again", admin.do(http.MethodDelete, "/api/v1/admin/packs/approved-pack", nil))
+	golden(t, "pack_public_detail_deleted", h.client().do(http.MethodGet, "/api/v1/packs/approved-pack", nil))
+	for _, k := range h.bucket.Keys() {
+		if strings.HasPrefix(k, "packs/approved-pack/") {
+			t.Errorf("object %s survived the pack deletion", k)
+		}
+	}
 }
 
 // ffmpegHasWebP reports whether ffmpeg can encode WebP, which approval needs.

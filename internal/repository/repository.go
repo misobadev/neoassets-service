@@ -976,6 +976,50 @@ func (r *Repository) DeleteSubmission(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// ListPackObjectKeys returns every object key referenced by any revision or
+// contribution of a pack, whatever its status.
+func (r *Repository) ListPackObjectKeys(ctx context.Context, packID string) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT sf.object_key
+		 FROM submission_files sf
+		 JOIN submissions s ON s.id = sf.submission_id
+		 WHERE s.pack_id = $1`,
+		packID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pack object keys: %w", err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+// DeletePack removes every submission of a pack (revisions, contributions and,
+// by cascade, their file rows and logs) and its download counter. It returns
+// how many submissions were deleted.
+func (r *Repository) DeletePack(ctx context.Context, packID string) (int64, error) {
+	var deleted int64
+	err := r.WithTx(ctx, func(tx *Repository) error {
+		res, err := tx.db.ExecContext(ctx, `DELETE FROM submissions WHERE pack_id = $1`, packID)
+		if err != nil {
+			return fmt.Errorf("failed to delete pack submissions: %w", err)
+		}
+		deleted, _ = res.RowsAffected()
+		if _, err := tx.db.ExecContext(ctx, `DELETE FROM pack_scrape_stats WHERE pack_id = $1`, packID); err != nil {
+			return fmt.Errorf("failed to delete pack stats: %w", err)
+		}
+		return nil
+	})
+	return deleted, err
+}
+
 // ListApprovedPackKeysByPacks returns, per pack, all object keys referenced by
 // its approved submissions, in a single query (N+1 avoidance).
 func (r *Repository) ListApprovedPackKeysByPacks(ctx context.Context, packIDs []string) (map[string][]string, error) {

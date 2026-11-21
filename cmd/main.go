@@ -573,6 +573,7 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 			r.Put("/admin/users/{id}/role", h.SetUserRole)
 			r.Put("/admin/users/{id}/donor", h.SetDonorStatus)
 			r.Post("/admin/donations/import", h.ImportDonations)
+			r.Delete("/admin/packs/{packID}", h.DeletePack)
 		})
 	})
 
