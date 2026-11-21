@@ -119,3 +119,14 @@ func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
 }
+
+// AdminDeveloperOverview lists every developer app and personal API key with
+// their usage. Admin only.
+func (h *Handler) AdminDeveloperOverview(w http.ResponseWriter, r *http.Request) {
+	out, err := h.devSvc.Overview(r.Context())
+	if err != nil {
+		writeServerError(w, http.StatusInternalServerError, "failed to load developer overview", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}

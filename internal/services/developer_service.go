@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"neoassets/internal/apperr"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -156,4 +157,49 @@ func credentialName(name string) (string, error) {
 		return "", fmt.Errorf("name must be at most %d characters", maxCredentialNameLen)
 	}
 	return name, nil
+}
+
+// Overview returns every developer app and personal API key with their usage,
+// plus totals, for the admin panel.
+func (s *DeveloperService) Overview(ctx context.Context) (*models.DeveloperOverview, error) {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	apps, err := s.repo.ListAllDeveloperApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := s.repo.ListAllSoftwareStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := s.repo.ListAllUserAPIKeys(ctx, today)
+	if err != nil {
+		return nil, err
+	}
+	day, month, err := s.repo.ScrapeUsageTotals(ctx, today)
+	if err != nil {
+		return nil, err
+	}
+	out := &models.DeveloperOverview{
+		Apps: make([]models.AdminDeveloperApp, 0, len(apps)),
+		Keys: make([]models.AdminAPIKey, 0, len(keys)),
+	}
+	out.Totals.ScrapesToday = day
+	out.Totals.Scrapes30Days = month
+	for _, a := range apps {
+		a.Software = stats[a.ID]
+		if a.RevokedAt == nil {
+			out.Totals.ActiveApps++
+		}
+		out.Totals.APICalls += a.APICalls
+		out.Totals.QuotaExceeded += a.QuotaExceeded
+		out.Totals.RateLimited += a.RateLimited
+		out.Apps = append(out.Apps, a)
+	}
+	for _, k := range keys {
+		if k.RevokedAt == nil {
+			out.Totals.ActiveKeys++
+		}
+		out.Keys = append(out.Keys, k)
+	}
+	return out, nil
 }
