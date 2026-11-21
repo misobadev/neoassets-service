@@ -1,0 +1,4 @@
+400
+{
+  "error": "donation_url must be an https:// web address"
+}

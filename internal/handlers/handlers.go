@@ -552,6 +552,29 @@ func (h *Handler) DeleteSubmission(w http.ResponseWriter, r *http.Request) {
 
 // DeletePack removes a published pack with all its revisions, contributions
 // and stored images. Admin only.
+// SetPackDonationURL changes the donation link of an approved pack (admin only).
+func (h *Handler) SetPackDonationURL(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DonationURL string `json:"donation_url"`
+	}
+	if !httpx.Decode(w, r, &body) {
+		return
+	}
+	donationURL, err := h.svc.SetPackDonationURL(r.Context(), chi.URLParam(r, "packID"), body.DonationURL)
+	if err != nil {
+		switch apperr.KindOf(err) {
+		case apperr.KindInvalid:
+			writeError(w, http.StatusBadRequest, err.Error())
+		case apperr.KindNotFound:
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeServerError(w, http.StatusInternalServerError, "failed to set donation link", err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"donation_url": donationURL})
+}
+
 func (h *Handler) DeletePack(w http.ResponseWriter, r *http.Request) {
 	packID := chi.URLParam(r, "packID")
 	if err := h.svc.DeletePack(r.Context(), packID); err != nil {
