@@ -773,7 +773,7 @@ func (s *Service) ensureUploaded(ctx context.Context, objectKey, fileName string
 		return fmt.Errorf("could not verify upload %q", fileName)
 	}
 	if !ok {
-		return fmt.Errorf("upload for %q did not complete — try uploading again", fileName)
+		return fmt.Errorf("upload for %q did not complete, try uploading again", fileName)
 	}
 	ext := strings.ToLower(getExt(fileName))
 	switch {
