@@ -101,6 +101,11 @@
     "short_name": "CV"
   },
   {
+    "id": "collections",
+    "name": "Collections",
+    "short_name": "Collections"
+  },
+  {
     "id": "pet",
     "name": "Commodore - PET",
     "short_name": "PET"
