@@ -484,6 +484,14 @@ func TestHTTPPackLifecycle(t *testing.T) {
 	golden(t, "pack_trash_approved", artist.do(http.MethodPost, "/api/v1/submissions/"+approved+"/trash", nil))
 	golden(t, "pack_artist_rewards", artist.do(http.MethodGet, "/api/v1/rewards", nil))
 
+	// Only an admin can change an approved pack's donation link.
+	donation := "/api/v1/admin/packs/approved-pack/donation"
+	golden(t, "pack_donation_as_user", artist.do(http.MethodPut, donation, map[string]string{"donation_url": "https://ko-fi.com/other"}))
+	golden(t, "pack_donation_invalid", admin.do(http.MethodPut, donation, map[string]string{"donation_url": "javascript:alert(1)"}))
+	golden(t, "pack_donation_missing_pack", admin.do(http.MethodPut, "/api/v1/admin/packs/no-such-pack/donation", map[string]string{"donation_url": ""}))
+	golden(t, "pack_donation", admin.do(http.MethodPut, donation, map[string]string{"donation_url": "ko-fi.com/newlink"}))
+	golden(t, "pack_public_detail_new_donation", h.client().do(http.MethodGet, "/api/v1/packs/approved-pack", nil))
+
 	// Only an admin can delete a whole pack; it removes the database rows and
 	// every stored object of the pack.
 	golden(t, "pack_delete_as_user", artist.do(http.MethodDelete, "/api/v1/admin/packs/approved-pack", nil))

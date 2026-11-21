@@ -1012,6 +1012,18 @@ func (r *Repository) ListPackObjectKeys(ctx context.Context, packID string) ([]s
 // DeletePack removes every submission of a pack (revisions, contributions and,
 // by cascade, their file rows and logs) and its download counter. It returns
 // how many submissions were deleted.
+// SetPackDonationURL sets the donation link on every submission of a pack. A
+// pack is listed from its latest approved row and contributions copy that
+// row's link when approved, so every row carries the same link.
+func (r *Repository) SetPackDonationURL(ctx context.Context, packID, donationURL string) error {
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE submissions SET donation_url = $2 WHERE pack_id = $1`, packID, donationURL,
+	); err != nil {
+		return fmt.Errorf("failed to set pack donation link: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) DeletePack(ctx context.Context, packID string) (int64, error) {
 	var deleted int64
 	err := r.WithTx(ctx, func(tx *Repository) error {

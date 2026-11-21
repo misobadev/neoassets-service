@@ -1485,6 +1485,29 @@ func (s *Service) DeleteSubmission(ctx context.Context, submissionID uuid.UUID) 
 // contribution in the database and every object under packs/{packID}/ in
 // storage. Objects are deleted first, so a storage failure leaves the pack in
 // place and the deletion can be retried.
+// SetPackDonationURL changes the donation link of an approved pack (admin
+// only). The link is checked like the one a pack is submitted with; an empty
+// link removes it. It returns the link as stored.
+func (s *Service) SetPackDonationURL(ctx context.Context, packID, raw string) (string, error) {
+	if !packIDRegex.MatchString(packID) {
+		return "", apperr.Invalid("invalid pack id")
+	}
+	if _, err := s.repo.GetApprovedPackMeta(ctx, packID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", apperr.NotFound("pack not found")
+		}
+		return "", err
+	}
+	donationURL, err := normalizeDonationURL(raw)
+	if err != nil {
+		return "", err
+	}
+	if err := s.repo.SetPackDonationURL(ctx, packID, donationURL); err != nil {
+		return "", err
+	}
+	return donationURL, nil
+}
+
 func (s *Service) DeletePack(ctx context.Context, packID string) error {
 	if !packIDRegex.MatchString(packID) {
 		return apperr.Invalid("invalid pack id")
