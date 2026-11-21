@@ -702,12 +702,20 @@ func (r *Repository) GetPackDetail(ctx context.Context, packID string) (*models.
 		return nil, err
 	}
 
+	// One file per canonical key without its extension: a replacement may
+	// change the extension (all.gif replaced by all.webp) and leaves the older
+	// approved row behind, so the newest row for that slot wins.
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT DISTINCT ON (sf.object_key) sf.kind, sf.system_id, sf.file_name, sf.object_key, sf.size, sf.mime_type
-		 FROM submission_files sf
-		 JOIN submissions s ON s.id = sf.submission_id
-		 WHERE s.pack_id = $1 AND s.status = 'approved'
-		 ORDER BY sf.object_key, sf.created_at DESC`,
+		`SELECT kind, system_id, file_name, object_key, size, mime_type
+		 FROM (
+		   SELECT DISTINCT ON (regexp_replace(sf.object_key, '\.[^./]*$', ''))
+		          sf.kind, sf.system_id, sf.file_name, sf.object_key, sf.size, sf.mime_type
+		   FROM submission_files sf
+		   JOIN submissions s ON s.id = sf.submission_id
+		   WHERE s.pack_id = $1 AND s.status = 'approved'
+		   ORDER BY regexp_replace(sf.object_key, '\.[^./]*$', ''), sf.created_at DESC
+		 ) f
+		 ORDER BY object_key`,
 		packID,
 	)
 	if err != nil {

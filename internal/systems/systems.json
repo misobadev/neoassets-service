@@ -15,6 +15,11 @@
     "short_name": "All"
   },
   {
+    "id": "collections",
+    "name": "Collections",
+    "short_name": "Collections"
+  },
+  {
     "id": "favorites",
     "name": "Favorites",
     "short_name": "Favorites"
