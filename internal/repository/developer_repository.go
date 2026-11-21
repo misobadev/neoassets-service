@@ -360,3 +360,105 @@ func (r *Repository) ListSoftwareStatsByUser(ctx context.Context, userID uuid.UU
 	}
 	return out, rows.Err()
 }
+
+// ListAllDeveloperApps returns every developer app with its owner's username,
+// most used first (admin overview).
+func (r *Repository) ListAllDeveloperApps(ctx context.Context) ([]models.AdminDeveloperApp, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT a.id, a.user_id, a.name, a.description, a.homepage_url, a.client_id,
+		        a.client_secret_hash, a.debug_password, a.last_used_at, a.revoked_at, a.created_at, a.updated_at,
+		        a.api_calls, a.ko_scraps, a.rate_limited, a.quota_exceeded, a.debug_calls, a.last_scrape_at,
+		        COALESCE(u.username, '')
+		 FROM developer_apps a
+		 LEFT JOIN users u ON u.id = a.user_id
+		 ORDER BY a.api_calls DESC, a.created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list all developer apps: %w", err)
+	}
+	defer rows.Close()
+	var list []models.AdminDeveloperApp
+	for rows.Next() {
+		var a models.AdminDeveloperApp
+		if err := rows.Scan(
+			&a.ID, &a.UserID, &a.Name, &a.Description, &a.HomepageURL, &a.ClientID,
+			&a.SecretHash, &a.DebugPassword, &a.LastUsedAt, &a.RevokedAt, &a.CreatedAt, &a.UpdatedAt,
+			&a.APICalls, &a.KOScraps, &a.RateLimited, &a.QuotaExceeded, &a.DebugCalls, &a.LastScrapeAt,
+			&a.Owner,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan developer app: %w", err)
+		}
+		list = append(list, a)
+	}
+	return list, rows.Err()
+}
+
+// ListAllSoftwareStats returns the per-software stats of every app, keyed by
+// app id (admin overview).
+func (r *Repository) ListAllSoftwareStats(ctx context.Context) (map[uuid.UUID][]models.SoftwareStats, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT app_id, name, api_calls, ko_scraps, rate_limited, quota_exceeded, debug_calls, last_scrape_at
+		 FROM app_software_stats
+		 ORDER BY api_calls DESC, name`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list software stats: %w", err)
+	}
+	defer rows.Close()
+	out := map[uuid.UUID][]models.SoftwareStats{}
+	for rows.Next() {
+		var s models.SoftwareStats
+		if err := rows.Scan(&s.AppID, &s.Name, &s.APICalls, &s.KOScraps, &s.RateLimited,
+			&s.QuotaExceeded, &s.DebugCalls, &s.LastScrapeAt); err != nil {
+			return nil, fmt.Errorf("failed to scan software stats: %w", err)
+		}
+		out[s.AppID] = append(out[s.AppID], s)
+	}
+	return out, rows.Err()
+}
+
+// ListAllUserAPIKeys returns every personal API key with its owner's username
+// and the owner's scrape usage today and over the last 30 days (usage is
+// counted per user, not per key). Most recently used first.
+func (r *Repository) ListAllUserAPIKeys(ctx context.Context, today time.Time) ([]models.AdminAPIKey, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT k.id, k.user_id, k.name, k.prefix, k.last_used_at, k.revoked_at, k.created_at,
+		        COALESCE(u.username, ''),
+		        COALESCE((SELECT sum(count) FROM scrape_usage su
+		                  WHERE su.subject_type = 'user' AND su.subject_id = k.user_id::text AND su.day = $1), 0),
+		        COALESCE((SELECT sum(count) FROM scrape_usage su
+		                  WHERE su.subject_type = 'user' AND su.subject_id = k.user_id::text AND su.day > $1::date - 30), 0)
+		 FROM user_api_keys k
+		 LEFT JOIN users u ON u.id = k.user_id
+		 ORDER BY k.last_used_at DESC NULLS LAST, k.created_at DESC`, today,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list all api keys: %w", err)
+	}
+	defer rows.Close()
+	var list []models.AdminAPIKey
+	for rows.Next() {
+		var k models.AdminAPIKey
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.LastUsedAt, &k.RevokedAt, &k.CreatedAt,
+			&k.Owner, &k.OwnerScrapesToday, &k.OwnerScrapes30Days); err != nil {
+			return nil, fmt.Errorf("failed to scan api key: %w", err)
+		}
+		list = append(list, k)
+	}
+	return list, rows.Err()
+}
+
+// ScrapeUsageTotals returns the scrapes counted today and over the last 30
+// days, across users and guests.
+func (r *Repository) ScrapeUsageTotals(ctx context.Context, today time.Time) (int64, int64, error) {
+	var day, month int64
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COALESCE(sum(count) FILTER (WHERE day = $1), 0),
+		        COALESCE(sum(count) FILTER (WHERE day > $1::date - 30), 0)
+		 FROM scrape_usage`, today,
+	).Scan(&day, &month)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to sum scrape usage: %w", err)
+	}
+	return day, month, nil
+}

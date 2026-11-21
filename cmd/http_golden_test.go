@@ -372,6 +372,43 @@ func TestHTTPScrape(t *testing.T) {
 			golden(t, "scrape_"+tc.name, app.do(http.MethodGet, tc.path, nil))
 		})
 	}
+
+	// The admin developer overview lists the app with its usage, never its
+	// secrets, and is admin only.
+	h.seedUser("boss", "admin")
+	boss := h.client()
+	boss.login("boss")
+	dev := h.client()
+	dev.login("dev")
+	if res := dev.do(http.MethodGet, "/api/v1/admin/developer", nil); res.status != http.StatusForbidden {
+		t.Fatalf("developer overview as user: got %d", res.status)
+	}
+	res := boss.do(http.MethodGet, "/api/v1/admin/developer", nil)
+	if res.status != http.StatusOK {
+		t.Fatalf("developer overview as admin: got %d %s", res.status, res.body)
+	}
+	var overview struct {
+		Totals struct {
+			ActiveApps int   `json:"active_apps"`
+			APICalls   int64 `json:"api_calls"`
+		} `json:"totals"`
+		Apps []struct {
+			Owner    string `json:"owner"`
+			ClientID string `json:"client_id"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal(res.body, &overview); err != nil {
+		t.Fatal(err)
+	}
+	if overview.Totals.ActiveApps != 1 || len(overview.Apps) != 1 || overview.Apps[0].Owner != "dev" ||
+		overview.Apps[0].ClientID != testClientID || overview.Totals.APICalls == 0 {
+		t.Fatalf("unexpected overview: %s", res.body)
+	}
+	for _, secret := range []string{"client_secret_hash", "debug_password", "key_hash", testClientSecret} {
+		if strings.Contains(string(res.body), secret) {
+			t.Fatalf("overview leaks %q", secret)
+		}
+	}
 }
 
 // TestHTTPPackLifecycle walks a pack through the submission state machine:

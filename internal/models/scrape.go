@@ -253,3 +253,39 @@ type ScrapeAccount struct {
 	User    *ScrapeUser  `json:"user"`
 	Quota   ScrapeQuota  `json:"quota"`
 }
+
+// AdminDeveloperApp is a developer app as listed in the admin overview, with
+// its owner's username.
+type AdminDeveloperApp struct {
+	DeveloperApp
+	Owner string `json:"owner"`
+}
+
+// AdminAPIKey is a personal API key as listed in the admin overview. Scrape
+// usage is counted per user (not per key), so the owner's usage is attached.
+type AdminAPIKey struct {
+	UserAPIKey
+	Owner              string `json:"owner"`
+	OwnerScrapesToday  int    `json:"owner_scrapes_today"`
+	OwnerScrapes30Days int    `json:"owner_scrapes_30d"`
+}
+
+// DeveloperOverviewTotals summarizes the scraping API usage for the admin
+// overview.
+type DeveloperOverviewTotals struct {
+	ActiveApps    int   `json:"active_apps"`
+	ActiveKeys    int   `json:"active_keys"`
+	APICalls      int64 `json:"api_calls"`
+	ScrapesToday  int64 `json:"scrapes_today"`
+	Scrapes30Days int64 `json:"scrapes_30d"`
+	QuotaExceeded int64 `json:"quota_exceeded"`
+	RateLimited   int64 `json:"rate_limited"`
+}
+
+// DeveloperOverview is the admin view of every developer app and API key with
+// their usage.
+type DeveloperOverview struct {
+	Totals DeveloperOverviewTotals `json:"totals"`
+	Apps   []AdminDeveloperApp     `json:"apps"`
+	Keys   []AdminAPIKey           `json:"keys"`
+}
