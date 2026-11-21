@@ -1,4 +1,4 @@
-401
+403
 {
-  "error": "Authorization header required"
+  "error": "forbidden"
 }
