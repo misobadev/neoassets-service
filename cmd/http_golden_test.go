@@ -326,6 +326,17 @@ func TestHTTPAuthBoundaries(t *testing.T) {
 	golden(t, "auth_rewards", alice.do(http.MethodGet, "/api/v1/rewards", nil))
 	golden(t, "auth_logout", alice.do(http.MethodPost, "/api/v1/logout", nil))
 	golden(t, "auth_me_after_logout", alice.do(http.MethodGet, "/api/v1/auth/me", nil))
+
+	// The admin cookie lives 12h and the user session 7 days: an admin whose
+	// admin cookie expired must still reach the admin-only routes with the user
+	// session (the role is re-checked against the database).
+	h.seedUser("root", "admin")
+	root := h.client()
+	root.login("root")
+	delete(root.cookies, auth.AdminCookie)
+	if res := root.do(http.MethodGet, "/api/v1/admin/users", nil); res.status != http.StatusOK {
+		t.Fatalf("admin with only the user session: got %d %s", res.status, res.body)
+	}
 }
 
 func TestHTTPScrape(t *testing.T) {

@@ -565,9 +565,11 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 			r.Post("/admin/metadata/systems/{id}/retranslate", h.RetranslateSystem)
 		})
 
-		// Admin only (role management, re-checked against the DB)
+		// Admin only, re-checked against the DB. Like the review routes it
+		// accepts the normal user session, so an admin is not locked out when
+		// the shorter-lived admin cookie expires before the user session.
 		r.Group(func(r chi.Router) {
-			r.Use(auth.Middleware(cfg.JWTSecret))
+			r.Use(auth.ReviewMiddleware(cfg.JWTSecret))
 			r.Use(h.RequireAdmin)
 			r.Get("/admin/users", h.ListUsers)
 			r.Put("/admin/users/{id}/role", h.SetUserRole)
