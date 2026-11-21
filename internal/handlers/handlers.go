@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"neoassets/internal/apperr"
 	"neoassets/internal/httpx"
 	"net/http"
 
@@ -544,6 +545,24 @@ func (h *Handler) DeleteSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.svc.DeleteSubmission(r.Context(), submissionID); err != nil {
 		writeServerError(w, http.StatusBadRequest, "failed to delete submission", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+// DeletePack removes a published pack with all its revisions, contributions
+// and stored images. Admin only.
+func (h *Handler) DeletePack(w http.ResponseWriter, r *http.Request) {
+	packID := chi.URLParam(r, "packID")
+	if err := h.svc.DeletePack(r.Context(), packID); err != nil {
+		switch apperr.KindOf(err) {
+		case apperr.KindInvalid:
+			writeError(w, http.StatusBadRequest, err.Error())
+		case apperr.KindNotFound:
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeServerError(w, http.StatusInternalServerError, "failed to delete pack", err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
