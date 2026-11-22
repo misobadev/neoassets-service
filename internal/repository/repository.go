@@ -727,9 +727,32 @@ func (r *Repository) GetPackDetail(ctx context.Context, packID string) (*models.
 		if err := rows.Scan(&f.Kind, &f.SystemID, &f.FileName, &f.ObjectKey, &f.Size, &f.Mime); err != nil {
 			return nil, fmt.Errorf("failed to scan pack file: %w", err)
 		}
+		f.FileName = publishedFileName(packID, f)
 		d.Files = append(d.Files, f)
 	}
 	return &d, rows.Err()
+}
+
+// publishedFileName returns the name a published background or logo is served
+// under: the last segment of its canonical key. Approval re-encodes PNG and JPG
+// uploads to WebP, and rows published before the name was kept in step still
+// carry the uploaded extension, which clients would save the WebP under.
+func publishedFileName(packID string, f models.PackFile) string {
+	var dir string
+	switch f.Kind {
+	case models.KindBackground:
+		dir = "backgrounds"
+	case models.KindLogo:
+		dir = "logos"
+	default:
+		return f.FileName
+	}
+	prefix := "packs/" + packID + "/" + dir + "/"
+	name := strings.TrimPrefix(f.ObjectKey, prefix)
+	if name == f.ObjectKey || name == "" || strings.Contains(name, "/") {
+		return f.FileName
+	}
+	return name
 }
 
 // IncrementPackScrape bumps a pack's download counter and returns the new value.
@@ -1084,6 +1107,17 @@ func (r *Repository) UpdateSubmissionFileMime(ctx context.Context, fileID uuid.U
 	_, err := r.db.ExecContext(ctx, `UPDATE submission_files SET mime_type = $1 WHERE id = $2`, mime, fileID)
 	if err != nil {
 		return fmt.Errorf("failed to update submission file mime: %w", err)
+	}
+	return nil
+}
+
+// UpdateSubmissionFileName updates a submission file's name (used when an
+// approved image is published under a different extension, such as a PNG
+// normalized to WebP).
+func (r *Repository) UpdateSubmissionFileName(ctx context.Context, fileID uuid.UUID, fileName string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE submission_files SET file_name = $1 WHERE id = $2`, fileName, fileID)
+	if err != nil {
+		return fmt.Errorf("failed to update submission file name: %w", err)
 	}
 	return nil
 }
