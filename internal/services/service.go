@@ -11,6 +11,7 @@ import (
 	"neoassets/internal/apperr"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -1340,6 +1341,11 @@ func (s *Service) publishObject(ctx context.Context, packID string, submissionID
 		return err
 	}
 	if err := s.repo.UpdateSubmissionFileObjectKey(ctx, f.ID, canonical); err != nil {
+		return err
+	}
+	// The file name follows the published object: a PNG or JPG background is
+	// served as <system>.webp, and clients save each file under this name.
+	if err := s.repo.UpdateSubmissionFileName(ctx, f.ID, path.Base(canonical)); err != nil {
 		return err
 	}
 	return s.repo.UpdateSubmissionFileMime(ctx, f.ID, contentType)

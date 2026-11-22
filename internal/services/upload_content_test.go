@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -325,6 +326,53 @@ func TestApprovedGIFIsPublishedAsGIF(t *testing.T) {
 	}
 	if len(bucket.copies) != 0 {
 		t.Fatalf("GIF was copied with the uploader's metadata: %v", bucket.copies)
+	}
+}
+
+// An approved PNG background is re-encoded to WebP, and its file name follows
+// the published object, so clients save it as snes.webp rather than snes.png.
+func TestApprovedPNGIsServedUnderItsWebPName(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	// Some development ffmpeg builds ship without libwebp.
+	if out, err := exec.Command("ffmpeg", "-hide_banner", "-encoders").Output(); err != nil || !strings.Contains(string(out), "libwebp ") {
+		t.Skip("ffmpeg has no libwebp encoder")
+	}
+	bucket := newStoreR2()
+	s, repo := contentTestService(t, bucket)
+	owner := contentTestUser(t, repo, models.RoleUser)
+	reviewer := contentTestUser(t, repo, models.RoleReviewer)
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	packID, id := pendingSubmissionWithFile(t, repo, owner.ID, models.KindBackground, "snes.png", "image/png", buf.Bytes(), bucket)
+	if _, err := s.Approve(context.Background(), id, reviewer.ID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	canonical := "packs/" + packID + "/backgrounds/snes.webp"
+	if got := bucket.types[canonical]; got != "image/webp" {
+		t.Fatalf("background published as %q, want image/webp", got)
+	}
+	files, err := repo.ListFiles(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].ObjectKey != canonical || files[0].FileName != "snes.webp" {
+		t.Fatalf("file row = %+v, want snes.webp at %s", files, canonical)
+	}
+	detail, err := s.GetPackDetail(t.Context(), packID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Files) != 1 || detail.Files[0].FileName != "snes.webp" {
+		t.Fatalf("pack files = %+v, want one snes.webp", detail.Files)
 	}
 }
 
