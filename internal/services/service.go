@@ -50,6 +50,30 @@ type Service struct {
 	storageMu      sync.RWMutex
 	storageUsage   *StorageUsage
 	storageUpdated time.Time
+
+	// Catalog aggregates served from memory for catalogTTL (see ttlcache.go).
+	catalogTTL     time.Duration
+	systemsCache   ttlValue[[]models.MetadataSystem]
+	familiesCache  ttlValue[[]models.MetadataFamily]
+	groupsCache    ttlValue[[]models.MetadataGroup]
+	languagesCache ttlValue[[]models.Language]
+	dashboardCache ttlValue[*models.Dashboard]
+}
+
+// WithCatalogCacheTTL sets how long catalog aggregates are cached (0 disables
+// the cache; the default is DefaultCatalogCacheTTL).
+func WithCatalogCacheTTL(ttl time.Duration) ServiceOption {
+	return func(s *Service) { s.catalogTTL = ttl }
+}
+
+// InvalidateCatalogCache drops the cached catalog aggregates so the next read
+// reflects a change made by this process (an approval, a deleted pack).
+func (s *Service) InvalidateCatalogCache() {
+	s.systemsCache.clear()
+	s.familiesCache.clear()
+	s.groupsCache.clear()
+	s.languagesCache.clear()
+	s.dashboardCache.clear()
 }
 
 // NewService creates a Service.
@@ -78,9 +102,10 @@ func NewService(repo *repository.Repository, r2Client r2.Client, publicBase, jwt
 			".jpg":  true,
 			".jpeg": true,
 		},
-		jwtSecret: jwtSecret,
-		tokenTTL:  auth.AdminTokenTTL,
-		systems:   systems,
+		jwtSecret:  jwtSecret,
+		tokenTTL:   auth.AdminTokenTTL,
+		systems:    systems,
+		catalogTTL: DefaultCatalogCacheTTL,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -1152,6 +1177,8 @@ func (s *Service) blockSelfReview(ctx context.Context, ownerID *uuid.UUID, actor
 // Approve publishes a pending submission. Approve and reject of the same
 // submission are serialized (see repository.WithReviewLock).
 func (s *Service) Approve(ctx context.Context, submissionID uuid.UUID, adminID uuid.UUID, _, comment string) (*models.Submission, error) {
+	// The catalog aggregates and the dashboard may change.
+	defer s.InvalidateCatalogCache()
 	var out *models.Submission
 	err := s.repo.WithReviewLock(ctx, submissionID, func() error {
 		var err error
@@ -1465,6 +1492,8 @@ func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 // already-promoted canonical files) and then removes the submission row (cascade
 // to its file rows and logs). Admin only.
 func (s *Service) DeleteSubmission(ctx context.Context, submissionID uuid.UUID) error {
+	// The catalog aggregates and the dashboard may change.
+	defer s.InvalidateCatalogCache()
 	if _, err := s.repo.GetSubmission(ctx, submissionID); err != nil {
 		return apperr.NotFound("submission not found")
 	}
@@ -1515,6 +1544,8 @@ func (s *Service) SetPackDonationURL(ctx context.Context, packID, raw string) (s
 }
 
 func (s *Service) DeletePack(ctx context.Context, packID string) error {
+	// The catalog aggregates and the dashboard may change.
+	defer s.InvalidateCatalogCache()
 	if !packIDRegex.MatchString(packID) {
 		return apperr.Invalid("invalid pack id")
 	}
@@ -1684,6 +1715,8 @@ func (s *Service) deletePackOrphans(ctx context.Context, packID string, excludeI
 // deletes its files from R2. It only works while the pack is a draft or has
 // been rejected; it cannot be trashed while pending review or once approved.
 func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID) (*models.Submission, error) {
+	// The catalog aggregates and the dashboard may change.
+	defer s.InvalidateCatalogCache()
 	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
 		return nil, apperr.NotFound("submission not found")

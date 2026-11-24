@@ -66,9 +66,11 @@ type ScrapeService struct {
 	mu       sync.Mutex
 	limiters map[string]*limiterEntry
 
-	// refused counts rate-limited requests in memory; they are written in
-	// batches so a stream of refused requests doesn't cost database writes.
-	refused refusalBatch
+	// outcomes counts request outcomes per app and software in memory; they
+	// are written in batches, so neither a stream of refused requests nor a
+	// busy app's many threads (which all update the same developer_apps and
+	// app_software_stats rows) cost a database write per request.
+	outcomes outcomeBatch
 }
 
 // limiterEntry pairs a token bucket with its last access time so stale entries
@@ -201,16 +203,12 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 	return subject, nil
 }
 
-// record persists a scrape outcome for the developer dashboard (per app and per
+// record counts a scrape outcome for the developer dashboard (per app and per
 // software; fallback is the app's name, used when the software name can't get
-// its own row). Rate-limited requests are only counted here and written by the
-// next batch. Failures are logged but never break the request.
-func (s *ScrapeService) record(ctx context.Context, appID uuid.UUID, software, fallback, outcome string) {
-	if outcome == "rate_limited" {
-		s.refused.add(appID, software, fallback)
-		return
-	}
-	s.write(ctx, appID, software, fallback, outcome, 1)
+// its own row). It is only counted here and written by the next batch (see
+// FlushOutcomes); write failures are logged but never break a request.
+func (s *ScrapeService) record(_ context.Context, appID uuid.UUID, software, fallback, outcome string) {
+	s.outcomes.add(appID, software, fallback, outcome)
 }
 
 func (s *ScrapeService) write(ctx context.Context, appID uuid.UUID, software, fallback, outcome string, n int64) {
@@ -230,91 +228,97 @@ func (s *ScrapeService) RecordOutcome(ctx context.Context, subject *auth.ScrapeS
 	s.record(ctx, subject.ClientDBID, subject.SoftwareName, subject.ClientName, outcome)
 }
 
-// refusalFlushInterval is how often batched rate-limited counts are written.
-const refusalFlushInterval = 10 * time.Second
+// outcomeFlushInterval is how often batched outcome counts are written.
+const outcomeFlushInterval = 10 * time.Second
 
 // maxPendingSoftwarePerApp caps the distinct software names one app can hold in
-// the refusal batch between writes; further names are counted under the app's
+// the outcome batch between writes; further names are counted under the app's
 // own name.
 const maxPendingSoftwarePerApp = 50
 
-type refusalKey struct {
+type outcomeKey struct {
 	app      uuid.UUID
 	software string
+	outcome  string
 }
 
-type refusal struct {
-	app                uuid.UUID
-	software, fallback string
-	count              int64
+type outcomeCount struct {
+	app                         uuid.UUID
+	software, fallback, outcome string
+	count                       int64
 }
 
-// refusalBatch counts rate-limited requests per app and software until they
-// are written. Only authenticated apps reach it, so the apps are bounded by the
-// registered ones and the names per app by maxPendingSoftwarePerApp.
-type refusalBatch struct {
+// outcomeBatch counts request outcomes per app, software and outcome until
+// they are written. Only authenticated apps reach it, so the apps are bounded
+// by the registered ones, the names per app by maxPendingSoftwarePerApp and the
+// outcomes by the handful the handlers record.
+type outcomeBatch struct {
 	mu      sync.Mutex
-	pending map[refusalKey]*refusal
-	perApp  map[uuid.UUID]int
+	pending map[outcomeKey]*outcomeCount
+	names   map[uuid.UUID]map[string]bool
 }
 
-func (b *refusalBatch) add(app uuid.UUID, software, fallback string) {
+func (b *outcomeBatch) add(app uuid.UUID, software, fallback, outcome string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.pending == nil {
-		b.pending = map[refusalKey]*refusal{}
-		b.perApp = map[uuid.UUID]int{}
+		b.pending = map[outcomeKey]*outcomeCount{}
+		b.names = map[uuid.UUID]map[string]bool{}
 	}
-	k := refusalKey{app, software}
-	if r, ok := b.pending[k]; ok {
-		r.count++
+	names := b.names[app]
+	if names == nil {
+		names = map[string]bool{}
+		b.names[app] = names
+	}
+	if !names[software] {
+		if len(names) >= maxPendingSoftwarePerApp {
+			software = fallback
+		}
+		names[software] = true
+	}
+	k := outcomeKey{app, software, outcome}
+	if c, ok := b.pending[k]; ok {
+		c.count++
 		return
 	}
-	if b.perApp[app] >= maxPendingSoftwarePerApp {
-		k.software = fallback
-		if r, ok := b.pending[k]; ok {
-			r.count++
-			return
-		}
-	}
-	b.pending[k] = &refusal{app: app, software: k.software, fallback: fallback, count: 1}
-	b.perApp[app]++
+	b.pending[k] = &outcomeCount{app: app, software: software, fallback: fallback, outcome: outcome, count: 1}
 }
 
 // drain returns the pending counts and empties the batch.
-func (b *refusalBatch) drain() []refusal {
+func (b *outcomeBatch) drain() []outcomeCount {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	out := make([]refusal, 0, len(b.pending))
-	for _, r := range b.pending {
-		out = append(out, *r)
+	out := make([]outcomeCount, 0, len(b.pending))
+	for _, c := range b.pending {
+		out = append(out, *c)
 	}
-	b.pending, b.perApp = nil, nil
+	b.pending, b.names = nil, nil
 	return out
 }
 
-// StartRefusalFlush writes the batched rate-limited counts every
-// refusalFlushInterval until ctx is done. Call FlushRefusals once more on
+// StartOutcomeFlush writes the batched outcome counts every
+// outcomeFlushInterval until ctx is done. Call FlushOutcomes once more on
 // shutdown so the last counts aren't lost.
-func (s *ScrapeService) StartRefusalFlush(ctx context.Context) {
+func (s *ScrapeService) StartOutcomeFlush(ctx context.Context) {
 	go func() {
-		ticker := time.NewTicker(refusalFlushInterval)
+		ticker := time.NewTicker(outcomeFlushInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.FlushRefusals(ctx)
+				s.FlushOutcomes(ctx)
 			}
 		}
 	}()
 }
 
-// FlushRefusals writes the batched rate-limited counts now.
-func (s *ScrapeService) FlushRefusals(ctx context.Context) {
-	for _, r := range s.refused.drain() {
-		s.write(ctx, r.app, r.software, r.fallback, "rate_limited", r.count)
+// FlushOutcomes writes the batched outcome counts now. Pages that show the
+// counters call it first so they never lag behind the batch.
+func (s *ScrapeService) FlushOutcomes(ctx context.Context) {
+	for _, c := range s.outcomes.drain() {
+		s.write(ctx, c.app, c.software, c.fallback, c.outcome, c.count)
 	}
 }
 
@@ -542,13 +546,10 @@ func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery)
 
 	hasHash := q.CRC != "" || q.MD5 != "" || q.SHA1 != "" || q.SHA256 != ""
 	if hasHash {
-		var games []models.Game
-		for _, systemID := range systemIDs {
-			found, err := s.meta.LookupGame(ctx, q.CRC, q.MD5, q.SHA1, q.SHA256, systemID)
-			if err != nil {
-				return nil, "", err
-			}
-			games = append(games, found...)
+		// One query for every system of the selector, in selector order.
+		games, err := s.meta.LookupGameInSystems(ctx, q.CRC, q.MD5, q.SHA1, q.SHA256, systemIDs)
+		if err != nil {
+			return nil, "", err
 		}
 		if len(games) > 0 {
 			// A hash can match several entries (e.g. a base game and its hacks);
@@ -766,7 +767,7 @@ func (s *ScrapeService) descriptionsByLang(ctx context.Context, game models.Game
 		return out
 	}
 
-	langs, err := s.repo.ListLanguages(ctx)
+	langs, err := s.meta.ListLanguages(ctx)
 	if err != nil {
 		return out
 	}

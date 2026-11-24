@@ -26,12 +26,12 @@ func TestResolveSoftwareNameCutsOnACharacter(t *testing.T) {
 // Refused requests are counted in memory and written in one batch, with a cap
 // on how many distinct software names one app can hold between writes.
 func TestRefusalsAreBatched(t *testing.T) {
-	var b refusalBatch
+	var b outcomeBatch
 	app := uuid.New()
 	for i := 0; i < 1000; i++ {
-		b.add(app, fmt.Sprintf("name-%d", i%200), "My App")
+		b.add(app, fmt.Sprintf("name-%d", i%200), "My App", "rate_limited")
 	}
-	b.add(app, "My App", "My App")
+	b.add(app, "My App", "My App", "rate_limited")
 	got := b.drain()
 	var total int64
 	names := map[string]bool{}
@@ -61,8 +61,30 @@ func TestRateLimitedRequestsAreNotWrittenOneByOne(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		s.record(t.Context(), app, "v1", "My App", "rate_limited")
 	}
-	got := s.refused.drain()
+	got := s.outcomes.drain()
 	if len(got) != 1 || got[0].count != 3 {
 		t.Fatalf("batch = %+v, want one entry counting 3", got)
+	}
+}
+
+// Every outcome is batched (not only refusals), counted per outcome, so a busy
+// app's threads don't each write the same developer_apps row.
+func TestOutcomesAreBatchedPerOutcome(t *testing.T) {
+	s := &ScrapeService{}
+	app := uuid.New()
+	for i := 0; i < 5; i++ {
+		s.record(t.Context(), app, "v1", "My App", "ok")
+	}
+	s.record(t.Context(), app, "v1", "My App", "not_found")
+	s.record(t.Context(), app, "v1", "My App", "not_found")
+	counts := map[string]int64{}
+	for _, c := range s.outcomes.drain() {
+		if c.app != app || c.software != "v1" {
+			t.Fatalf("unexpected entry %+v", c)
+		}
+		counts[c.outcome] += c.count
+	}
+	if counts["ok"] != 5 || counts["not_found"] != 2 || len(counts) != 2 {
+		t.Fatalf("counts = %v, want ok 5 and not_found 2", counts)
 	}
 }

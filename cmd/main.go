@@ -35,6 +35,7 @@ type Config struct {
 	DatabaseURL                        string
 	DBMaxOpenConns                     int
 	DBStatementTimeout                 time.Duration
+	CatalogCacheTTL                    time.Duration
 	JWTSecret                          string
 	R2AccountID                        string
 	R2AccessKey                        string
@@ -146,7 +147,7 @@ func main() {
 		log.Fatal().Err(err).Msg("Server forced to shutdown")
 	}
 	stopJobs()
-	a.scrapeSvc.FlushRefusals(ctx)
+	a.scrapeSvc.FlushOutcomes(ctx)
 
 	log.Info().Msg("Server exited")
 }
@@ -157,6 +158,7 @@ func loadConfig() *Config {
 		DatabaseURL:           getEnvOrDefault("DATABASE_URL", "postgres://user:password@localhost/neoassets?sslmode=disable"),
 		DBMaxOpenConns:        getEnvInt("DB_MAX_OPEN_CONNS", 20),
 		DBStatementTimeout:    time.Duration(getEnvInt("DB_STATEMENT_TIMEOUT_SECONDS", 30)) * time.Second,
+		CatalogCacheTTL:       time.Duration(getEnvInt("CATALOG_CACHE_SECONDS", int(services.DefaultCatalogCacheTTL/time.Second))) * time.Second,
 		JWTSecret:             getEnvOrDefault("JWT_SECRET", "change-me"),
 		R2AccountID:           getEnvOrDefault("R2_ACCOUNT_ID", ""),
 		R2AccessKey:           getEnvOrDefault("R2_ACCESS_KEY", ""),

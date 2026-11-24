@@ -57,7 +57,14 @@ var videoExts = map[string]bool{
 // importer), independent from the art-pack systems. A virtual parent (the
 // arcade aggregate) owns no games, so its stats are the sum of its family so
 // the browse card shows the whole family.
+//
+// The result aggregates the whole catalog, so it is cached for catalogTTL;
+// callers must not modify it.
 func (s *Service) ListMetadataSystems(ctx context.Context) ([]models.MetadataSystem, error) {
+	return s.systemsCache.get(ctx, s.catalogTTL, s.loadMetadataSystems)
+}
+
+func (s *Service) loadMetadataSystems(ctx context.Context) ([]models.MetadataSystem, error) {
 	list, err := s.repo.ListMetadataSystems(ctx)
 	if err != nil {
 		return nil, err
@@ -109,13 +116,15 @@ func (s *Service) ListSystemIDsByGroup(ctx context.Context, group string) ([]str
 }
 
 // ListFamilies returns every non-empty system family with its counts.
+// Cached for catalogTTL; callers must not modify the result.
 func (s *Service) ListFamilies(ctx context.Context) ([]models.MetadataFamily, error) {
-	return s.repo.ListFamilies(ctx)
+	return s.familiesCache.get(ctx, s.catalogTTL, s.repo.ListFamilies)
 }
 
 // ListGroups returns every non-empty system group with its counts.
+// Cached for catalogTTL; callers must not modify the result.
 func (s *Service) ListGroups(ctx context.Context) ([]models.MetadataGroup, error) {
-	return s.repo.ListGroups(ctx)
+	return s.groupsCache.get(ctx, s.catalogTTL, s.repo.ListGroups)
 }
 
 // ListGamesBySystem returns the games for a system with paging and optional
@@ -280,8 +289,9 @@ func (s *Service) ListGameContributors(ctx context.Context, gameID uuid.UUID) ([
 }
 
 // ListLanguages returns all enabled description languages.
+// Cached for catalogTTL; callers must not modify the result.
 func (s *Service) ListLanguages(ctx context.Context) ([]models.Language, error) {
-	return s.repo.ListLanguages(ctx)
+	return s.languagesCache.get(ctx, s.catalogTTL, s.repo.ListLanguages)
 }
 
 // ListGenres returns the canonical genre catalog used by the web forms.
@@ -417,6 +427,12 @@ func (s *Service) validateRoms(ctx context.Context, gameID *uuid.UUID, raw any) 
 // system (empty systemID searches all systems).
 func (s *Service) LookupGame(ctx context.Context, crc, md5, sha1, sha256, systemID string) ([]models.Game, error) {
 	return s.repo.LookupGameByHash(ctx, crc, md5, sha1, sha256, systemID)
+}
+
+// LookupGameInSystems finds games by ROM hash across a set of systems in one
+// query, ordered by the systems' position and then by name.
+func (s *Service) LookupGameInSystems(ctx context.Context, crc, md5, sha1, sha256 string, systemIDs []string) ([]models.Game, error) {
+	return s.repo.LookupGameByHashInSystems(ctx, crc, md5, sha1, sha256, systemIDs)
 }
 
 // ---------------------------------------------------------------------------
@@ -1449,6 +1465,8 @@ func (s *Service) ensureGameNameAvailable(ctx context.Context, gameID uuid.UUID,
 // reject of the same submission are serialized (see repository.WithReviewLock),
 // so a double click can't apply it twice.
 func (s *Service) ApproveMetadataSubmission(ctx context.Context, id, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
+	// The catalog aggregates and the dashboard may change.
+	defer s.InvalidateCatalogCache()
 	var out *models.MetadataSubmission
 	err := s.repo.WithReviewLock(ctx, id, func() error {
 		var err error
@@ -1621,7 +1639,7 @@ func (s *Service) translateAndStoreDescription(ctx context.Context, desc string,
 	}
 
 	enabled := map[string]bool{}
-	langs, err := s.repo.ListLanguages(ctx)
+	langs, err := s.ListLanguages(ctx)
 	if err != nil {
 		return 0, err
 	}
