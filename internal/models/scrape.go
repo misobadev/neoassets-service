@@ -64,13 +64,20 @@ type CreatedDeveloperApp struct {
 }
 
 // UserAPIKey is a personal API key used as the user credential of the scraping
-// API. Only the hash and prefix are stored; the plaintext key is shown once.
+// API. It is looked up by prefix and verified by hash; an AES-GCM sealed copy
+// lets the owner copy the key again later.
 type UserAPIKey struct {
-	ID         uuid.UUID  `json:"id" db:"id"`
-	UserID     uuid.UUID  `json:"user_id" db:"user_id"`
-	Name       string     `json:"name" db:"name"`
-	Prefix     string     `json:"prefix" db:"prefix"`
-	KeyHash    string     `json:"-" db:"key_hash"`
+	ID        uuid.UUID `json:"id" db:"id"`
+	UserID    uuid.UUID `json:"user_id" db:"user_id"`
+	Name      string    `json:"name" db:"name"`
+	Prefix    string    `json:"prefix" db:"prefix"`
+	KeyHash   string    `json:"-" db:"key_hash"`
+	KeySealed *string   `json:"-" db:"key_sealed"`
+	// Copyable reports whether the full key can be fetched again (keys created
+	// before sealing was added cannot).
+	Copyable bool `json:"copyable" db:"-"`
+	// Masked is a display form that shows only the start and end of the key.
+	Masked     string     `json:"masked" db:"-"`
 	LastUsedAt *time.Time `json:"last_used_at" db:"last_used_at"`
 	RevokedAt  *time.Time `json:"revoked_at" db:"revoked_at"`
 	CreatedAt  time.Time  `json:"created_at" db:"created_at"`

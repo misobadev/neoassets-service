@@ -123,24 +123,26 @@ func (r *Repository) TouchDeveloperAppLastUsed(ctx context.Context, clientID str
 	return err
 }
 
-const userAPIKeyCols = `id, user_id, name, prefix, key_hash, last_used_at, revoked_at, created_at`
+const userAPIKeyCols = `id, user_id, name, prefix, key_hash, key_sealed, last_used_at, revoked_at, created_at`
 
 func scanUserAPIKey(row interface{ Scan(...interface{}) error }) (*models.UserAPIKey, error) {
 	var k models.UserAPIKey
-	err := row.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.KeyHash, &k.LastUsedAt, &k.RevokedAt, &k.CreatedAt)
+	err := row.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.KeyHash, &k.KeySealed, &k.LastUsedAt, &k.RevokedAt, &k.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
+	k.Copyable = k.KeySealed != nil && *k.KeySealed != ""
 	return &k, nil
 }
 
-// CreateUserAPIKey inserts a personal API key for the user.
-func (r *Repository) CreateUserAPIKey(ctx context.Context, userID uuid.UUID, name, prefix, keyHash string) (*models.UserAPIKey, error) {
+// CreateUserAPIKey inserts a personal API key for the user with its hash and
+// sealed copy.
+func (r *Repository) CreateUserAPIKey(ctx context.Context, userID uuid.UUID, name, prefix, keyHash, keySealed string) (*models.UserAPIKey, error) {
 	key, err := scanUserAPIKey(r.db.QueryRowContext(ctx,
-		`INSERT INTO user_api_keys (user_id, name, prefix, key_hash)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO user_api_keys (user_id, name, prefix, key_hash, key_sealed)
+		 VALUES ($1, $2, $3, $4, $5)
 		 RETURNING `+userAPIKeyCols,
-		userID, name, prefix, keyHash,
+		userID, name, prefix, keyHash, keySealed,
 	))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create API key: %w", err)
@@ -174,6 +176,15 @@ func (r *Repository) GetUserAPIKeyByPrefix(ctx context.Context, prefix string) (
 	return scanUserAPIKey(r.db.QueryRowContext(ctx,
 		`SELECT `+userAPIKeyCols+` FROM user_api_keys
 		 WHERE prefix = $1 AND revoked_at IS NULL`, prefix,
+	))
+}
+
+// GetActiveUserAPIKey returns an active API key owned by the user, or
+// sql.ErrNoRows.
+func (r *Repository) GetActiveUserAPIKey(ctx context.Context, id, userID uuid.UUID) (*models.UserAPIKey, error) {
+	return scanUserAPIKey(r.db.QueryRowContext(ctx,
+		`SELECT `+userAPIKeyCols+` FROM user_api_keys
+		 WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`, id, userID,
 	))
 }
 

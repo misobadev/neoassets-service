@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 // APIKeyPrefix is the human-readable prefix of generated API keys, so a leaked
@@ -69,6 +70,20 @@ func GenerateAPIKey() (prefix, plaintext, hash string, err error) {
 	prefix = plaintext[:APIKeyPrefixLen]
 	hash = HashToken(plaintext)
 	return prefix, plaintext, hash, nil
+}
+
+// apiKeyMaskVisible is how many characters of the random part MaskAPIKey keeps
+// at each end.
+const apiKeyMaskVisible = 6
+
+// MaskAPIKey returns a display form of a key that keeps its "ns_live_" prefix
+// and only the first and last few characters of the random part.
+func MaskAPIKey(key string) string {
+	body := strings.TrimPrefix(key, APIKeyPrefix)
+	if len(body) <= 2*apiKeyMaskVisible {
+		return APIKeyPrefix + "..."
+	}
+	return APIKeyPrefix + body[:apiKeyMaskVisible] + "..." + body[len(body)-apiKeyMaskVisible:]
 }
 
 // HashToken returns the hex-encoded SHA-256 of a token. Tokens are high-entropy
