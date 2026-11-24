@@ -538,6 +538,7 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 			r.Get("/auth/api-keys", h.ListAPIKeys)
 			r.Post("/auth/api-keys", h.CreateAPIKey)
 			r.Delete("/auth/api-keys/{id}", h.RevokeAPIKey)
+			r.Get("/auth/api-keys/{id}/key", h.RevealAPIKey)
 
 			// Notification badge (lightweight review feed)
 			r.Get("/auth/reviews/summary", h.ReviewSummary)

@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"errors"
+	"neoassets/internal/apperr"
 	"neoassets/internal/httpx"
 	"net/http"
 
@@ -110,6 +111,29 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, key)
+}
+
+// RevealAPIKey returns the full plaintext of one of the current user's active
+// API keys, so the client can copy it.
+func (h *Handler) RevealAPIKey(w http.ResponseWriter, r *http.Request) {
+	id, ok := httpx.PathUUID(w, r, "id", "invalid key id")
+	if !ok {
+		return
+	}
+	key, err := h.devSvc.RevealAPIKey(r.Context(), userFromRequest(r), id)
+	if err != nil {
+		switch apperr.KindOf(err) {
+		case apperr.KindNotFound:
+			writeError(w, http.StatusNotFound, err.Error())
+		case apperr.KindConflict:
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to read API key")
+		}
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]string{"key": key})
 }
 
 // RevokeAPIKey revokes one of the current user's personal API keys.

@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"neoassets/internal/apperr"
 	"strings"
@@ -26,12 +28,21 @@ const (
 // DeveloperService manages self-service scraping credentials: developer
 // applications and personal user API keys.
 type DeveloperService struct {
-	repo *repository.Repository
+	repo   *repository.Repository
+	sealer *auth.Sealer
 }
 
-// NewDeveloperService creates a DeveloperService.
-func NewDeveloperService(repo *repository.Repository) *DeveloperService {
-	return &DeveloperService{repo: repo}
+// apiKeySealPurpose labels the key derived for sealing personal API keys.
+const apiKeySealPurpose = "neoassets/user-api-key/v1"
+
+// NewDeveloperService creates a DeveloperService. secret seeds the key that
+// seals personal API keys so their owners can copy them again.
+func NewDeveloperService(repo *repository.Repository, secret string) (*DeveloperService, error) {
+	sealer, err := auth.NewSealer(secret, apiKeySealPurpose)
+	if err != nil {
+		return nil, err
+	}
+	return &DeveloperService{repo: repo, sealer: sealer}, nil
 }
 
 // CreateApp registers a developer application and returns it with its plaintext
@@ -119,8 +130,7 @@ func (s *DeveloperService) RotateApp(ctx context.Context, userID, id uuid.UUID) 
 	return &models.CreatedDeveloperApp{DeveloperApp: *app, ClientSecret: secret, DebugPassword: debugPassword}, nil
 }
 
-// CreateAPIKey issues a personal API key and returns it with the plaintext key
-// (shown only once).
+// CreateAPIKey issues a personal API key and returns it with the plaintext key.
 func (s *DeveloperService) CreateAPIKey(ctx context.Context, userID uuid.UUID, req models.CreateAPIKeyRequest) (*models.CreatedAPIKey, error) {
 	name, err := credentialName(req.Name)
 	if err != nil {
@@ -130,16 +140,56 @@ func (s *DeveloperService) CreateAPIKey(ctx context.Context, userID uuid.UUID, r
 	if err != nil {
 		return nil, err
 	}
-	key, err := s.repo.CreateUserAPIKey(ctx, userID, name, prefix, hash)
+	sealed, err := s.sealer.Seal(plaintext)
+	if err != nil {
+		return nil, err
+	}
+	key, err := s.repo.CreateUserAPIKey(ctx, userID, name, prefix, hash, sealed)
 	if err != nil {
 		return nil, err
 	}
 	return &models.CreatedAPIKey{UserAPIKey: *key, Key: plaintext}, nil
 }
 
-// ListAPIKeys returns the user's personal API keys.
+// RevealAPIKey returns the plaintext of an active API key owned by the user.
+// Keys created before sealing existed cannot be revealed.
+func (s *DeveloperService) RevealAPIKey(ctx context.Context, userID, id uuid.UUID) (string, error) {
+	key, err := s.repo.GetActiveUserAPIKey(ctx, id, userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", apperr.NotFound("API key not found")
+		}
+		return "", err
+	}
+	if !key.Copyable {
+		return "", apperr.Conflict("this API key was created before keys could be copied again; create a new one")
+	}
+	plaintext, err := s.sealer.Open(*key.KeySealed)
+	if err != nil {
+		return "", apperr.Conflict("this API key can no longer be decrypted; create a new one")
+	}
+	return plaintext, nil
+}
+
+// ListAPIKeys returns the user's personal API keys, each with a masked form of
+// the key for display.
 func (s *DeveloperService) ListAPIKeys(ctx context.Context, userID uuid.UUID) ([]models.UserAPIKey, error) {
-	return s.repo.ListUserAPIKeys(ctx, userID)
+	keys, err := s.repo.ListUserAPIKeys(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range keys {
+		keys[i].Masked = keys[i].Prefix + "..."
+		if !keys[i].Copyable {
+			continue
+		}
+		if plain, err := s.sealer.Open(*keys[i].KeySealed); err == nil {
+			keys[i].Masked = auth.MaskAPIKey(plain)
+		} else {
+			keys[i].Copyable = false
+		}
+	}
+	return keys, nil
 }
 
 // RevokeAPIKey revokes a personal API key owned by the user.
