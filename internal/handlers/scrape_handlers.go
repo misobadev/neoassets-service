@@ -215,3 +215,48 @@ func writeQuotaHeaders(w http.ResponseWriter, q *models.ScrapeQuota) {
 	w.Header().Set("X-Quota-Remaining", strconv.Itoa(q.Remaining))
 	w.Header().Set("X-Quota-Reset", q.ResetsAt.UTC().Format(time.RFC3339))
 }
+
+// ScrapeAdmission holds one of the subject's thread slots for the whole
+// request: an account's threads are its concurrent requests. When every slot
+// stays busy for the admission wait, the request is refused with 429 and a
+// Retry-After so the client backs off instead of piling up more requests.
+func (h *Handler) ScrapeAdmission(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		subject, ok := scrapeSubject(r)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("X-Concurrency-Limit", strconv.Itoa(subject.Threads))
+		release, err := h.scrapeSvc.AcquireSubject(r.Context(), subject)
+		if err != nil {
+			h.scrapeSvc.RecordOutcome(r.Context(), subject, "rate_limited")
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests,
+				fmt.Sprintf("too many concurrent requests: this account allows %d at once", subject.Threads))
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ScrapeGlobalAdmission caps the game lookups running at once across every
+// account, so the database always has room for the website. A request that
+// can't get a slot within the admission wait gets 503 with a Retry-After and
+// does not consume quota.
+func (h *Handler) ScrapeGlobalAdmission(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		release, err := h.scrapeSvc.AcquireGlobal(r.Context())
+		if err != nil {
+			if subject, ok := scrapeSubject(r); ok {
+				h.scrapeSvc.RecordOutcome(r.Context(), subject, "rate_limited")
+			}
+			w.Header().Set("Retry-After", "2")
+			writeError(w, http.StatusServiceUnavailable, "server busy, retry shortly")
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r)
+	})
+}

@@ -64,15 +64,15 @@ func TestUsageKey(t *testing.T) {
 func TestRateLimiterBurstThenBlock(t *testing.T) {
 	s := &ScrapeService{rpmPerThread: 100, limiters: map[string]*limiterEntry{}}
 
-	if !s.limiterFor("app-1", 2).Allow() || !s.limiterFor("app-1", 2).Allow() {
+	if !s.limiterFor("app-1", 2, 2).Allow() || !s.limiterFor("app-1", 2, 2).Allow() {
 		t.Fatal("expected the initial burst to be allowed")
 	}
-	if s.limiterFor("app-1", 2).Allow() {
+	if s.limiterFor("app-1", 2, 2).Allow() {
 		t.Error("expected the limiter to block after the burst is exhausted")
 	}
 
 	// A different client has its own bucket.
-	if !s.limiterFor("app-2", 2).Allow() {
+	if !s.limiterFor("app-2", 2, 2).Allow() {
 		t.Error("expected an independent bucket for a different client")
 	}
 }
@@ -80,15 +80,22 @@ func TestRateLimiterBurstThenBlock(t *testing.T) {
 func TestAllowSubjectUsesThreadsAndSubjectKey(t *testing.T) {
 	s := &ScrapeService{rpmPerThread: 100, limiters: map[string]*limiterEntry{}}
 
-	// A guest is keyed by the developer app and gets the guest thread count.
-	guest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", Threads: 2}
-	for i := 0; i < 200; i++ {
+	// A guest gets the guest thread count (2 threads -> 200 RPM) with a burst
+	// of about five seconds (200/12 = 16), not the whole minute at once. It is
+	// keyed by the app's owner, so a second app of the same owner shares it.
+	owner := uuid.New()
+	guest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", ClientOwnerID: owner, Threads: 2}
+	for i := 0; i < 16; i++ {
 		if !s.allowSubject(guest) {
 			t.Fatalf("guest request %d should be allowed within the burst", i)
 		}
 	}
 	if s.allowSubject(guest) {
 		t.Error("expected the guest limiter to block after the burst is exhausted")
+	}
+	otherApp := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_other", ClientOwnerID: owner, Threads: 2}
+	if s.allowSubject(otherApp) {
+		t.Error("a second app of the same owner must share the guest bucket")
 	}
 
 	// A user gets threads * rpmPerThread and its own bucket.
@@ -186,5 +193,18 @@ func TestUserTokenCurrent(t *testing.T) {
 	}
 	if !userTokenCurrent(&auth.UserClaims{TokenVersion: 2}, user) {
 		t.Error("a current token was rejected")
+	}
+}
+
+func TestRateBurstIsAboutFiveSeconds(t *testing.T) {
+	for _, c := range []struct{ rpm, threads, want int }{
+		{200, 2, 16},    // guest
+		{1600, 16, 133}, // legend
+		{6, 4, 4},       // never below the threads
+		{0, 0, 1},
+	} {
+		if got := rateBurst(c.rpm, c.threads); got != c.want {
+			t.Errorf("rateBurst(%d, %d) = %d, want %d", c.rpm, c.threads, got, c.want)
+		}
 	}
 }

@@ -102,6 +102,7 @@ func buildApp(ctx context.Context, cfg *Config, db *sql.DB, bucket r2.Client, ma
 	userSvc := services.NewUserService(repo, mailer, cfg.JWTSecret, userSessionTTL, cfg.ProtectedAdminEmail)
 	userSvc.SkipEmailVerification = cfg.SkipEmailVerification
 	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, cfg.ScrapeRPMPerThread, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
+	scrapeSvc.SetMaxInFlight(cfg.ScrapeMaxInFlight)
 	devSvc := services.NewDeveloperService(repo)
 	donationSvc := services.NewDonationService(repo, mailer, cfg.KofiVerificationToken, cfg.PatreonWebhookSecret)
 	handler := handlers.NewHandler(svc, userSvc, scrapeSvc, devSvc, donationSvc, cfg.JWTSecret, cfg.SkipEmailVerification)

@@ -107,9 +107,18 @@ the user credential is optional and falls back to guest mode.
   level rank (levels 1-10 -> 4, 91-100 -> 16; see `internal/progression`); guests
   get `SCRAPE_GUEST_THREADS` (2) and admins `SCRAPE_ADMIN_THREADS` (16). Guest
   quota is keyed by the **developer app owner**, so creating more apps does not
-  multiply the limit. Threads also set concurrency. Per-minute rate limit: **threads
-  * `SCRAPE_RPM_PER_THREAD`** (default 100), keyed by the user for registered
-  accounts and by the developer app for guests (a generous per-app pre-check
+  multiply the limit. The counter stops at the limit (refused calls don't
+  write).
+- Threads are **concurrent requests** (`internal/services/scrape_admission.go`):
+  `ScrapeAdmission` holds one of the subject's `threads` slots for every
+  `/scrape/*` request, waiting up to 2 s, then 429 + `Retry-After: 1`;
+  responses carry `X-Concurrency-Limit`. `/scrape/games` also takes a slot of
+  the global cap `SCRAPE_MAX_INFLIGHT` (default 16, -1 off) or gets 503 +
+  `Retry-After: 2` without consuming quota, so the website keeps pool
+  connections. Per-minute rate limit: **threads * `SCRAPE_RPM_PER_THREAD`**
+  (default 100) with a burst of about 5 s (`rateBurst`), never the full minute.
+  Threads, rate and quota are all keyed by the user for registered accounts
+  and by the developer app owner for guests (a generous per-app, per-address pre-check
   bounds DB lookups from bogus credentials). In-memory limiters (single
   instance); daily counters live in `scrape_usage`.
 - XP & ranks: approved contributions award XP (`POINTS_TEXT_METADATA` 10 /
