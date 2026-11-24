@@ -16,9 +16,10 @@ API and builds file URLs against the R2 custom domain.
 ## Architecture
 
 ```
-neostation-web (assets.neostation.dev)  -->  neoassets-service (Go API)
-                                |  PostgreSQL (metadata, files, logs, versions)
-                                +  Cloudflare R2 (image files only)
+neoassets-web (neoassets.dev)  -->  neoassets-service (api.neoassets.dev, Go)
+scrapers / frontends           -->     |  PostgreSQL (catalog, packs, users, logs)
+                                       +  Cloudflare R2 (images and videos, served
+                                          by cdn.neoassets.dev)
 ```
 
 ## Flow
@@ -27,7 +28,7 @@ neostation-web (assets.neostation.dev)  -->  neoassets-service (Go API)
 2. The web creates a submission (status `created`), uploads each file to R2 via
    presigned URLs, and can keep saving it as a draft.
 3. The user submits it for review (status `pending`) with its audit log.
-4. The admin (JWT login) approves it (setting the version) or rejects it.
+4. An admin approves it (setting the version) or rejects it.
    - Approve: the pack appears in the public list (`/api/v1/packs`).
    - Reject: the files are deleted from R2.
 
@@ -35,21 +36,21 @@ neostation-web (assets.neostation.dev)  -->  neoassets-service (Go API)
 
 ### Public
 - `GET /health`
-- `GET /api/v1/config`                      runtime economy config (threads, daily games/thread, thread costs, points)
+- `GET /api/v1/config`                      runtime economy config (ranks and threads, daily games and requests/min per thread, donor tiers, XP points)
 - `GET /api/v1/packs`                       approved packs (from the DB), sorted by downloads, paginated
 - `GET /api/v1/packs/{packID}`              full pack detail (all files + public URLs), read-only
 - `GET /api/v1/packs/{packID}/download`     same as detail but bumps the pack download counter (install/scrape)
 - `GET /api/v1/systems`                     system catalog
 
-### Submissions (user Bearer JWT)
+### Submissions (user session: `ns_user` cookie or `Authorization: Bearer`)
 - `POST /api/v1/submissions`                create a draft (body: name, author, description, donation_url, ai)
 - `PUT /api/v1/submissions/{id}`            update/save a draft
 - `POST /api/v1/submissions/{id}/upload`    request presigned URL (body: file_name, kind, system_id, size, mime_type)
 - `POST /api/v1/submissions/{id}/submit`    submit for review (draft -> pending)
 - `POST /api/v1/submissions/{id}/trash`     move to trash (only while draft/rejected)
 
-### Admin (Bearer JWT)
-- `POST /api/v1/admin/login`                login (email, password) -> token
+### Admin (admin session: `ns_admin` cookie or `Authorization: Bearer`)
+- `POST /api/v1/admin/login`                login (email, password); sets the `ns_admin` cookie (12 h)
 - `GET /api/v1/admin/submissions`           list (filter ?status=pending|approved|rejected|created)
 - `GET /api/v1/admin/submissions/{id}`      detail with files + logs
 - `POST /api/v1/admin/submissions/{id}/approve`  approve (body: version)
@@ -58,11 +59,14 @@ neostation-web (assets.neostation.dev)  -->  neoassets-service (Go API)
 ## Public Scraping API
 
 A credential-gated, read-only API for scraper front-ends, mounted under
-`/api/v1/scrape`. Every request requires **developer application credentials**;
-an optional **user credential** raises the quota. Without a user credential the
-request runs in **guest mode** (1 thread, low per-minute rate limit).
+`/api/v1/scrape`. The full user-facing guide (limits table, headers, examples,
+best practices) is the web page `/app/docs`.
 
-Credentials (headers, over TLS):
+Every request requires **developer application credentials**. The end user's
+personal API key is optional: with it the request uses that user's rank; without
+it the request runs as a **guest**, and every app of the same developer account
+shares one guest allowance (so software used by many people should ask each user
+for their key).
 
 | layer           | headers                                      | required |
 |-----------------|----------------------------------------------|----------|
@@ -71,48 +75,66 @@ Credentials (headers, over TLS):
 
 Endpoints:
 
-- `GET /api/v1/scrape/systems`  system catalog (free)
-- `GET /api/v1/scrape/games`    resolve **one** game by `crc`/`md5`/`sha1`/`sha256`
-  or `name`, scoped to a required `system_id` (+ optional `type`, `media`). The
-  lookup is hash-first and falls back to the name; `name` is cleaned server-side
-  (extension and `(region)`/`[tags]` stripped) and the best candidate wins.
-  Returns `{ system_id, matched_by, game }` (`game` is null when nothing
-  matched) with full metadata, media URLs and the game's `scrapes` counter.
-  The ROM list is omitted by default (`rom_count` is always returned; pass
-  `roms=true` to include it). Consumes one quota unit.
-- `GET /api/v1/scrape/popular`  most scraped games, optional `system_id`/`limit` (free)
-- `GET /api/v1/scrape/account`  current subject and quota (free)
+- `GET /api/v1/scrape/games` resolves **one** game by `crc`/`md5`/`sha1`/`sha256`
+  or `name`, within exactly one of `system_id`, `family` or `group` (+ optional
+  `type`, `media`, `roms`, `softname`). The lookup is hash-first and falls back to
+  the name (cleaned server-side: extension and `(region)`/`[tags]` stripped; the
+  best candidate wins). Returns `{ system_id, matched_by, game }` (`game` is null
+  when nothing matched; `system_id` is the game's real system). `rom_count` and
+  `rom_name` are always returned, the ROM list only with `roms=true`. **Uses one
+  unit of daily quota**; every other scrape endpoint is free.
+- `GET /api/v1/scrape/account` current subject (user or guest), threads and quota
+- `GET /api/v1/scrape/systems`, `/families`, `/groups` catalog levels
+- `GET /api/v1/scrape/popular` most scraped games, optional `system_id`/`limit`
 
-Self-service credentials (authenticated with the user JWT from `/api/v1/login`):
+Self-service credentials (authenticated with the user session):
 
 - `GET|POST /api/v1/auth/developer/apps`, `DELETE /api/v1/auth/developer/apps/{id}`,
   `POST /api/v1/auth/developer/apps/{id}/rotate`
 - `GET|POST /api/v1/auth/api-keys`, `DELETE /api/v1/auth/api-keys/{id}`
 
-XP & levels: approved contributions award XP (text 10 / image 40 / video 100 /
-SAP image 5). XP determines a level (1-100) and a rank; each rank unlocks more
-base threads, and the daily limit is **active threads x 1000** game lookups
-(guest = 2 -> 2000/day; Novato level 1-10 = 4 -> 4000/day; Leyenda level 91-100
-= 16 -> 16000/day; admins get 16 threads regardless of their level). Donors add an **additive** thread
-bonus (supporter +2, monthly +4) on top of their level base, hard-capped at 16,
-plus an XP bonus (supporter +25%, monthly +50%); donations never grant rank.
-Threads also set concurrency. Counters
-reset at 00:00 UTC and are reported
-through `X-Quota-Limit`, `X-Quota-Remaining` and `X-Quota-Reset` response
-headers. `docs/postman/neoassets-scraping.postman_collection.json` is a Postman
+### Limits
+
+An account's **threads** set all its limits. They come from the XP rank (levels
+1-10 Novice = 2, then +2 per rank up to levels 91-100 Legend = 20; guests 1,
+admins 20), plus an additive donor bonus (supporter +2, monthly supporter +4)
+capped at the top rank (20).
+`GET /api/v1/config` returns the current values.
+
+| limit | value | when exceeded |
+|-------|-------|---------------|
+| simultaneous requests | threads | waits up to 2 s for a slot, then `429` + `Retry-After: 1` |
+| requests per minute | threads x `SCRAPE_RPM_PER_THREAD` (100), bursts of about 5 s | `429` + exact `Retry-After` |
+| game lookups per day | threads x `SCRAPE_DAILY_GAMES_PER_THREAD` (1000), resets 00:00 UTC | `429` "daily scrape quota exceeded" |
+| game lookups in flight, all accounts | `SCRAPE_MAX_INFLIGHT` (16) | `503` + `Retry-After: 2`, no quota used |
+
+Every scrape response reports the state in `X-Quota-Limit`, `X-Quota-Remaining`,
+`X-Quota-Reset`, `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
+`X-Concurrency-Limit`. A client that uses `X-Concurrency-Limit` workers and
+honors `Retry-After` resolves 1,000 games (a guest's whole daily quota) in
+about 10 min as a guest (1 thread), 5 min as a Novice (2), 1 min 35 s as a
+Novice monthly supporter (6) and 25 s as a Legend (20).
+
+XP comes from approved contributions (text field 10, image 50, video 100, SAP
+image 20, new game +100; `POINTS_*`). Level = f(total XP) with
+`XPForLevel(L) = round(L^2.5 * 3)`.
+
+`docs/postman/neoassets-scraping.postman_collection.json` is a Postman
 collection with functional tests plus guest/user rate-limit tests (run them with
 the Collection Runner).
 
 ### Developer dashboard and debug mode
 
 Each app accumulates lifetime usage counters (API calls, KO scraps, rate-limited,
-over-quota, debug calls, last scrape) shown in the web developer page. Counters
-are split per **version** when the client sends `softname=<name>` (query param
-or `X-Software-Name` header); otherwise the developer app name is used. Each app
-also gets a **debug password** (owner-only) that unlocks debug query parameters
-capped at 100 calls/day per app:
+over-quota, debug calls, last scrape) shown in the web developer page; they are
+written in batches every 10 s. Counters are split per **version** when the
+client sends `softname=<name>` (query param or `X-Software-Name` header);
+otherwise the developer app name is used. Each app also gets a **debug
+password** (owner-only, shown once) that unlocks debug overrides, capped at 100
+calls/day per app and only honored when `ENABLE_DEBUG_MODE=true`:
 
-- `devdebugpassword=<password>` (or `X-Debug-Password`) enables debug mode.
+- `X-Debug-Password: <password>` header enables debug mode (never a query
+  parameter, so it doesn't end up in logs).
 - `forcerequestok=N` reports N as the daily used counter (set above the limit to
   simulate over-quota).
 - `forcethreads=N` overrides the thread count for the request.
@@ -156,55 +178,28 @@ Settings -> CORS policy). Without it, presigned uploads fail with a CORS error.
 
 ## Configuration (.env)
 
-```
-# Service
-PORT=8090
+`.env.example` lists every variable with its default and explanation. The main
+groups:
 
-# PostgreSQL (own instance, starts alongside the service in the compose)
-POSTGRES_DB=neoassets
-POSTGRES_USER=neoassets_user
-POSTGRES_PASSWORD=...
-POSTGRES_PORT=5433   # host-exposed port (5432 is already used by the provider)
+- **Database:** `DATABASE_URL` (required; the service does not bundle
+  Postgres), `DB_MAX_OPEN_CONNS` (20), `DB_STATEMENT_TIMEOUT_SECONDS` (30).
+- **Auth and R2:** `JWT_SECRET`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY`,
+  `R2_SECRET_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_BASE_URL`,
+  `ADMIN_SEED_EMAIL`/`ADMIN_SEED_PASSWORD` (initial admin, seeded on startup).
+- **Scraping API:** `SCRAPE_GUEST_THREADS` (1), `SCRAPE_ADMIN_THREADS` (20),
+  `SCRAPE_SUPPORTER_BONUS_THREADS` (2), `SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS`
+  (4), `SCRAPE_DAILY_GAMES_PER_THREAD` (1000), `SCRAPE_RPM_PER_THREAD` (100),
+  `SCRAPE_MAX_INFLIGHT` (16, -1 off), `ENABLE_DEBUG_MODE` (false).
+- **XP:** `POINTS_TEXT_METADATA` (10), `POINTS_IMAGE_METADATA` (50),
+  `POINTS_VIDEO_METADATA` (100), `POINTS_SAP_IMAGE` (20), `POINTS_NEW_GAME`
+  (100), `XP_SUPPORTER_BONUS_PCT` (25), `XP_MONTHLY_SUPPORTER_BONUS_PCT` (50).
+- **Caching:** `CATALOG_CACHE_SECONDS` (60) for the systems, families, groups,
+  languages and dashboard aggregates.
+- **Network:** `CORS_ORIGINS`, `TRUST_PROXY_HEADERS`, `CDN_IP_RANGES`,
+  `CDN_CLIENT_IP_HEADER` (client IP for the per-IP limiters, see
+  `.env.example`).
 
-# JWT for the admin panel
-JWT_SECRET=...
-
-# Cloudflare R2
-R2_ACCOUNT_ID=...
-R2_ACCESS_KEY=...
-R2_SECRET_KEY=...
-R2_BUCKET_NAME=neoassets
-R2_PUBLIC_BASE_URL=https://cdn.neoassets.dev
-
-# Initial admin (seeded into the DB on startup)
-ADMIN_SEED_EMAIL=admin@neostation.dev
-ADMIN_SEED_PASSWORD=...
-
-# Public scraping API (0 = built-in default)
-SCRAPE_GUEST_THREADS=0            # guest threads (default 2)
-SCRAPE_ADMIN_THREADS=0            # admin threads (default 16)
-SCRAPE_SUPPORTER_BONUS_THREADS=0        # one-time donor bonus threads (default 2)
-SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS=0 # monthly donor bonus threads (default 4)
-XP_SUPPORTER_BONUS_PCT=0                # one-time donor XP bonus % (default 25)
-XP_MONTHLY_SUPPORTER_BONUS_PCT=0        # monthly donor XP bonus % (default 50)
-SCRAPE_DAILY_GAMES_PER_THREAD=0   # daily games per thread (default 1000; limit = threads * this)
-SCRAPE_RPM_PER_THREAD=0           # requests/minute per thread (default 100; RPM = threads * this)
-
-# XP economy (registered-user threads come from the level ranks, not config)
-POINTS_TEXT_METADATA=0            # XP per approved text field (default 10)
-POINTS_IMAGE_METADATA=0           # XP per approved image (default 50)
-POINTS_VIDEO_METADATA=0           # XP per approved video (default 100)
-POINTS_SAP_IMAGE=0                # XP per approved SAP image (default 20)
-POINTS_NEW_GAME=0                 # XP bonus for an approved new game (default 100)
-ENABLE_DEBUG_MODE=false           # allow X-Debug-Password force overrides (keep off in prod)
-CORS_ORIGINS=http://localhost:5173,http://localhost:8091
-```
-
-`DATABASE_URL` is built automatically in the compose pointing at the `postgres`
-container (internal DNS), so it does not need to be set manually.
-
-The initial admin is seeded into the DB on startup when `ADMIN_SEED_EMAIL` and
-`ADMIN_SEED_PASSWORD` are defined.
+A `0` (or unset) numeric value keeps the default.
 
 ## Development
 
@@ -214,28 +209,17 @@ go mod tidy
 go run ./cmd
 ```
 
-## Docker (all-in-one)
+## Docker
 
-The `docker-compose.yml` starts the **PostgreSQL** (with a persistent volume)
-and the **API service** together. The API waits for Postgres to be healthy
-before starting.
+`docker-compose.yml` builds and runs the **API service** only. It connects to
+an external PostgreSQL through `DATABASE_URL`; in production that is the
+managed Postgres service on Dokploy's `dokploy-network`. Migrations run
+automatically on startup.
 
 ```bash
 docker compose --env-file .env up -d --build
 ```
 
-### Persistence
+The API listens on `127.0.0.1:${PORT:-8090}` (healthcheck `GET /health`). In
+production it is reached only through Traefik and the CDN.
 
-Database data is stored in the named `postgres_volume` and survives restarts
-and `docker compose up/down`. The schema (tables) is created by the service
-itself with its migrations on startup.
-
-> Note: the PostgreSQL image creates the role and database from
-> `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` on first init. To
-> re-initialize from scratch (deletes data): `docker compose --env-file .env down -v`.
-
-### Access
-
-- Postgres host: `localhost:${POSTGRES_PORT:-5433}`
-- API host: `localhost:${PORT:-8090}`
-- API healthcheck: `GET /health`

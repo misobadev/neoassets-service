@@ -65,6 +65,10 @@ func newAPIHarness(t *testing.T) *apiHarness {
 	t.Setenv("R2_PUBLIC_BASE_URL", "https://cdn.test")
 	cfg := loadConfig()
 	cfg.R2PublicBase = "https://cdn.test"
+	// The goldens pin responses, not the per-minute rate: a guest's burst
+	// (1 thread) is shorter than the scenarios, so give the harness room. The
+	// rate limiter has its own tests.
+	cfg.ScrapeRPMPerThread = 1000
 	if err := handlers.ConfigureCDN(cfg.CDNIPRanges, cfg.CDNClientIPHeader); err != nil {
 		t.Fatal(err)
 	}

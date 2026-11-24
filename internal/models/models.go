@@ -282,12 +282,15 @@ type Rewards struct {
 // PublicConfig is the runtime rewards/scrape configuration, exposed publicly so
 // the web UI can render the current economy without hardcoded values.
 type PublicConfig struct {
-	GuestThreads        int          `json:"guest_threads"`
-	AdminThreads        int          `json:"admin_threads"`
-	DailyGamesPerThread int          `json:"daily_games_per_thread"`
-	Points              PointsConfig `json:"points"`
-	Ranks               []RankConfig `json:"ranks"`
-	DonorTiers          []DonorTier  `json:"donor_tiers"`
+	GuestThreads        int `json:"guest_threads"`
+	AdminThreads        int `json:"admin_threads"`
+	DailyGamesPerThread int `json:"daily_games_per_thread"`
+	// RPMPerThread is the scraping rate per thread: an account may make
+	// threads * RPMPerThread requests per minute.
+	RPMPerThread int          `json:"rpm_per_thread"`
+	Points       PointsConfig `json:"points"`
+	Ranks        []RankConfig `json:"ranks"`
+	DonorTiers   []DonorTier  `json:"donor_tiers"`
 }
 
 // DonorTier is a donation status with its additive thread bonus and XP bonus.

@@ -18,18 +18,20 @@ type Rank struct {
 }
 
 // Ranks are the ten progression bands, from Novice (level 1) to Legend
-// (level 100). Key is a stable English identifier the UI translates.
+// (level 100). Key is a stable English identifier the UI translates. Threads
+// start low (guests get 1) and grow by 2 per rank, so contributing is what
+// unlocks real scraping speed.
 var Ranks = []Rank{
-	{"novice", 1, 10, 4},
-	{"amateur", 11, 20, 5},
+	{"novice", 1, 10, 2},
+	{"amateur", 11, 20, 4},
 	{"explorer", 21, 30, 6},
-	{"collector", 31, 40, 7},
-	{"curator", 41, 50, 8},
-	{"conservator", 51, 60, 9},
-	{"archivist", 61, 70, 10},
-	{"scholar", 71, 80, 12},
-	{"master", 81, 90, 14},
-	{"legend", 91, 100, 16},
+	{"collector", 31, 40, 8},
+	{"curator", 41, 50, 10},
+	{"conservator", 51, 60, 12},
+	{"archivist", 61, 70, 14},
+	{"scholar", 71, 80, 16},
+	{"master", 81, 90, 18},
+	{"legend", 91, 100, 20},
 }
 
 // MaxThreads is the thread count of the top rank.

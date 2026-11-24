@@ -42,8 +42,8 @@ func TestLevelForXPUnbounded(t *testing.T) {
 	if got := ThreadsForLevel(101); got != MaxThreads() {
 		t.Errorf("ThreadsForLevel(101) = %d, want %d", got, MaxThreads())
 	}
-	if got := ThreadsForLevel(150); got != 16 {
-		t.Errorf("ThreadsForLevel(150) = %d, want 16", got)
+	if got := ThreadsForLevel(150); got != 20 {
+		t.Errorf("ThreadsForLevel(150) = %d, want 20", got)
 	}
 	if got := RankForLevel(150); got != "legend" {
 		t.Errorf("RankForLevel(150) = %q, want legend", got)
@@ -51,7 +51,7 @@ func TestLevelForXPUnbounded(t *testing.T) {
 }
 
 func TestThreadsForLevel(t *testing.T) {
-	cases := map[int]int{1: 4, 10: 4, 11: 5, 20: 5, 50: 8, 90: 14, 91: 16, 100: 16}
+	cases := map[int]int{1: 2, 10: 2, 11: 4, 20: 4, 50: 10, 90: 18, 91: 20, 100: 20}
 	for level, want := range cases {
 		if got := ThreadsForLevel(level); got != want {
 			t.Errorf("ThreadsForLevel(%d) = %d, want %d", level, got, want)

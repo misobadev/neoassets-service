@@ -5,8 +5,8 @@
     "name": "Golden App"
   },
   "quota": {
-    "daily_limit": 2000,
-    "remaining": 1995,
+    "daily_limit": 1000,
+    "remaining": 995,
     "resets_at": "<time>",
     "used": 5
   },

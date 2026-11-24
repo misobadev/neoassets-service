@@ -50,9 +50,9 @@ constraint (migrations `008` + `009`). Array of statuses differs from older docs
 
 ## Endpoints (relevant)
 
-- `GET /api/v1/config`                       public runtime config (threads,
-  daily games per thread, thread cost curve and points) so the UI renders the
-  current economy without hardcoded values.
+- `GET /api/v1/config`                       public runtime config (ranks and
+  threads, `daily_games_per_thread`, `rpm_per_thread`, donor tiers, points) so
+  the UI (guide, API docs) renders the current economy without hardcoded values.
 - `GET /api/v1/metadata/genres`               canonical genre catalog
   (`genres` table, migration `061`) used by the web metadata forms. Submissions
   must send one of these names; the service validates membership but never
@@ -104,8 +104,9 @@ the user credential is optional and falls back to guest mode.
   `GET /scrape/account` (free).
 - Quota: the daily limit is **threads * `SCRAPE_DAILY_GAMES_PER_THREAD`** (default
   1000) game lookups per account. A registered user's threads come from their XP
-  level rank (levels 1-10 -> 4, 91-100 -> 16; see `internal/progression`); guests
-  get `SCRAPE_GUEST_THREADS` (2) and admins `SCRAPE_ADMIN_THREADS` (16). Guest
+  level rank (levels 1-10 -> 2, then +2 per rank to 91-100 -> 20; see
+  `internal/progression`); guests get `SCRAPE_GUEST_THREADS` (1) and admins
+  `SCRAPE_ADMIN_THREADS` (20). Guest
   quota is keyed by the **developer app owner**, so creating more apps does not
   multiply the limit. The counter stops at the limit (refused calls don't
   write).
@@ -116,7 +117,12 @@ the user credential is optional and falls back to guest mode.
   the global cap `SCRAPE_MAX_INFLIGHT` (default 16, -1 off) or gets 503 +
   `Retry-After: 2` without consuming quota, so the website keeps pool
   connections. Per-minute rate limit: **threads * `SCRAPE_RPM_PER_THREAD`**
-  (default 100) with a burst of about 5 s (`rateBurst`), never the full minute.
+  (default 100, `economy.RPMPerThread`) with a burst of about 5 s
+  (`rateBurst`), never the full minute. A rate refusal carries the exact
+  `Retry-After` (`take1` reserves without waiting and cancels when refused, so
+  a refusal costs no token); successful responses carry `X-RateLimit-Limit`
+  and `X-RateLimit-Remaining`. The user docs live in the web (`/app/docs`,
+  `ApiDocsPage.tsx`): keep them in sync with any limit change.
   Threads, rate and quota are all keyed by the user for registered accounts
   and by the developer app owner for guests (a generous per-app, per-address pre-check
   bounds DB lookups from bogus credentials). In-memory limiters (single
@@ -129,7 +135,7 @@ the user credential is optional and falls back to guest mode.
 - Donors (parallel to XP): `users.donor_status` (none | supporter | monthly_supporter)
   adds an **additive** thread bonus on top of the level base
   (`SCRAPE_SUPPORTER_BONUS_THREADS` 2, `SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS`
-  4), hard-capped at `progression.MaxThreads()` (16), plus an XP bonus
+  4), hard-capped at `progression.MaxThreads()` (20), plus an XP bonus
   (`XP_SUPPORTER_BONUS_PCT` 25, `XP_MONTHLY_SUPPORTER_BONUS_PCT` 50). Donations
   never grant rank. Set via admin `PUT /api/v1/admin/users/{id}/donor`.
 - Donation integrations (Ko-fi, Patreon): `POST /api/v1/webhooks/kofi` ingests

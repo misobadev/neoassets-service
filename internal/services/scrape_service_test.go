@@ -86,22 +86,22 @@ func TestAllowSubjectUsesThreadsAndSubjectKey(t *testing.T) {
 	owner := uuid.New()
 	guest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", ClientOwnerID: owner, Threads: 2}
 	for i := 0; i < 16; i++ {
-		if !s.allowSubject(guest) {
+		if ok, _ := s.allowSubject(guest); !ok {
 			t.Fatalf("guest request %d should be allowed within the burst", i)
 		}
 	}
-	if s.allowSubject(guest) {
+	if ok, _ := s.allowSubject(guest); ok {
 		t.Error("expected the guest limiter to block after the burst is exhausted")
 	}
 	otherApp := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_other", ClientOwnerID: owner, Threads: 2}
-	if s.allowSubject(otherApp) {
+	if ok, _ := s.allowSubject(otherApp); ok {
 		t.Error("a second app of the same owner must share the guest bucket")
 	}
 
 	// A user gets threads * rpmPerThread and its own bucket.
 	userID := uuid.New()
 	user := &auth.ScrapeSubject{Kind: auth.ScrapeKindUser, ClientID: "nsapp_abc", UserID: userID, Threads: 16}
-	if !s.allowSubject(user) {
+	if ok, _ := s.allowSubject(user); !ok {
 		t.Error("expected the user bucket to be independent from the guest bucket")
 	}
 }
@@ -199,12 +199,35 @@ func TestUserTokenCurrent(t *testing.T) {
 func TestRateBurstIsAboutFiveSeconds(t *testing.T) {
 	for _, c := range []struct{ rpm, threads, want int }{
 		{200, 2, 16},    // guest
-		{1600, 16, 133}, // legend
+		{2000, 20, 166}, // legend
 		{6, 4, 4},       // never below the threads
 		{0, 0, 1},
 	} {
 		if got := rateBurst(c.rpm, c.threads); got != c.want {
 			t.Errorf("rateBurst(%d, %d) = %d, want %d", c.rpm, c.threads, got, c.want)
 		}
+	}
+}
+
+// A refused request learns exactly how long to wait, and an allowed one how
+// many requests it has left right now.
+func TestAllowSubjectReportsWaitAndRemaining(t *testing.T) {
+	s := &ScrapeService{rpmPerThread: 60, limiters: map[string]*limiterEntry{}}
+	// 1 thread * 60 RPM: one token per second, burst max(60/12, 1) = 5.
+	user := &auth.ScrapeSubject{Kind: auth.ScrapeKindUser, UserID: uuid.New(), Threads: 1}
+	for i := 4; i >= 0; i-- {
+		ok, _ := s.allowSubject(user)
+		if !ok || user.RateLimit != 60 || user.RateRemaining != i {
+			t.Fatalf("request %d: ok=%v limit=%d remaining=%d, want remaining %d", 5-i, ok, user.RateLimit, user.RateRemaining, i)
+		}
+	}
+	ok, wait := s.allowSubject(user)
+	if ok || wait <= 0 || wait > time.Second+50*time.Millisecond {
+		t.Fatalf("empty bucket: ok=%v wait=%v, want refused with a wait of about 1 s", ok, wait)
+	}
+	// A refusal does not consume a token: waiting that long is enough.
+	time.Sleep(wait)
+	if ok, _ := s.allowSubject(user); !ok {
+		t.Fatal("still refused after waiting Retry-After")
 	}
 }

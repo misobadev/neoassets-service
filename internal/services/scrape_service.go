@@ -147,9 +147,9 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 	// address too: an app shipped in a frontend is used by many people at
 	// once, and their combined traffic must not share one bucket. The real
 	// per-subject limit is applied below.
-	if !s.limiterFor("pre:"+app.ClientID+"|"+creds.ClientKey, s.preCheckRPM(), progression.MaxThreads()).Allow() {
+	if ok, wait, _ := take1(s.limiterFor("pre:"+app.ClientID+"|"+creds.ClientKey, s.preCheckRPM(), progression.MaxThreads())); !ok {
 		s.record(ctx, app.ID, resolveSoftwareName(creds.SoftwareName, app.Name), app.Name, "rate_limited")
-		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded"}
+		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded", RetryAfter: wait}
 	}
 
 	subject := &auth.ScrapeSubject{
@@ -207,9 +207,13 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		s.record(ctx, app.ID, subject.SoftwareName, app.Name, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded (debug)"}
 	}
-	if !s.allowSubject(subject) {
+	if ok, wait := s.allowSubject(subject); !ok {
 		s.record(ctx, app.ID, subject.SoftwareName, app.Name, "rate_limited")
-		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded"}
+		return nil, &auth.AuthError{
+			Status:     http.StatusTooManyRequests,
+			Message:    fmt.Sprintf("rate limit exceeded: this account allows %d requests per minute", subject.RateLimit),
+			RetryAfter: wait,
+		}
 	}
 	return subject, nil
 }
@@ -408,9 +412,35 @@ func (s *ScrapeService) preCheckRPM() int {
 
 // allowSubject applies the per-minute rate limit for the resolved subject:
 // threads * rpmPerThread, keyed like the threads themselves (the user, or a
-// guest's developer app owner, so more apps don't add rate).
-func (s *ScrapeService) allowSubject(subject *auth.ScrapeSubject) bool {
-	return s.limiterFor("rpm:"+admissionKey(subject), subject.Threads*s.rpmPerThread, subject.Threads).Allow()
+// guest's developer app owner, so more apps don't add rate). It fills the
+// subject's RateLimit/RateRemaining and, when refused, returns how long until
+// the next request would be allowed.
+func (s *ScrapeService) allowSubject(subject *auth.ScrapeSubject) (bool, time.Duration) {
+	rpm := subject.Threads * s.rpmPerThread
+	ok, wait, remaining := take1(s.limiterFor("rpm:"+admissionKey(subject), rpm, subject.Threads))
+	subject.RateLimit = rpm
+	subject.RateRemaining = remaining
+	return ok, wait
+}
+
+// take1 takes one token from lim if one is available now. It never waits: when
+// the bucket is empty it returns false and the delay until a token is free.
+// remaining is the whole tokens left afterwards.
+func take1(lim *rate.Limiter) (ok bool, wait time.Duration, remaining int) {
+	now := time.Now()
+	r := lim.ReserveN(now, 1)
+	if !r.OK() {
+		return false, time.Minute, 0
+	}
+	if d := r.DelayFrom(now); d > 0 {
+		r.CancelAt(now)
+		return false, d, 0
+	}
+	remaining = int(lim.TokensAt(now))
+	if remaining < 0 {
+		remaining = 0
+	}
+	return true, 0, remaining
 }
 
 // rateBurst is how many requests a bucket allows back to back: about five
