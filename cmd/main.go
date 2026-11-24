@@ -388,8 +388,9 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 		},
 		ExposedHeaders: []string{
 			"Link",
-			// Quota state, readable from browser clients.
+			// Quota, rate and concurrency state, readable from browser clients.
 			"X-Quota-Limit", "X-Quota-Remaining", "X-Quota-Reset",
+			"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-Concurrency-Limit", "Retry-After",
 		},
 		// The browser session is an httpOnly cookie, so credentialed requests
 		// must be allowed. AllowedOrigins is an explicit allow-list (never "*").

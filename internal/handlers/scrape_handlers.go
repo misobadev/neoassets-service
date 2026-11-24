@@ -228,6 +228,10 @@ func (h *Handler) ScrapeAdmission(next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("X-Concurrency-Limit", strconv.Itoa(subject.Threads))
+		if subject.RateLimit > 0 {
+			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(subject.RateLimit))
+			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(subject.RateRemaining))
+		}
 		release, err := h.scrapeSvc.AcquireSubject(r.Context(), subject)
 		if err != nil {
 			h.scrapeSvc.RecordOutcome(r.Context(), subject, "rate_limited")

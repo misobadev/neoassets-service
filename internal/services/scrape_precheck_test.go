@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	"neoassets/internal/models"
+	"neoassets/internal/progression"
 	"neoassets/internal/repository"
 	"neoassets/internal/testdb"
 	"neoassets/pkg/auth"
@@ -25,7 +26,8 @@ func TestPreCheckIsPerAppAndAddress(t *testing.T) {
 	if _, err := repo.CreateDeveloperApp(ctx, owner.ID, "Frontend", "", "", clientID, auth.HashToken(secret), ""); err != nil {
 		t.Fatal(err)
 	}
-	// rpmPerThread 1: the pre-check allows 16 RPM with a burst of 16.
+	// rpmPerThread 1: the pre-check allows MaxThreads RPM with a burst of
+	// MaxThreads (the top rank's thread count).
 	s := NewScrapeService(repo, nil, "jwt", 2, 1, false, false)
 	creds := func(key string) auth.ScrapeCredentials {
 		return auth.ScrapeCredentials{ClientID: clientID, ClientSecret: secret, UserCredential: "ns_live_bogus", ClientKey: key}
@@ -40,8 +42,8 @@ func TestPreCheckIsPerAppAndAddress(t *testing.T) {
 			break
 		}
 	}
-	if refusedAt != 16 {
-		t.Fatalf("one address was refused at request %d, want 16 (the pre-check burst)", refusedAt)
+	if want := progression.MaxThreads(); refusedAt != want {
+		t.Fatalf("one address was refused at request %d, want %d (the pre-check burst)", refusedAt, want)
 	}
 	// Another person using the same app is not affected.
 	_, err = s.AuthenticateScrape(ctx, creds("198.51.100.7"))

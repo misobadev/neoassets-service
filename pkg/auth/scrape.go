@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -32,6 +33,10 @@ type ScrapeSubject struct {
 	SoftwareName  string
 	Threads       int
 	DailyLimit    int
+	// RateLimit is the subject's requests per minute and RateRemaining the
+	// requests it can make right now without waiting (the bucket's tokens).
+	RateLimit     int
+	RateRemaining int
 	// Debug is true when the request carried a valid developer debug password.
 	Debug          bool
 	ForceUsed      *int
@@ -70,6 +75,9 @@ type ScrapeAuthenticator interface {
 type AuthError struct {
 	Status  int
 	Message string
+	// RetryAfter, when set, is sent as the Retry-After header (whole seconds,
+	// rounded up) so a rate-limited client knows exactly how long to wait.
+	RetryAfter time.Duration
 }
 
 func (e *AuthError) Error() string { return e.Message }
@@ -127,6 +135,9 @@ func ScrapeMiddleware(a ScrapeAuthenticator, clientKey func(*http.Request) strin
 					status = ae.Status
 					message = ae.Message
 				}
+				if ae != nil && ae.RetryAfter > 0 {
+					w.Header().Set("Retry-After", strconv.Itoa(RetryAfterSeconds(ae.RetryAfter)))
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(status)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
@@ -149,4 +160,14 @@ func queryInt(q url.Values, key string) *int {
 		return nil
 	}
 	return &n
+}
+
+// RetryAfterSeconds rounds a wait up to whole seconds (at least 1), the unit
+// of the Retry-After header.
+func RetryAfterSeconds(d time.Duration) int {
+	s := int((d + time.Second - 1) / time.Second)
+	if s < 1 {
+		s = 1
+	}
+	return s
 }

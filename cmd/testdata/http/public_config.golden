@@ -1,6 +1,6 @@
 200
 {
-  "admin_threads": 16,
+  "admin_threads": 20,
   "daily_games_per_thread": 1000,
   "donor_tiers": [
     {
@@ -14,7 +14,7 @@
       "xp_bonus_pct": 50
     }
   ],
-  "guest_threads": 2,
+  "guest_threads": 1,
   "points": {
     "image_metadata": 50,
     "new_game": 100,
@@ -27,13 +27,13 @@
       "max_level": 10,
       "min_level": 1,
       "rank": "novice",
-      "threads": 4
+      "threads": 2
     },
     {
       "max_level": 20,
       "min_level": 11,
       "rank": "amateur",
-      "threads": 5
+      "threads": 4
     },
     {
       "max_level": 30,
@@ -45,43 +45,44 @@
       "max_level": 40,
       "min_level": 31,
       "rank": "collector",
-      "threads": 7
+      "threads": 8
     },
     {
       "max_level": 50,
       "min_level": 41,
       "rank": "curator",
-      "threads": 8
+      "threads": 10
     },
     {
       "max_level": 60,
       "min_level": 51,
       "rank": "conservator",
-      "threads": 9
+      "threads": 12
     },
     {
       "max_level": 70,
       "min_level": 61,
       "rank": "archivist",
-      "threads": 10
+      "threads": 14
     },
     {
       "max_level": 80,
       "min_level": 71,
       "rank": "scholar",
-      "threads": 12
+      "threads": 16
     },
     {
       "max_level": 90,
       "min_level": 81,
       "rank": "master",
-      "threads": 14
+      "threads": 18
     },
     {
       "max_level": 100,
       "min_level": 91,
       "rank": "legend",
-      "threads": 16
+      "threads": 20
     }
-  ]
+  ],
+  "rpm_per_thread": 1000
 }

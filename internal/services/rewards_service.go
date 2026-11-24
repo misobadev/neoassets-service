@@ -52,6 +52,7 @@ func (s *Service) PublicConfig() models.PublicConfig {
 		GuestThreads:        econ.GuestThreads,
 		AdminThreads:        econ.AdminThreads,
 		DailyGamesPerThread: econ.DailyGamesPerThread,
+		RPMPerThread:        econ.RPMPerThread,
 		Points: models.PointsConfig{
 			TextMetadata:  econ.Points.TextMetadata,
 			ImageMetadata: econ.Points.ImageMetadata,

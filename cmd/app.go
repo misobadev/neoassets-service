@@ -46,6 +46,7 @@ func economyFromConfig(cfg *Config) economy.Config {
 		SupporterXPBonusPct:          cfg.XPSupporterBonusPct,
 		MonthlySupporterXPBonusPct:   cfg.XPMonthlySupporterBonusPct,
 		DailyGamesPerThread:          cfg.ScrapeDailyPerThread,
+		RPMPerThread:                 cfg.ScrapeRPMPerThread,
 		DonorGraceDays:               cfg.DonorSubscriptionGraceDays,
 		Points: economy.Points{
 			TextMetadata:  cfg.PointsTextMetadata,
@@ -101,7 +102,7 @@ func buildApp(ctx context.Context, cfg *Config, db *sql.DB, bucket r2.Client, ma
 		services.WithCatalogCacheTTL(cfg.CatalogCacheTTL))
 	userSvc := services.NewUserService(repo, mailer, cfg.JWTSecret, userSessionTTL, cfg.ProtectedAdminEmail)
 	userSvc.SkipEmailVerification = cfg.SkipEmailVerification
-	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, cfg.ScrapeRPMPerThread, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
+	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, repo.Economy().RPMPerThread, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
 	scrapeSvc.SetMaxInFlight(cfg.ScrapeMaxInFlight)
 	devSvc := services.NewDeveloperService(repo)
 	donationSvc := services.NewDonationService(repo, mailer, cfg.KofiVerificationToken, cfg.PatreonWebhookSecret)

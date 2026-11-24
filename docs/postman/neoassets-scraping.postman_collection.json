@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "3f9c1a2e-0b7a-4d1e-9c3a-6b2f8d4a1c07",
     "name": "NeoAssets Scraping API",
-    "description": "Public scraping API of NeoAssets.\n\nSetup:\n1. Import also the environment `neoassets-scraping.postman_environment.json` and select it.\n2. Set `clientId` and `clientSecret` with your developer app credentials.\n3. Set `systemId` (from GET /scrape/systems, e.g. `snes`) and `searchName` (e.g. `mario`).\n4. To test as a registered user, set `userApiKey` with a personal API key (Profile page). Leave it empty for guest mode.\n5. Run the requests in order. `Games - by name` stores `romHash`/`romHashParam` so the by-hash requests work.\n\n`GET /scrape/games` requires `system_id`, `family` or `group` plus a ROM hash or a name, and returns a SINGLE game (`game`, null when nothing matched) with `matched_by` (`hash`|`name`) and the game's `scrapes` counter.\n\nRate limit tests: the two `Rate Limit - *` requests loop themselves via `pm.execution.setNextRequest`, so they MUST be run with the Collection Runner (not the Send button). They stop as soon as a 429 is observed.\n\nSystem Art Packs: `GET /packs` lists approved packs (sorted by downloads, paginated); `GET /packs/{packId}` returns the full install payload and bumps the download counter; `Contribute - create submission` creates a pending contribution to an approved pack (set `packId`, `packName`, `packAuthor` and `userToken`).\n\nRate limiting: the pack download endpoint (`/packs/{packId}/download`) is limited per (IP, pack) to ~10 req/min per pack, so the download counter reflects real installs and cannot be flooded.",
+    "description": "Public scraping API of NeoAssets.\n\nSetup:\n1. Import also the environment `neoassets-scraping.postman_environment.json` and select it.\n2. Set `clientId` and `clientSecret` with your developer app credentials.\n3. Set `systemId` (from GET /scrape/systems, e.g. `snes`) and `searchName` (e.g. `mario`).\n4. To test as a registered user, set `userApiKey` with a personal API key (Profile page). Leave it empty for guest mode.\n5. Run the requests in order. `Games - by name` stores `romHash`/`romHashParam` so the by-hash requests work.\n\n`GET /scrape/games` requires `system_id`, `family` or `group` plus a ROM hash or a name, and returns a SINGLE game (`game`, null when nothing matched) with `matched_by` (`hash`|`name`) and the game's `scrapes` counter.\n\nLimits: an account's threads are its simultaneous requests (`X-Concurrency-Limit`), its rate is threads x 100 requests/min with bursts of about 5 s (`X-RateLimit-Limit`, `X-RateLimit-Remaining`), and its daily quota is threads x 1000 game lookups (`X-Quota-*`). A 429 or 503 carries `Retry-After` (seconds): wait that long and retry. Guest requests (no `userApiKey`) share one allowance per developer account.\n\nRate limit tests: the two `Rate Limit - *` requests loop themselves via `pm.execution.setNextRequest`, so they MUST be run with the Collection Runner (not the Send button). They stop as soon as a 429 is observed and check its Retry-After header.\n\nSystem Art Packs: `GET /packs` lists approved packs (sorted by downloads, paginated); `GET /packs/{packId}` returns the full install payload without counting a download, and `GET /packs/{packId}/download` returns the same payload and bumps the download counter; `Contribute - create submission` creates a pending contribution to an approved pack (set `packId`, `packName`, `packAuthor` and `userToken`).\n\nRate limiting: the pack download endpoint (`/packs/{packId}/download`) is limited per (IP, pack) to ~10 req/min per pack, so the download counter reflects real installs and cannot be flooded.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -260,7 +260,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/games?system_id={{systemId}}&name={{searchName}}&type={{gameType}}&roms=true&softname={{softname}}",
-            "description": "Name search scoped to system_id (name is cleaned server-side). Optional `type` filter: base, hack or homebrew. `roms=true` includes the ROM list so a hash can be captured. Returns one game and consumes one quota unit; stores romHash for the by-hash requests."
+            "description": "Name search scoped to system_id (name is cleaned server-side). Optional `type` filter: base, homebrew, hack, bootleg or aftermarket. `roms=true` includes the ROM list so a hash can be captured. Returns one game and consumes one quota unit; stores romHash for the by-hash requests."
           },
           "response": []
         },
@@ -274,10 +274,7 @@
                 "exec": [
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "const j = pm.response.json();",
-                  "pm.test('returns Street Fighter Alpha 3', () => {",
-                  "  pm.expect(j.game).to.not.be.null;",
-                  "  pm.expect(j.game.system_id).to.eql('arc');",
-                  "});",
+                  "pm.test('reports the real board, not the virtual system', () => pm.expect(j.system_id).to.eql('cps2'));",
                   "pm.test('matched by name', () => pm.expect(j.matched_by).to.eql('name'));",
                   "pm.test('resolves Street Fighter Alpha 3 on cps2', () => {",
                   "  pm.expect(j.game).to.not.be.null;",
@@ -292,8 +289,8 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/api/v1/scrape/games?system_id=arc&name=sfa3.zip&softname={{softname}}",
-            "description": "Look up a game by its ROM set name in the virtual `arc` system. `arc` is a virtual system: it owns no games and aggregates the whole `arcade` family, so `sfa3.zip` resolves the CPS2 entry (Street Fighter Alpha 3) without duplicating it. Same as family=arcade; for MAME/FBNeo only use group=mame-fbneo."
+            "url": "{{baseUrl}}/api/v1/scrape/games?system_id=arcade&name=sfa3.zip&softname={{softname}}",
+            "description": "Look up a game by its ROM set name in the virtual `arcade` system. `arcade` is a virtual system: it owns no games and aggregates the whole arcade family, so this finds sfa3.zip on cps2 without knowing the board. The response's `system_id` is the real board."
           },
           "response": []
         },
@@ -437,9 +434,14 @@
                   "  pm.test('guest has no user and the guest daily limit', () => {",
                   "    pm.expect(j.subject).to.eql('guest');",
                   "    pm.expect(j.user).to.eql(null);",
-                  "    pm.expect(j.quota.daily_limit).to.eql(2000);",
+                  "    pm.expect(j.quota.daily_limit).to.eql(1000);",
                   "  });",
                   "}",
+                  "pm.test('limit headers present', () => {",
+                  "  pm.expect(pm.response.headers.has('X-Concurrency-Limit')).to.be.true;",
+                  "  pm.expect(pm.response.headers.has('X-RateLimit-Limit')).to.be.true;",
+                  "  pm.expect(pm.response.headers.has('X-RateLimit-Remaining')).to.be.true;",
+                  "});",
                   "pm.test('quota headers present', () => {",
                   "  pm.expect(pm.response.headers.has('X-Quota-Limit')).to.be.true;",
                   "  pm.expect(pm.response.headers.has('X-Quota-Remaining')).to.be.true;",
@@ -452,7 +454,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/account",
-            "description": "Current subject and quota. Free. Asserts the guest daily limit (1000) when no user API key is set."
+            "description": "Current subject and quota. Free. Asserts the guest daily limit (1000 = 1 thread x 1000) when no user API key is set, and the limit headers."
           },
           "response": []
         }
@@ -491,6 +493,7 @@
                   "  pm.collectionVariables.set('guestRLHit', 'true');",
                   "}",
                   "pm.test('response is 200 or 429 (request #' + count + ')', () => pm.expect([200, 429]).to.include(code));",
+                  "if (code === 429) pm.test('429 carries Retry-After', () => pm.expect(Number(pm.response.headers.get('Retry-After'))).to.be.above(0));",
                   "if (pm.collectionVariables.get('guestRLHit') === 'true') {",
                   "  pm.test('guest rate limit triggered (429) after ' + count + ' requests', () => pm.expect(true).to.be.true);",
                   "  pm.collectionVariables.set('guestRLRunning', 'false');",
@@ -513,7 +516,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/account",
-            "description": "Guest rate limit test. Loops itself until a 429 appears (default guest limit is 200 req/min = 2 threads x 100). MUST be run with the Collection Runner. Leave `userApiKey` empty."
+            "description": "Guest rate limit test. Loops itself until a 429 appears (default guest limit is 100 req/min = 1 thread x 100, with a burst of 8). Checks that the 429 carries Retry-After. MUST be run with the Collection Runner."
           },
           "response": []
         },
@@ -555,6 +558,7 @@
                   "    pm.collectionVariables.set('userRLHit', 'true');",
                   "  }",
                   "  pm.test('response is 200 or 429 (request #' + count + ')', () => pm.expect([200, 429]).to.include(code));",
+                  "  if (code === 429) pm.test('429 carries Retry-After', () => pm.expect(Number(pm.response.headers.get('Retry-After'))).to.be.above(0));",
                   "  if (pm.collectionVariables.get('userRLHit') === 'true') {",
                   "    pm.test('user rate limit triggered (429) after ' + count + ' requests', () => pm.expect(true).to.be.true);",
                   "    pm.collectionVariables.set('userRLRunning', 'false');",
@@ -578,7 +582,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/account",
-            "description": "Registered-user rate limit test. Loops itself until a 429 appears (the user limit is threads x 100 req/min, e.g. a 16-thread admin = 1600). MUST be run with the Collection Runner and a valid `userApiKey`."
+            "description": "Registered-user rate limit test. Loops itself until a 429 appears (the user limit is threads x 100 req/min with a burst of about 5 s, e.g. a 2-thread Novice = 200/min, burst 16). Checks that the 429 carries Retry-After. MUST be run with the Collection Runner."
           },
           "response": []
         }

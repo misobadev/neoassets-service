@@ -9,24 +9,24 @@ import (
 
 func TestThreadsForUser(t *testing.T) {
 	d := Default()
-	// Level 1 base = 4 threads.
-	if got := d.ThreadsForUser(models.RoleUser, models.DonorNone, 0); got != 4 {
-		t.Errorf("free level 1 = %d, want 4", got)
+	// Level 1 base = 2 threads.
+	if got := d.ThreadsForUser(models.RoleUser, models.DonorNone, 0); got != 2 {
+		t.Errorf("free level 1 = %d, want 2", got)
 	}
 	// Additive donor bonus: 4 + 2 / 4 + 4.
-	if got := d.ThreadsForUser(models.RoleUser, models.DonorSupporter, 0); got != 6 {
-		t.Errorf("supporter level 1 = %d, want 6", got)
+	if got := d.ThreadsForUser(models.RoleUser, models.DonorSupporter, 0); got != 4 {
+		t.Errorf("supporter level 1 = %d, want 4", got)
 	}
-	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, 0); got != 8 {
-		t.Errorf("monthly supporter level 1 = %d, want 8", got)
+	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, 0); got != 6 {
+		t.Errorf("monthly supporter level 1 = %d, want 6", got)
 	}
-	// Level 65 base = 10 threads; monthly +4 -> 14.
-	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, progression.XPForLevel(65)); got != 14 {
-		t.Errorf("monthly supporter level 65 = %d, want 14", got)
+	// Level 65 base = 14 threads; monthly +4 -> 18.
+	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, progression.XPForLevel(65)); got != 18 {
+		t.Errorf("monthly supporter level 65 = %d, want 18", got)
 	}
-	// Hard cap at 16 even with the donor bonus.
-	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, progression.XPForLevel(100)); got != 16 {
-		t.Errorf("monthly supporter level 100 = %d, want 16 (capped)", got)
+	// Hard cap at the top rank (20) even with the donor bonus.
+	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, progression.XPForLevel(100)); got != 20 {
+		t.Errorf("monthly supporter level 100 = %d, want 20 (capped)", got)
 	}
 	// Admins are always maxed.
 	if got := d.ThreadsForUser(models.RoleAdmin, models.DonorNone, 0); got != d.AdminThreads {
@@ -68,7 +68,7 @@ func TestOverrideKeepsDefaultsForUnsetValues(t *testing.T) {
 	if c.GuestThreads != 3 || c.Points.NewGame != 250 {
 		t.Fatalf("overrides not applied: %+v", c)
 	}
-	if c.DailyGamesPerThread != 1000 || c.AdminThreads != 16 || c.Points.TextMetadata != 10 || c.DonorGraceDays != 40 {
+	if c.DailyGamesPerThread != 1000 || c.AdminThreads != 20 || c.Points.TextMetadata != 10 || c.DonorGraceDays != 40 {
 		t.Fatalf("defaults not kept: %+v", c)
 	}
 }

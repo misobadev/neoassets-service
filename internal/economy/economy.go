@@ -42,6 +42,9 @@ type Config struct {
 	// DailyGamesPerThread is the daily game scrape quota granted per thread.
 	// The effective daily limit is threads * DailyGamesPerThread.
 	DailyGamesPerThread int
+	// RPMPerThread is the per-minute request budget granted per thread. The
+	// effective rate limit is threads * RPMPerThread.
+	RPMPerThread int
 	// DonorGraceDays is the inactivity window after which an auto-managed
 	// monthly supporter with no fresh subscription payment is downgraded.
 	DonorGraceDays int
@@ -52,13 +55,14 @@ type Config struct {
 // Default returns the built-in economy.
 func Default() Config {
 	return Config{
-		AdminThreads:                 16,
-		GuestThreads:                 2,
+		AdminThreads:                 20,
+		GuestThreads:                 1,
 		SupporterBonusThreads:        2,
 		MonthlySupporterBonusThreads: 4,
 		SupporterXPBonusPct:          25,
 		MonthlySupporterXPBonusPct:   50,
 		DailyGamesPerThread:          1000,
+		RPMPerThread:                 100,
 		DonorGraceDays:               40,
 		Points: Points{
 			TextMetadata:  10,
@@ -87,6 +91,7 @@ func (c Config) Override(o Config) Config {
 	c.SupporterXPBonusPct = pick(c.SupporterXPBonusPct, o.SupporterXPBonusPct)
 	c.MonthlySupporterXPBonusPct = pick(c.MonthlySupporterXPBonusPct, o.MonthlySupporterXPBonusPct)
 	c.DailyGamesPerThread = pick(c.DailyGamesPerThread, o.DailyGamesPerThread)
+	c.RPMPerThread = pick(c.RPMPerThread, o.RPMPerThread)
 	c.DonorGraceDays = pick(c.DonorGraceDays, o.DonorGraceDays)
 	c.Points.TextMetadata = pick(c.Points.TextMetadata, o.Points.TextMetadata)
 	c.Points.ImageMetadata = pick(c.Points.ImageMetadata, o.Points.ImageMetadata)
