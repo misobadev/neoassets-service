@@ -13,8 +13,17 @@ import (
 // Developer applications (user JWT)
 // ---------------------------------------------------------------------------
 
+// flushScrapeOutcomes writes the batched scrape counters before a page that
+// shows them, so the usage shown is never up to one batch behind.
+func (h *Handler) flushScrapeOutcomes(r *http.Request) {
+	if h.scrapeSvc != nil {
+		h.scrapeSvc.FlushOutcomes(r.Context())
+	}
+}
+
 // ListDeveloperApps returns the current user's developer applications.
 func (h *Handler) ListDeveloperApps(w http.ResponseWriter, r *http.Request) {
+	h.flushScrapeOutcomes(r)
 	list, err := h.devSvc.ListApps(r.Context(), userFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list developer apps")
@@ -123,6 +132,7 @@ func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 // AdminDeveloperOverview lists every developer app and personal API key with
 // their usage. Admin only.
 func (h *Handler) AdminDeveloperOverview(w http.ResponseWriter, r *http.Request) {
+	h.flushScrapeOutcomes(r)
 	out, err := h.devSvc.Overview(r.Context())
 	if err != nil {
 		writeServerError(w, http.StatusInternalServerError, "failed to load developer overview", err)

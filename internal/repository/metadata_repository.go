@@ -223,29 +223,58 @@ const gameColsLang = `g.id, g.system_id, g.name, COALESCE(gt.description, g.desc
 // The fields match ListGameStats plus the cover column, and it needs
 // gameCompletionJoin to be present.
 const gameCompletionScore = `(
-      COALESCE(mp.media_score, 0) + COALESCE(tl.has_tr, 0)
+      COALESCE(mp.media_score, 0)
+      + (EXISTS (SELECT 1 FROM game_translations gt WHERE gt.game_id = g.id))::int
       + ((g.description <> '' AND g.genre <> '' AND g.developer <> '' AND g.publisher <> '' AND g.release_year IS NOT NULL AND g.rating > 0))::int
     )`
 
-// gameCompletionJoin supplies the media and translation flags the completion
-// score needs. It is only added when sorting by completion so the regular browse
-// queries do not pay for the extra aggregation.
+// gameCompletionJoin supplies the media flags the completion score needs (the
+// translation flag is an EXISTS in the score itself). It is only added when
+// sorting by completion so the regular browse queries do not pay for the extra
+// aggregation. %s is an optional filter that limits the aggregation to the
+// games being listed.
 const gameCompletionJoin = `
       LEFT JOIN (
         SELECT game_id,
                bool_or(kind = 'cover')::int + bool_or(kind = 'logo')::int +
                bool_or(kind = 'screenshot')::int + bool_or(kind = 'fanart')::int +
                bool_or(kind = 'video')::int AS media_score
-        FROM media WHERE kind IN ('cover', 'logo', 'screenshot', 'fanart', 'video')
+        FROM media WHERE kind IN ('cover', 'logo', 'screenshot', 'fanart', 'video')%s
         GROUP BY game_id
-      ) mp ON mp.game_id = g.id
-      LEFT JOIN (SELECT DISTINCT game_id, 1 AS has_tr FROM game_translations) tl ON tl.game_id = g.id`
+      ) mp ON mp.game_id = g.id`
+
+// pagedGamesQuery builds a browse/search page as a deferred join: the inner
+// query picks only the page's ids (filtering, sorting and skipping on the bare
+// games rows), and the outer query decorates just those rows with gameCols.
+// Decorating before LIMIT/OFFSET would run the cover and scrape subqueries for
+// every skipped row. ARRAY(...) keeps the inner order, which WITH ORDINALITY
+// carries to the outer ORDER BY. cond may reference g only; joins is the
+// optional completion-sort join.
+func pagedGamesQuery(cond, sort, joins string, limitArg, offsetArg int) string {
+	return `SELECT ` + gameCols + `
+		 FROM unnest(ARRAY(
+		   SELECT g.id FROM games g
+		   LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id` + joins + `
+		   WHERE ` + cond + `
+		   ORDER BY ` + orderByClause(sort) + `
+		   LIMIT $` + itoa(limitArg) + ` OFFSET $` + itoa(offsetArg) + `
+		 )) WITH ORDINALITY AS p(id, pos)
+		 JOIN games g ON g.id = p.id
+		 LEFT JOIN metadata_systems s ON s.id = g.system_id
+		 ORDER BY p.pos`
+}
 
 // completionSortJoin returns the extra joins a completion sort needs (empty for
-// any other sort).
-func completionSortJoin(sort string) string {
+// any other sort). systemsArg, when non-zero, is the placeholder number of the
+// system id array, so the media aggregation only covers those systems' games
+// instead of the whole catalog.
+func completionSortJoin(sort string, systemsArg int) string {
 	if sort == "completion_asc" || sort == "completion_desc" {
-		return gameCompletionJoin
+		filter := ""
+		if systemsArg > 0 {
+			filter = fmt.Sprintf(" AND game_id IN (SELECT id FROM games WHERE system_id = ANY($%d))", systemsArg)
+		}
+		return fmt.Sprintf(gameCompletionJoin, filter)
 	}
 	return ""
 }
@@ -594,10 +623,7 @@ func (r *Repository) ListGamesBySystems(ctx context.Context, systemIDs []string,
 	}
 	args = append(args, limit, offset)
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT `+gameCols+` FROM games g
-		 LEFT JOIN metadata_systems s ON s.id = g.system_id
-		 LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id`+completionSortJoin(sort)+`
-		 WHERE `+cond+` ORDER BY `+orderByClause(sort)+` LIMIT $`+itoa(len(args)-1)+` OFFSET $`+itoa(len(args)),
+		pagedGamesQuery(cond, sort, completionSortJoin(sort, 1), len(args)-1, len(args)),
 		args...,
 	)
 	if err != nil {
@@ -620,16 +646,16 @@ func (r *Repository) SearchGames(ctx context.Context, q string, systemIDs []stri
 	for _, tok := range searchTokens(q) {
 		args = append(args, "%"+tok+"%")
 		n := len(args)
-		// Match the display name, the short name (the MAME/FBNeo ROM set, e.g.
-		// "sfa3") or any regional name (game_regions), so searching a localized
-		// title like "Street Fighter Zero 3" finds "Street Fighter Alpha 3".
-		// f_unaccent is the immutable wrapper indexed by migration 059.
-		where = append(where, fmt.Sprintf(
-			"(regexp_replace(f_unaccent(lower(g.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR regexp_replace(f_unaccent(lower(g.short_name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR EXISTS (SELECT 1 FROM game_regions gr WHERE gr.game_id = g.id AND regexp_replace(f_unaccent(lower(gr.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d))",
-			n, n, n))
+		// search_norm (migration 076) holds the normalized display name, the
+		// short name (the MAME/FBNeo ROM set, e.g. "sfa3") and every regional
+		// name, so searching a localized title like "Street Fighter Zero 3"
+		// finds "Street Fighter Alpha 3".
+		where = append(where, fmt.Sprintf("g.search_norm LIKE $%d", n))
 	}
+	systemsArg := 0
 	if len(systemIDs) > 0 {
 		args = append(args, pq.Array(systemIDs))
+		systemsArg = len(args)
 		where = append(where, fmt.Sprintf("g.system_id = ANY($%d)", len(args)))
 	}
 	if gtype != "" {
@@ -645,10 +671,7 @@ func (r *Repository) SearchGames(ctx context.Context, q string, systemIDs []stri
 
 	argsCount := append(args, limit, offset)
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT `+gameCols+` FROM games g
-		 LEFT JOIN metadata_systems s ON s.id = g.system_id
-		 LEFT JOIN game_scrape_stats gs ON gs.game_id = g.id`+completionSortJoin(sort)+`
-		 WHERE `+cond+` ORDER BY `+orderByClause(sort)+` LIMIT $`+itoa(len(args)+1)+` OFFSET $`+itoa(len(args)+2),
+		pagedGamesQuery(cond, sort, completionSortJoin(sort, systemsArg), len(args)+1, len(args)+2),
 		argsCount...,
 	)
 	if err != nil {
@@ -672,10 +695,7 @@ func (r *Repository) SearchGamesLight(ctx context.Context, q string, systemIDs [
 	args := []interface{}{}
 	for _, tok := range searchTokens(q) {
 		args = append(args, "%"+tok+"%")
-		n := len(args)
-		where = append(where, fmt.Sprintf(
-			"(regexp_replace(f_unaccent(lower(g.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR regexp_replace(f_unaccent(lower(g.short_name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d OR EXISTS (SELECT 1 FROM game_regions gr WHERE gr.game_id = g.id AND regexp_replace(f_unaccent(lower(gr.name)), '[^a-z0-9]+', ' ', 'g') LIKE $%d))",
-			n, n, n))
+		where = append(where, fmt.Sprintf("g.search_norm LIKE $%d", len(args)))
 	}
 	systems := 0
 	if len(systemIDs) > 0 {
@@ -722,6 +742,17 @@ func (r *Repository) SearchGamesLight(ctx context.Context, q string, systemIDs [
 // LookupGameByHash finds games matching any of the provided ROM hashes. When
 // systemID is non-empty the search is scoped to that system.
 func (r *Repository) LookupGameByHash(ctx context.Context, crc, md5, sha1, sha256, systemID string) ([]models.Game, error) {
+	var systemIDs []string
+	if systemID != "" {
+		systemIDs = []string{systemID}
+	}
+	return r.LookupGameByHashInSystems(ctx, crc, md5, sha1, sha256, systemIDs)
+}
+
+// LookupGameByHashInSystems is LookupGameByHash scoped to a set of systems in
+// one query (a family or group selector), ordered by the systems' position in
+// systemIDs and then by name. An empty set searches every system.
+func (r *Repository) LookupGameByHashInSystems(ctx context.Context, crc, md5, sha1, sha256 string, systemIDs []string) ([]models.Game, error) {
 	conds := []string{}
 	args := []interface{}{}
 	if crc != "" {
@@ -747,14 +778,17 @@ func (r *Repository) LookupGameByHash(ctx context.Context, crc, md5, sha1, sha25
 	            SELECT DISTINCT r.game_id FROM roms r
 	            WHERE ` + strings.Join(conds, " OR ") + `
 	          )`
-	if systemID != "" {
-		args = append(args, systemID)
-		where += fmt.Sprintf(" AND g.system_id = $%d", len(args))
+	order := "g.name"
+	if len(systemIDs) > 0 {
+		args = append(args, pq.Array(systemIDs))
+		n := len(args)
+		where += fmt.Sprintf(" AND g.system_id = ANY($%d)", n)
+		order = fmt.Sprintf("array_position($%d::text[], g.system_id), g.name", n)
 	}
 	query := `SELECT ` + gameCols + ` FROM games g
 	          LEFT JOIN metadata_systems s ON s.id = g.system_id
 	          WHERE ` + where + `
-	          ORDER BY g.name`
+	          ORDER BY ` + order
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup game by hash: %w", err)

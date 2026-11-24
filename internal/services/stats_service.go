@@ -7,7 +7,23 @@ import (
 
 // Dashboard gathers the app home leaderboards and recent published content
 // (SAP + game metadata). Hidden users (NeoBot) are excluded from every list.
+// The leaderboards run a dozen aggregate queries, so the result is cached for
+// catalogTTL; each call gets its own copy of the top-level struct.
 func (s *Service) Dashboard(ctx context.Context) (*models.Dashboard, error) {
+	cached, err := s.dashboardCache.get(ctx, s.catalogTTL, s.loadDashboard)
+	if err != nil {
+		return nil, err
+	}
+	dash := *cached
+	// Only the total used space is exposed publicly (from the hourly cache); the
+	// media/DB breakdown stays behind the admin endpoint.
+	if u := s.GetCachedStorageUsage(); u != nil {
+		dash.Storage = &models.DashboardStorage{TotalBytes: u.TotalBytes}
+	}
+	return &dash, nil
+}
+
+func (s *Service) loadDashboard(ctx context.Context) (*models.Dashboard, error) {
 	totalGames, err := s.repo.CountGames(ctx)
 	if err != nil {
 		return nil, err
@@ -69,11 +85,6 @@ func (s *Service) Dashboard(ctx context.Context) (*models.Dashboard, error) {
 		TopSystems:         topSystems,
 		RecentPacks:        recentPacks,
 		RecentMetadata:     recentMetadata,
-	}
-	// Only the total used space is exposed publicly (from the hourly cache); the
-	// media/DB breakdown stays behind the admin endpoint.
-	if u := s.GetCachedStorageUsage(); u != nil {
-		dash.Storage = &models.DashboardStorage{TotalBytes: u.TotalBytes}
 	}
 	return dash, nil
 }

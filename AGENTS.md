@@ -180,11 +180,21 @@ the user credential is optional and falls back to guest mode.
 - Per-version stats live in `app_software_stats` (migration `040`). The client
   may send `softname` (query param or `X-Software-Name` header) to distinguish
   versions; absent, the app name is used. Quota/rate limits stay per app/user.
-  An app keeps at most 50 software names (later ones count under the app name),
-  and rate-limited requests are counted in memory and written every 10 s, so
-  refused traffic doesn't cost a database write each.
+  An app keeps at most 50 software names (later ones count under the app name).
+  Every outcome (ok, not_found, rate_limited, quota_exceeded) is counted in
+  memory and written every 10 s (`FlushOutcomes`, also on shutdown and before
+  the developer pages that show the counters), so a busy app's threads don't
+  each write the same `developer_apps`/`app_software_stats` rows.
 - A family/group selector searches all its systems in one query (up to 25
-  candidates per system), and a search matches on at most 8 words.
+  candidates per system), and a search matches on at most 8 words. A hash
+  lookup is also one query for all the selector's systems.
+- Name search matches each token with `LIKE '%token%'` on `games.search_norm`
+  (migration `076`): the normalized display name, short name and every
+  regional name joined by `' | '`, kept current by triggers on `games` and
+  `game_regions` (so importer writes are covered too), with a trigram index.
+  Never search with `regexp_replace`/`f_unaccent` per row again.
+- Browse/search pages are deferred joins (`pagedGamesQuery`): the page's ids
+  are chosen first and only those rows get the cover/scrape subqueries.
 - Debug mode: each app has an owner-only `debug_password`, stored hashed
   (migration `039` column holds the hash). Passing `X-Debug-Password` enables
   `forcerequestok` / `forcethreads` / `forceratelimit`, capped at 100/day in
@@ -367,6 +377,10 @@ ffmpeg with libwebp (CI installs it) and is skipped without it.
 `statement_timeout`, so a slow query stops even after its request has gone;
 migrations run on a separate connection without it (behind PgBouncer, set it on
 the role and use 0). Search and scrape queries take the request context.
+`CATALOG_CACHE_SECONDS` (default 60, 0 disables) caches the catalog aggregates
+in memory (systems, families, groups, languages, the public dashboard);
+approvals and pack deletions clear them, catalog imports show up within the
+TTL.
 
 See `README.md` and `.env.example`. `R2_*` tools/certs only need object read +
 write; bucket-level ops (e.g. setting CORS via S3) require an admin-permission

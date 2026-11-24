@@ -97,7 +97,8 @@ func buildApp(ctx context.Context, cfg *Config, db *sql.DB, bucket r2.Client, ma
 	seedNeoBot(ctx, repo)
 
 	svc := services.NewService(repo, bucket, cfg.R2PublicBase, cfg.JWTSecret, catalog,
-		services.WithTranslator(services.NewTranslator(cfg.TranslateWorkerURL, cfg.TranslateWorkerToken)))
+		services.WithTranslator(services.NewTranslator(cfg.TranslateWorkerURL, cfg.TranslateWorkerToken)),
+		services.WithCatalogCacheTTL(cfg.CatalogCacheTTL))
 	userSvc := services.NewUserService(repo, mailer, cfg.JWTSecret, userSessionTTL, cfg.ProtectedAdminEmail)
 	userSvc.SkipEmailVerification = cfg.SkipEmailVerification
 	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, cfg.ScrapeRPMPerThread, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
@@ -119,8 +120,8 @@ func (a *app) startJobs(ctx context.Context) {
 	a.svc.StartStorageRefresh(ctx)
 	// Downgrade monthly supporters whose Ko-fi subscription stopped paying.
 	a.donationSvc.StartExpiryJob(ctx)
-	// Write the batched counts of rate-limited scrape requests.
-	a.scrapeSvc.StartRefusalFlush(ctx)
+	// Write the batched scrape outcome counts.
+	a.scrapeSvc.StartOutcomeFlush(ctx)
 }
 
 // seedAdmin ensures the initial admin account from the environment exists.
