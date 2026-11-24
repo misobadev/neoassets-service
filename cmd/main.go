@@ -69,6 +69,7 @@ type Config struct {
 	PointsSAPImage                     int
 	PointsNewGame                      int
 	ScrapeRPMPerThread                 int
+	ScrapeMaxInFlight                  int
 	KofiVerificationToken              string
 	PatreonWebhookSecret               string
 	DonorSubscriptionGraceDays         int
@@ -196,6 +197,7 @@ func loadConfig() *Config {
 		PointsSAPImage:                     getEnvInt("POINTS_SAP_IMAGE", 0),
 		PointsNewGame:                      getEnvInt("POINTS_NEW_GAME", 0),
 		ScrapeRPMPerThread:                 getEnvInt("SCRAPE_RPM_PER_THREAD", 0),
+		ScrapeMaxInFlight:                  getEnvInt("SCRAPE_MAX_INFLIGHT", 0),
 		KofiVerificationToken:              getEnvOrDefault("KOFI_VERIFICATION_TOKEN", ""),
 		PatreonWebhookSecret:               getEnvOrDefault("PATREON_WEBHOOK_SECRET", ""),
 		DonorSubscriptionGraceDays:         getEnvInt("DONOR_SUBSCRIPTION_GRACE_DAYS", 0),
@@ -469,11 +471,14 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 		// Public scraping API. Developer app credentials are always required;
 		// user credentials are optional and fall back to guest mode.
 		r.Route("/scrape", func(r chi.Router) {
-			r.Use(auth.ScrapeMiddleware(scrapeSvc))
+			r.Use(auth.ScrapeMiddleware(scrapeSvc, handlers.ClientKey))
+			// An account's threads are its concurrent requests.
+			r.Use(h.ScrapeAdmission)
 			r.Get("/systems", h.ListScrapeSystems)
 			r.Get("/families", h.ListScrapeFamilies)
 			r.Get("/groups", h.ListScrapeGroups)
-			r.Get("/games", h.ScrapeGames)
+			// Game lookups also share a global in-flight cap.
+			r.With(h.ScrapeGlobalAdmission).Get("/games", h.ScrapeGames)
 			r.Get("/popular", h.ListScrapePopular)
 			r.Get("/account", h.ScrapeAccount)
 		})

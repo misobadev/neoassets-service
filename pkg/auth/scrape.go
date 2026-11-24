@@ -53,6 +53,10 @@ type ScrapeCredentials struct {
 	ForceUsed      *int
 	ForceThreads   *int
 	ForceRateLimit bool
+	// ClientKey identifies the caller's network address (an IPv4 address or
+	// an IPv6 /64). It keys the pre-authentication limiter, so one developer
+	// app shipped to many users is not capped as a whole.
+	ClientKey string
 }
 
 // ScrapeAuthenticator resolves the credential layers of a scrape request into a
@@ -89,7 +93,9 @@ func ScrapeSubjectFromContext(ctx context.Context) (*ScrapeSubject, bool) {
 // user credential, then stores the resolved subject in the request context. The
 // debug password is only accepted via the X-Debug-Password header: accepting it
 // as a query parameter would leak it into access logs, proxies and history.
-func ScrapeMiddleware(a ScrapeAuthenticator) func(http.Handler) http.Handler {
+//
+// clientKey returns the caller's address key (nil leaves it empty).
+func ScrapeMiddleware(a ScrapeAuthenticator, clientKey func(*http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			q := r.URL.Query()
@@ -107,6 +113,9 @@ func ScrapeMiddleware(a ScrapeAuthenticator) func(http.Handler) http.Handler {
 				ForceUsed:      queryInt(q, "forcerequestok"),
 				ForceThreads:   queryInt(q, "forcethreads"),
 				ForceRateLimit: q.Get("forceratelimit") == "1",
+			}
+			if clientKey != nil {
+				creds.ClientKey = clientKey(r)
 			}
 
 			subject, err := a.AuthenticateScrape(r.Context(), creds)

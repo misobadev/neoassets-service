@@ -66,6 +66,12 @@ type ScrapeService struct {
 	mu       sync.Mutex
 	limiters map[string]*limiterEntry
 
+	// Admission control (scrape_admission.go): per-subject thread slots and
+	// the global cap on concurrent game lookups.
+	subjectSlots slotPool
+	globalSlots  slotPool
+	maxInFlight  int
+
 	// outcomes counts request outcomes per app and software in memory; they
 	// are written in batches, so neither a stream of refused requests nor a
 	// busy app's many threads (which all update the same developer_apps and
@@ -77,9 +83,10 @@ type ScrapeService struct {
 // can be evicted instead of resetting the whole map. rpm is kept so a bucket is
 // rebuilt when a subject's thread count changes.
 type limiterEntry struct {
-	lim  *rate.Limiter
-	rpm  int
-	last time.Time
+	lim   *rate.Limiter
+	rpm   int
+	burst int
+	last  time.Time
 }
 
 // NewScrapeService creates a ScrapeService. Non-positive values fall back to
@@ -102,6 +109,7 @@ func NewScrapeService(repo *repository.Repository, meta *Service, jwtSecret stri
 		debugEnabled:    debugEnabled,
 		requireVerified: requireVerified,
 		limiters:        map[string]*limiterEntry{},
+		maxInFlight:     DefaultScrapeMaxInFlight,
 	}
 	return s
 }
@@ -133,10 +141,13 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		_ = s.repo.TouchDeveloperAppLastUsed(ctx, creds.ClientID)
 	}
 
-	// Enforce a generous per-app rate limit before resolving the optional user
-	// credential, so a garbage user credential cannot force an unbounded DB
-	// lookup without any throttling. The real per-subject limit is applied below.
-	if !s.limiterFor("pre:"+app.ClientID, s.preCheckRPM()).Allow() {
+	// Enforce a generous per-app, per-address rate limit before resolving the
+	// optional user credential, so a garbage user credential cannot force an
+	// unbounded DB lookup without any throttling. It is keyed by the caller's
+	// address too: an app shipped in a frontend is used by many people at
+	// once, and their combined traffic must not share one bucket. The real
+	// per-subject limit is applied below.
+	if !s.limiterFor("pre:"+app.ClientID+"|"+creds.ClientKey, s.preCheckRPM(), progression.MaxThreads()).Allow() {
 		s.record(ctx, app.ID, resolveSoftwareName(creds.SoftwareName, app.Name), app.Name, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded"}
 	}
@@ -388,7 +399,7 @@ func userTokenCurrent(claims *auth.UserClaims, user *models.User) bool {
 	return claims.TokenVersion == user.TokenVersion
 }
 
-// preCheckRPM is the generous per-app cap applied before the optional user
+// preCheckRPM is the generous per-app, per-address cap applied before the optional user
 // credential is resolved, bounding DB lookups from bogus credentials. It uses
 // the maximum thread count so it never throttles a legitimate user.
 func (s *ScrapeService) preCheckRPM() int {
@@ -396,21 +407,31 @@ func (s *ScrapeService) preCheckRPM() int {
 }
 
 // allowSubject applies the per-minute rate limit for the resolved subject:
-// registered users are keyed by user id and get threads * rpmPerThread, guests
-// are keyed by the developer app and get the guest thread count.
+// threads * rpmPerThread, keyed like the threads themselves (the user, or a
+// guest's developer app owner, so more apps don't add rate).
 func (s *ScrapeService) allowSubject(subject *auth.ScrapeSubject) bool {
-	key := "app:" + subject.ClientID
-	if !subject.IsGuest() {
-		key = "user:" + subject.UserID.String()
+	return s.limiterFor("rpm:"+admissionKey(subject), subject.Threads*s.rpmPerThread, subject.Threads).Allow()
+}
+
+// rateBurst is how many requests a bucket allows back to back: about five
+// seconds of its rate, and never fewer than the threads (a client may fire
+// all its threads at once). The full minute is never allowed in one burst.
+func rateBurst(rpm, threads int) int {
+	b := rpm / 12
+	if b < threads {
+		b = threads
 	}
-	return s.limiterFor(key, subject.Threads*s.rpmPerThread).Allow()
+	if b < 1 {
+		b = 1
+	}
+	return b
 }
 
 // limiterFor returns (or lazily creates) the token-bucket limiter for a key.
 // Idle entries are evicted after 15 minutes so the map stays bounded without
 // ever wiping active buckets. A bucket is rebuilt when its rpm changes (e.g. a
 // user's thread count changed with XP or a donation).
-func (s *ScrapeService) limiterFor(key string, rpm int) *rate.Limiter {
+func (s *ScrapeService) limiterFor(key string, rpm, threads int) *rate.Limiter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.limiters) > 10000 {
@@ -421,14 +442,15 @@ func (s *ScrapeService) limiterFor(key string, rpm int) *rate.Limiter {
 			}
 		}
 	}
+	burst := rateBurst(rpm, threads)
 	if e, ok := s.limiters[key]; ok {
 		e.last = time.Now()
-		if e.rpm == rpm {
+		if e.rpm == rpm && e.burst == burst {
 			return e.lim
 		}
 	}
-	l := rate.NewLimiter(rate.Limit(float64(rpm)/60.0), rpm)
-	s.limiters[key] = &limiterEntry{lim: l, rpm: rpm, last: time.Now()}
+	l := rate.NewLimiter(rate.Limit(float64(rpm)/60.0), burst)
+	s.limiters[key] = &limiterEntry{lim: l, rpm: rpm, burst: burst, last: time.Now()}
 	return l
 }
 
@@ -790,20 +812,22 @@ func (s *ScrapeService) ConsumeQuota(ctx context.Context, subject *auth.ScrapeSu
 	day := utcDay()
 	subjectType, subjectID := usageKey(subject)
 
-	var used int
 	if subject.Debug && subject.ForceUsed != nil {
 		// Debug override: report the forced counter without touching the real one.
-		used = *subject.ForceUsed
-	} else {
-		var err error
-		used, err = s.repo.IncrementScrapeUsage(ctx, day, subjectType, subjectID)
-		if err != nil {
-			return nil, err
+		used := *subject.ForceUsed
+		quota := buildQuota(subject.DailyLimit, used)
+		if used > subject.DailyLimit {
+			return quota, ErrQuotaExceeded
 		}
+		return quota, nil
 	}
 
+	used, ok, err := s.repo.IncrementScrapeUsage(ctx, day, subjectType, subjectID, subject.DailyLimit)
+	if err != nil {
+		return nil, err
+	}
 	quota := buildQuota(subject.DailyLimit, used)
-	if used > subject.DailyLimit {
+	if !ok {
 		return quota, ErrQuotaExceeded
 	}
 	return quota, nil
