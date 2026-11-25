@@ -36,7 +36,7 @@ scrapers / frontends           -->     |  PostgreSQL (catalog, packs, users, log
 
 ### Public
 - `GET /health`
-- `GET /api/v1/config`                      runtime economy config (ranks and threads, daily games and requests/min per thread, donor tiers, XP points)
+- `GET /api/v1/config`                      runtime economy config (ranks and threads, requests/min per thread, donor tiers, XP points)
 - `GET /api/v1/packs`                       approved packs (from the DB), sorted by downloads, paginated
 - `GET /api/v1/packs/{packID}`              full pack detail (all files + public URLs), read-only
 - `GET /api/v1/packs/{packID}/download`     same as detail but bumps the pack download counter (install/scrape)
@@ -81,9 +81,14 @@ Endpoints:
   the name (cleaned server-side: extension and `(region)`/`[tags]` stripped; the
   best candidate wins). Returns `{ system_id, matched_by, game }` (`game` is null
   when nothing matched; `system_id` is the game's real system). `rom_count` and
-  `rom_name` are always returned, the ROM list only with `roms=true`. **Uses one
-  unit of daily quota**; every other scrape endpoint is free.
-- `GET /api/v1/scrape/account` current subject (user or guest), threads and quota
+  `rom_name` are always returned, the ROM list only with `roms=true`. There is
+  no daily limit; each lookup counts in today's usage stats.
+- `GET /api/v1/scrape/account` current subject (user or guest), threads,
+  `rate_per_minute` and today's usage (`quota.unlimited` is always true and
+  `quota.daily_limit` always null)
+- `GET /api/v1/scrape/status` live public status, no credentials: requests in
+  the last minute, open threads of users and guests against their caps, and
+  scrapers active in the last 5 minutes (cached 5 s, per instance)
 - `GET /api/v1/scrape/systems`, `/families`, `/groups` catalog levels
 - `GET /api/v1/scrape/popular` most scraped games, optional `system_id`/`limit`
 
@@ -95,25 +100,28 @@ Self-service credentials (authenticated with the user session):
 
 ### Limits
 
-An account's **threads** set all its limits. They come from the XP rank (levels
-1-10 Novice = 2, then +2 per rank up to levels 91-100 Legend = 20; guests 1,
-admins 20), plus an additive donor bonus (supporter +2, monthly supporter +4)
-capped at the top rank (20).
+An account's **threads** set all its limits, and there is **no daily limit**.
+Threads come from the XP rank (levels 1-10 Novice = 2, then +2 per rank up to
+levels 91-100 Legend = 20; guests 1, admins 20), plus an additive donor bonus
+(supporter +8, monthly supporter +12) capped at the top rank (20). Each thread
+is worth 60 requests per minute for a registered account and 30 for a guest.
+A monthly supporter whose subscription ends stays a supporter.
 `GET /api/v1/config` returns the current values.
 
 | limit | value | when exceeded |
 |-------|-------|---------------|
 | simultaneous requests | threads | waits up to 2 s for a slot, then `429` + `Retry-After: 1` |
-| requests per minute | threads x `SCRAPE_RPM_PER_THREAD` (100), bursts of about 5 s | `429` + exact `Retry-After` |
-| game lookups per day | threads x `SCRAPE_DAILY_GAMES_PER_THREAD` (1000), resets 00:00 UTC | `429` "daily scrape quota exceeded" |
-| game lookups in flight, all accounts | `SCRAPE_MAX_INFLIGHT` (16) | `503` + `Retry-After: 2`, no quota used |
+| requests per minute | threads x `SCRAPE_RPM_PER_THREAD` (60); a guest threads x `SCRAPE_GUEST_RPM_PER_THREAD` (30); bursts of about 5 s | `429` + exact `Retry-After`; a guest is held up to 3 s for its next token first |
+| open requests, all registered users together | `SCRAPE_USER_OPEN_THREADS` (8192) | waits up to 2 s, then `503` + `Retry-After: 2` |
+| open requests, all guests together | `SCRAPE_GUEST_OPEN_THREADS` (512) | waits up to 2 s, then `503` + `Retry-After: 2` |
+| game lookups in flight, all accounts | `SCRAPE_MAX_INFLIGHT` (16) | `503` + `Retry-After: 2`, not counted in usage |
+| game lookups in flight, all guests together | `SCRAPE_GUEST_MAX_INFLIGHT` (4) of those | waits up to 5 s, then `503` + `Retry-After: 2` |
 
-Every scrape response reports the state in `X-Quota-Limit`, `X-Quota-Remaining`,
-`X-Quota-Reset`, `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
-`X-Concurrency-Limit`. A client that uses `X-Concurrency-Limit` workers and
-honors `Retry-After` resolves 1,000 games (a guest's whole daily quota) in
-about 10 min as a guest (1 thread), 5 min as a Novice (2), 1 min 35 s as a
-Novice monthly supporter (6) and 25 s as a Legend (20).
+Every scrape response reports the state in `X-RateLimit-Limit`,
+`X-RateLimit-Remaining` and `X-Concurrency-Limit`. A client that uses
+`X-Concurrency-Limit` workers and honors `Retry-After` resolves 1,000 games in
+about 33 min as a guest (1 thread), 8 min as a Novice (2), 1 min 40 s as a
+Novice supporter (10) and 50 s as a Legend (20).
 
 XP comes from approved contributions (text field 10, image 50, video 100, SAP
 image 20, new game +100; `POINTS_*`). Level = f(total XP) with
@@ -126,7 +134,7 @@ the Collection Runner).
 ### Developer dashboard and debug mode
 
 Each app accumulates lifetime usage counters (API calls, KO scraps, rate-limited,
-over-quota, debug calls, last scrape) shown in the web developer page; they are
+over-quota from before the daily limit was removed, debug calls, last scrape) shown in the web developer page; they are
 written in batches every 10 s. Counters are split per **version** when the
 client sends `softname=<name>` (query param or `X-Software-Name` header);
 otherwise the developer app name is used. Each app also gets a **debug
@@ -135,14 +143,12 @@ calls/day per app and only honored when `ENABLE_DEBUG_MODE=true`:
 
 - `X-Debug-Password: <password>` header enables debug mode (never a query
   parameter, so it doesn't end up in logs).
-- `forcerequestok=N` reports N as the daily used counter (set above the limit to
-  simulate over-quota).
 - `forcethreads=N` overrides the thread count for the request.
 - `forceratelimit=1` forces a `429`.
 
 Note: because R2 objects are public and the catalog is also browsable through
-`/api/v1/metadata/*`, the quota is an anti-abuse contract rather than a hard
-security boundary.
+`/api/v1/metadata/*`, the rate limits are an anti-abuse contract rather than a
+hard security boundary.
 
 ## Submission states
 
@@ -187,9 +193,11 @@ groups:
   `R2_SECRET_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_BASE_URL`,
   `ADMIN_SEED_EMAIL`/`ADMIN_SEED_PASSWORD` (initial admin, seeded on startup).
 - **Scraping API:** `SCRAPE_GUEST_THREADS` (1), `SCRAPE_ADMIN_THREADS` (20),
-  `SCRAPE_SUPPORTER_BONUS_THREADS` (2), `SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS`
-  (4), `SCRAPE_DAILY_GAMES_PER_THREAD` (1000), `SCRAPE_RPM_PER_THREAD` (100),
-  `SCRAPE_MAX_INFLIGHT` (16, -1 off), `ENABLE_DEBUG_MODE` (false).
+  `SCRAPE_SUPPORTER_BONUS_THREADS` (8), `SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS`
+  (12), `SCRAPE_RPM_PER_THREAD` (60), `SCRAPE_GUEST_RPM_PER_THREAD` (30),
+  `SCRAPE_USER_OPEN_THREADS` (8192, -1 off), `SCRAPE_GUEST_OPEN_THREADS` (512,
+  -1 off), `SCRAPE_MAX_INFLIGHT` (16, -1 off), `SCRAPE_GUEST_MAX_INFLIGHT` (4,
+  -1 off), `ENABLE_DEBUG_MODE` (false).
 - **XP:** `POINTS_TEXT_METADATA` (10), `POINTS_IMAGE_METADATA` (50),
   `POINTS_VIDEO_METADATA` (100), `POINTS_SAP_IMAGE` (20), `POINTS_NEW_GAME`
   (100), `XP_SUPPORTER_BONUS_PCT` (25), `XP_MONTHLY_SUPPORTER_BONUS_PCT` (50).

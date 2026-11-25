@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -211,32 +210,23 @@ func (r *Repository) TouchUserAPIKeyLastUsed(ctx context.Context, id uuid.UUID) 
 	return err
 }
 
-// IncrementScrapeUsage atomically increments the daily counter for a subject and
-// returns the new count. The day is a UTC calendar date.
-//
-// The counter never passes limit: once it reaches it, the call writes nothing
-// and returns (limit, false), so refused requests don't keep updating the row.
-func (r *Repository) IncrementScrapeUsage(ctx context.Context, day time.Time, subjectType, subjectID string, limit int) (int, bool, error) {
-	if limit < 1 {
-		return 0, false, nil
-	}
+// IncrementScrapeUsage atomically increments the daily usage counter of a
+// subject and returns the new count. The day is a UTC calendar date. There is
+// no daily limit; the counter only feeds the account and admin stats.
+func (r *Repository) IncrementScrapeUsage(ctx context.Context, day time.Time, subjectType, subjectID string) (int, error) {
 	var count int
 	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO scrape_usage (day, subject_type, subject_id, count)
 		 VALUES ($1, $2, $3, 1)
 		 ON CONFLICT (day, subject_type, subject_id)
 		 DO UPDATE SET count = scrape_usage.count + 1, updated_at = NOW()
-		 WHERE scrape_usage.count < $4
 		 RETURNING count`,
-		day.Format("2006-01-02"), subjectType, subjectID, limit,
+		day.Format("2006-01-02"), subjectType, subjectID,
 	).Scan(&count)
-	if errors.Is(err, sql.ErrNoRows) {
-		return limit, false, nil
-	}
 	if err != nil {
-		return 0, false, fmt.Errorf("failed to increment scrape usage: %w", err)
+		return 0, fmt.Errorf("failed to increment scrape usage: %w", err)
 	}
-	return count, true, nil
+	return count, nil
 }
 
 // GetScrapeUsage returns the current daily count for a subject (0 when none).

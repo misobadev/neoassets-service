@@ -6,7 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/rs/zerolog/log"
 
 	"neoassets/internal/models"
 	"neoassets/internal/services"
@@ -20,14 +21,8 @@ func scrapeSubject(r *http.Request) (*auth.ScrapeSubject, bool) {
 }
 
 // ListScrapeSystems returns the metadata system catalog for scraping clients.
-// It does not consume quota.
+
 func (h *Handler) ListScrapeSystems(w http.ResponseWriter, r *http.Request) {
-	// Free endpoint, but report the current quota state for convenience.
-	if subject, ok := scrapeSubject(r); ok {
-		if acct, err := h.scrapeSvc.Account(r.Context(), subject); err == nil {
-			writeQuotaHeaders(w, &acct.Quota)
-		}
-	}
 	list, err := h.scrapeSvc.ListSystems(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list systems")
@@ -40,8 +35,7 @@ func (h *Handler) ListScrapeSystems(w http.ResponseWriter, r *http.Request) {
 }
 
 // ScrapeGames resolves a game by id, ROM hash or name and returns its full
-// metadata plus media URLs. Each accepted call consumes one unit of the daily
-// quota.
+// metadata plus media URLs. Each call counts in today's usage stats.
 func (h *Handler) ScrapeGames(w http.ResponseWriter, r *http.Request) {
 	subject, ok := scrapeSubject(r)
 	if !ok {
@@ -54,18 +48,10 @@ func (h *Handler) ScrapeGames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	quota, err := h.scrapeSvc.ConsumeQuota(r.Context(), subject)
-	if quota != nil {
-		writeQuotaHeaders(w, quota)
-	}
-	if errors.Is(err, services.ErrQuotaExceeded) {
-		h.scrapeSvc.RecordOutcome(r.Context(), subject, "quota_exceeded")
-		writeError(w, http.StatusTooManyRequests, "daily scrape quota exceeded")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to consume quota")
-		return
+	// Count the lookup in today's usage stats. There is no daily limit, so a
+	// failed write is logged and never blocks the lookup.
+	if _, err := h.scrapeSvc.RecordUsage(r.Context(), subject); err != nil {
+		log.Warn().Err(err).Msg("scrape usage not recorded")
 	}
 
 	game, matchedBy, err := h.scrapeSvc.FindGames(r.Context(), query)
@@ -91,13 +77,8 @@ func (h *Handler) ScrapeGames(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListScrapeFamilies returns the system families (e.g. "arcade") with their
-// system and game counts. It does not consume quota.
+// system and game counts.
 func (h *Handler) ListScrapeFamilies(w http.ResponseWriter, r *http.Request) {
-	if subject, ok := scrapeSubject(r); ok {
-		if acct, err := h.scrapeSvc.Account(r.Context(), subject); err == nil {
-			writeQuotaHeaders(w, &acct.Quota)
-		}
-	}
 	list, err := h.scrapeSvc.ListFamilies(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list families")
@@ -110,13 +91,8 @@ func (h *Handler) ListScrapeFamilies(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListScrapeGroups returns the system groups (e.g. "mame-fbneo") with their
-// system and game counts. It does not consume quota.
+// system and game counts.
 func (h *Handler) ListScrapeGroups(w http.ResponseWriter, r *http.Request) {
-	if subject, ok := scrapeSubject(r); ok {
-		if acct, err := h.scrapeSvc.Account(r.Context(), subject); err == nil {
-			writeQuotaHeaders(w, &acct.Quota)
-		}
-	}
 	list, err := h.scrapeSvc.ListGroups(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list groups")
@@ -128,7 +104,7 @@ func (h *Handler) ListScrapeGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"groups": list})
 }
 
-// ListScrapePopular returns the most scraped games. It does not consume quota.
+// ListScrapePopular returns the most scraped games.
 func (h *Handler) ListScrapePopular(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	systemID := strings.TrimSpace(r.URL.Query().Get("system_id"))
@@ -143,8 +119,8 @@ func (h *Handler) ListScrapePopular(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, models.ScrapePopularResponse{Games: list})
 }
 
-// ScrapeAccount returns the current scrape subject and its quota state. It does
-// not consume quota.
+// ScrapeAccount returns the current scrape subject, its limits and today's
+// usage.
 func (h *Handler) ScrapeAccount(w http.ResponseWriter, r *http.Request) {
 	subject, ok := scrapeSubject(r)
 	if !ok {
@@ -156,7 +132,6 @@ func (h *Handler) ScrapeAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load account")
 		return
 	}
-	writeQuotaHeaders(w, &acct.Quota)
 	h.scrapeSvc.RecordOutcome(r.Context(), subject, "ok")
 	writeJSON(w, http.StatusOK, acct)
 }
@@ -209,13 +184,6 @@ func parseScrapeGameQuery(r *http.Request) (models.ScrapeGameQuery, error) {
 	return query, nil
 }
 
-// writeQuotaHeaders exposes the quota state on every scraping response.
-func writeQuotaHeaders(w http.ResponseWriter, q *models.ScrapeQuota) {
-	w.Header().Set("X-Quota-Limit", strconv.Itoa(q.DailyLimit))
-	w.Header().Set("X-Quota-Remaining", strconv.Itoa(q.Remaining))
-	w.Header().Set("X-Quota-Reset", q.ResetsAt.UTC().Format(time.RFC3339))
-}
-
 // ScrapeAdmission holds one of the subject's thread slots for the whole
 // request: an account's threads are its concurrent requests. When every slot
 // stays busy for the admission wait, the request is refused with 429 and a
@@ -233,6 +201,12 @@ func (h *Handler) ScrapeAdmission(next http.Handler) http.Handler {
 			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(subject.RateRemaining))
 		}
 		release, err := h.scrapeSvc.AcquireSubject(r.Context(), subject)
+		if errors.Is(err, services.ErrServerBusy) {
+			h.scrapeSvc.RecordOutcome(r.Context(), subject, "rate_limited")
+			w.Header().Set("Retry-After", "2")
+			writeError(w, http.StatusServiceUnavailable, "server busy, retry shortly")
+			return
+		}
 		if err != nil {
 			h.scrapeSvc.RecordOutcome(r.Context(), subject, "rate_limited")
 			w.Header().Set("Retry-After", "1")
@@ -248,12 +222,13 @@ func (h *Handler) ScrapeAdmission(next http.Handler) http.Handler {
 // ScrapeGlobalAdmission caps the game lookups running at once across every
 // account, so the database always has room for the website. A request that
 // can't get a slot within the admission wait gets 503 with a Retry-After and
-// does not consume quota.
+// is not counted in the usage stats.
 func (h *Handler) ScrapeGlobalAdmission(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		release, err := h.scrapeSvc.AcquireGlobal(r.Context())
+		subject, hasSubject := scrapeSubject(r)
+		release, err := h.scrapeSvc.AcquireGlobal(r.Context(), subject)
 		if err != nil {
-			if subject, ok := scrapeSubject(r); ok {
+			if hasSubject {
 				h.scrapeSvc.RecordOutcome(r.Context(), subject, "rate_limited")
 			}
 			w.Header().Set("Retry-After", "2")
@@ -263,4 +238,11 @@ func (h *Handler) ScrapeGlobalAdmission(next http.Handler) http.Handler {
 		defer release()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ScrapeStatus returns the live, public state of the scraping API for the
+// status panel. It needs no credentials and is cached for a few seconds.
+func (h *Handler) ScrapeStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=5")
+	writeJSON(w, http.StatusOK, h.scrapeSvc.Status())
 }

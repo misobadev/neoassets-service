@@ -45,8 +45,8 @@ func economyFromConfig(cfg *Config) economy.Config {
 		MonthlySupporterBonusThreads: cfg.ScrapeMonthlySupporterBonusThreads,
 		SupporterXPBonusPct:          cfg.XPSupporterBonusPct,
 		MonthlySupporterXPBonusPct:   cfg.XPMonthlySupporterBonusPct,
-		DailyGamesPerThread:          cfg.ScrapeDailyPerThread,
 		RPMPerThread:                 cfg.ScrapeRPMPerThread,
+		GuestRPMPerThread:            cfg.ScrapeGuestRPMPerThread,
 		DonorGraceDays:               cfg.DonorSubscriptionGraceDays,
 		Points: economy.Points{
 			TextMetadata:  cfg.PointsTextMetadata,
@@ -104,6 +104,8 @@ func buildApp(ctx context.Context, cfg *Config, db *sql.DB, bucket r2.Client, ma
 	userSvc.SkipEmailVerification = cfg.SkipEmailVerification
 	scrapeSvc := services.NewScrapeService(repo, svc, cfg.JWTSecret, cfg.ScrapeGuestThreads, repo.Economy().RPMPerThread, cfg.EnableDebugMode, !cfg.SkipEmailVerification)
 	scrapeSvc.SetMaxInFlight(cfg.ScrapeMaxInFlight)
+	scrapeSvc.SetGuestMaxInFlight(cfg.ScrapeGuestMaxInFlight)
+	scrapeSvc.SetOpenThreadCaps(cfg.ScrapeGuestOpenThreads, cfg.ScrapeUserOpenThreads)
 	devSvc, err := services.NewDeveloperService(repo, cfg.JWTSecret)
 	if err != nil {
 		return nil, fmt.Errorf("developer service: %w", err)

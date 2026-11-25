@@ -62,7 +62,6 @@ type Config struct {
 	ScrapeMonthlySupporterBonusThreads int
 	XPSupporterBonusPct                int
 	XPMonthlySupporterBonusPct         int
-	ScrapeDailyPerThread               int
 	PointsTextMetadata                 int
 	PointsImageMetadata                int
 	PointsVideoMetadata                int
@@ -70,6 +69,10 @@ type Config struct {
 	PointsNewGame                      int
 	ScrapeRPMPerThread                 int
 	ScrapeMaxInFlight                  int
+	ScrapeGuestRPMPerThread            int
+	ScrapeGuestMaxInFlight             int
+	ScrapeGuestOpenThreads             int
+	ScrapeUserOpenThreads              int
 	KofiVerificationToken              string
 	PatreonWebhookSecret               string
 	DonorSubscriptionGraceDays         int
@@ -180,17 +183,16 @@ func loadConfig() *Config {
 		EmailLogoURL:          getEnvOrDefault("EMAIL_LOGO_URL", ""),
 		TranslateWorkerURL:    getEnvOrDefault("TRANSLATE_WORKER_URL", ""),
 		TranslateWorkerToken:  getEnvOrDefault("TRANSLATE_WORKER_TOKEN", ""),
-		// Zero means "use the service default" (guest threads = 2, admin threads = 16,
-		// donor bonuses: supporter +2 threads/+25% XP, monthly +4 threads/+50% XP,
-		// daily = threads * 1000, RPM = threads * 100, XP per contribution
-		// 10/40/100/5).
+		// Zero means "use the service default" (guest threads = 1, admin threads = 20,
+		// donor bonuses: supporter +8 threads/+25% XP, monthly +12 threads/+50% XP,
+		// RPM = threads * 60 (guests threads * 30), no daily limit, XP per
+		// contribution 10/50/100/20/100).
 		ScrapeGuestThreads:                 getEnvInt("SCRAPE_GUEST_THREADS", 0),
 		ScrapeAdminThreads:                 getEnvInt("SCRAPE_ADMIN_THREADS", 0),
 		ScrapeSupporterBonusThreads:        getEnvInt("SCRAPE_SUPPORTER_BONUS_THREADS", 0),
 		ScrapeMonthlySupporterBonusThreads: getEnvInt("SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS", 0),
 		XPSupporterBonusPct:                getEnvInt("XP_SUPPORTER_BONUS_PCT", 0),
 		XPMonthlySupporterBonusPct:         getEnvInt("XP_MONTHLY_SUPPORTER_BONUS_PCT", 0),
-		ScrapeDailyPerThread:               getEnvInt("SCRAPE_DAILY_GAMES_PER_THREAD", 0),
 		PointsTextMetadata:                 getEnvInt("POINTS_TEXT_METADATA", 0),
 		PointsImageMetadata:                getEnvInt("POINTS_IMAGE_METADATA", 0),
 		PointsVideoMetadata:                getEnvInt("POINTS_VIDEO_METADATA", 0),
@@ -198,6 +200,10 @@ func loadConfig() *Config {
 		PointsNewGame:                      getEnvInt("POINTS_NEW_GAME", 0),
 		ScrapeRPMPerThread:                 getEnvInt("SCRAPE_RPM_PER_THREAD", 0),
 		ScrapeMaxInFlight:                  getEnvInt("SCRAPE_MAX_INFLIGHT", 0),
+		ScrapeGuestRPMPerThread:            getEnvInt("SCRAPE_GUEST_RPM_PER_THREAD", 0),
+		ScrapeGuestOpenThreads:             getEnvInt("SCRAPE_GUEST_OPEN_THREADS", 0),
+		ScrapeUserOpenThreads:              getEnvInt("SCRAPE_USER_OPEN_THREADS", 0),
+		ScrapeGuestMaxInFlight:             getEnvInt("SCRAPE_GUEST_MAX_INFLIGHT", 0),
 		KofiVerificationToken:              getEnvOrDefault("KOFI_VERIFICATION_TOKEN", ""),
 		PatreonWebhookSecret:               getEnvOrDefault("PATREON_WEBHOOK_SECRET", ""),
 		DonorSubscriptionGraceDays:         getEnvInt("DONOR_SUBSCRIPTION_GRACE_DAYS", 0),
@@ -388,8 +394,7 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 		},
 		ExposedHeaders: []string{
 			"Link",
-			// Quota, rate and concurrency state, readable from browser clients.
-			"X-Quota-Limit", "X-Quota-Remaining", "X-Quota-Reset",
+			// Rate and concurrency state, readable from browser clients.
 			"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-Concurrency-Limit", "Retry-After",
 		},
 		// The browser session is an httpOnly cookie, so credentialed requests
@@ -468,6 +473,9 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 			r.Get("/metadata/genres", h.ListGenres)
 			r.Get("/metadata/regions", h.ListRegions)
 		})
+
+		// Live, public state of the scraping API (no credentials, cached).
+		r.With(dashboardLimiter.Handler).Get("/scrape/status", h.ScrapeStatus)
 
 		// Public scraping API. Developer app credentials are always required;
 		// user credentials are optional and fall back to guest mode.

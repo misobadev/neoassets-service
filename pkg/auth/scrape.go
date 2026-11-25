@@ -30,19 +30,22 @@ type ScrapeSubject struct {
 	// ClientOwnerID is the registered user that owns the developer app.
 	ClientOwnerID uuid.UUID
 	// ClientKey is the caller's network address (IPv4, or IPv6 /64). A guest
-	// has no account, so its threads, rate and daily quota are keyed by it:
+	// has no account, so its threads, rate and usage are keyed by it:
 	// each person using a guest-capable app gets their own allowance.
 	ClientKey    string
 	SoftwareName string
 	Threads      int
-	DailyLimit   int
 	// RateLimit is the subject's requests per minute and RateRemaining the
 	// requests it can make right now without waiting (the bucket's tokens).
 	RateLimit     int
 	RateRemaining int
+	// PaceDelay is how long a guest just over its rate is held before its
+	// request runs (it counts as an open thread meanwhile); PaceCancel gives
+	// the rate token back when the request is abandoned during that wait.
+	PaceDelay  time.Duration
+	PaceCancel func()
 	// Debug is true when the request carried a valid developer debug password.
 	Debug          bool
-	ForceUsed      *int
 	ForceRateLimit bool
 }
 
@@ -50,15 +53,14 @@ type ScrapeSubject struct {
 func (s *ScrapeSubject) IsGuest() bool { return s.Kind == ScrapeKindGuest }
 
 // ScrapeCredentials is the raw credential and debug input of a scrape request.
-// ForceUsed and ForceThreads are debug overrides applied only when DebugPassword
-// is valid.
+// ForceThreads and ForceRateLimit are debug overrides applied only when
+// DebugPassword is valid.
 type ScrapeCredentials struct {
 	ClientID       string
 	ClientSecret   string
 	UserCredential string
 	SoftwareName   string
 	DebugPassword  string
-	ForceUsed      *int
 	ForceThreads   *int
 	ForceRateLimit bool
 	// ClientKey identifies the caller's network address (an IPv4 address or
@@ -121,7 +123,6 @@ func ScrapeMiddleware(a ScrapeAuthenticator, clientKey func(*http.Request) strin
 				UserCredential: bearer(r),
 				SoftwareName:   softwareName,
 				DebugPassword:  debugPassword,
-				ForceUsed:      queryInt(q, "forcerequestok"),
 				ForceThreads:   queryInt(q, "forcethreads"),
 				ForceRateLimit: q.Get("forceratelimit") == "1",
 			}

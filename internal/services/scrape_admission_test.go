@@ -146,21 +146,101 @@ func TestAcquireGlobalCapAndDisable(t *testing.T) {
 	}
 	s.SetMaxInFlight(1)
 	ctx := context.Background()
-	r, err := s.AcquireGlobal(ctx)
+	r, err := s.AcquireGlobal(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer cancel()
-	if _, err := s.AcquireGlobal(waitCtx); !errors.Is(err, ErrServerBusy) {
+	if _, err := s.AcquireGlobal(waitCtx, nil); !errors.Is(err, ErrServerBusy) {
 		t.Fatalf("full cap: err = %v, want ErrServerBusy", err)
 	}
 	r()
 
 	s.SetMaxInFlight(-1)
 	for i := 0; i < 50; i++ {
-		if _, err := s.AcquireGlobal(ctx); err != nil {
+		if _, err := s.AcquireGlobal(ctx, nil); err != nil {
 			t.Fatalf("disabled cap refused: %v", err)
 		}
+	}
+}
+
+// All guests together share a small slice of the global cap, so anonymous
+// traffic can't take the server from registered users.
+func TestAcquireGlobalCapsGuestsTogether(t *testing.T) {
+	s := &ScrapeService{}
+	s.SetMaxInFlight(10)
+	s.SetGuestMaxInFlight(1)
+	ctx := context.Background()
+	guestA := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientKey: "203.0.113.7", Threads: 1}
+	guestB := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientKey: "198.51.100.9", Threads: 1}
+	user := &auth.ScrapeSubject{Kind: auth.ScrapeKindUser, UserID: uuid.New(), Threads: 1}
+
+	release, err := s.AcquireGlobal(ctx, guestA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if _, err := s.AcquireGlobal(waitCtx, guestB); !errors.Is(err, ErrServerBusy) {
+		t.Fatalf("second guest while the guest share is full: err = %v, want ErrServerBusy", err)
+	}
+	r2, err := s.AcquireGlobal(ctx, user)
+	if err != nil {
+		t.Fatalf("a user must not wait for the guest share: %v", err)
+	}
+	r2()
+	release()
+
+	// Releasing frees both the guest slot and the global one.
+	r3, err := s.AcquireGlobal(ctx, guestB)
+	if err != nil {
+		t.Fatalf("guest after release: %v", err)
+	}
+	r3()
+	if n := len(s.globalSlots.entries); n != 0 {
+		t.Fatalf("global slots still held: %d", n)
+	}
+}
+
+// Open threads are capped per kind (all guests together, all users together)
+// and counted in the live status; releasing frees the slot and the count.
+func TestOpenThreadCapsAndLiveStatus(t *testing.T) {
+	s := &ScrapeService{}
+	s.SetOpenThreadCaps(1, 2)
+	ctx := context.Background()
+	guestA := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientKey: "203.0.113.7", Threads: 1}
+	guestB := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientKey: "198.51.100.9", Threads: 1}
+	user := &auth.ScrapeSubject{Kind: auth.ScrapeKindUser, UserID: uuid.New(), Threads: 4}
+
+	relGuest, err := s.AcquireSubject(ctx, guestA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if _, err := s.AcquireSubject(waitCtx, guestB); !errors.Is(err, ErrServerBusy) {
+		t.Fatalf("guest open threads full: err = %v, want ErrServerBusy", err)
+	}
+	relUser, err := s.AcquireSubject(ctx, user)
+	if err != nil {
+		t.Fatalf("users have their own open-thread cap: %v", err)
+	}
+
+	st := s.Status()
+	if st.OpenThreads.Guests != 1 || st.OpenThreads.Users != 1 || st.OpenThreads.GuestsMax != 1 || st.OpenThreads.UsersMax != 2 {
+		t.Fatalf("open threads = %+v", st.OpenThreads)
+	}
+	if st.RequestsPerMinute != 2 || st.Scrapers.Guests != 1 || st.Scrapers.Users != 1 {
+		t.Fatalf("status = %+v", st)
+	}
+
+	relGuest()
+	relUser()
+	if g, u := s.live.openGuests.Load(), s.live.openUsers.Load(); g != 0 || u != 0 {
+		t.Fatalf("open after release: guests %d users %d", g, u)
+	}
+	if _, err := s.AcquireSubject(ctx, guestB); err != nil {
+		t.Fatalf("guest after release: %v", err)
 	}
 }

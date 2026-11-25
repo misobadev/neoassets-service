@@ -78,8 +78,11 @@ func (r *Repository) CountDonationsByUser(ctx context.Context, userID uuid.UUID)
 }
 
 // RecomputeDonorStatus derives the user's donor status from their linked
-// donation events: an active subscription beats a one-time donation. A status
-// set manually by an admin is never overwritten. Returns the resulting status.
+// donation events: an active subscription makes a monthly supporter, and any
+// payment ever made (a one-time donation or a charged subscription) keeps the
+// user a supporter for good, so a monthly supporter who stops paying drops to
+// supporter rather than none. A status set manually by an admin is never
+// overwritten. Returns the resulting status.
 func (r *Repository) RecomputeDonorStatus(ctx context.Context, userID uuid.UUID) (string, error) {
 	var current, source string
 	if err := r.db.QueryRowContext(ctx, `SELECT donor_status, donor_source FROM users WHERE id = $1`, userID).Scan(&current, &source); err != nil {
@@ -89,19 +92,21 @@ func (r *Repository) RecomputeDonorStatus(ctx context.Context, userID uuid.UUID)
 		return current, nil
 	}
 
-	var hasSubscription, hasOneTime bool
+	var hasSubscription, hasPaid bool
 	if err := r.db.QueryRowContext(ctx, `
 		SELECT
 			EXISTS(SELECT 1 FROM donation_events
 			       WHERE user_id = $1 AND kind = 'subscription' AND active
 			         AND occurred_at >= NOW() - make_interval(days => $2)),
-			EXISTS(SELECT 1 FROM donation_events WHERE user_id = $1 AND kind = 'one_time')
-	`, userID, r.econ.DonorGraceDays).Scan(&hasSubscription, &hasOneTime); err != nil {
+			EXISTS(SELECT 1 FROM donation_events
+			       WHERE user_id = $1
+			         AND (kind = 'one_time' OR (kind = 'subscription' AND occurred_at IS NOT NULL)))
+	`, userID, r.econ.DonorGraceDays).Scan(&hasSubscription, &hasPaid); err != nil {
 		return "", fmt.Errorf("failed to compute donor status: %w", err)
 	}
 
 	status := models.DonorNone
-	if hasOneTime {
+	if hasPaid {
 		status = models.DonorSupporter
 	}
 	if hasSubscription {

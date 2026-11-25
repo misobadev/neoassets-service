@@ -38,7 +38,7 @@ func (r *Repository) GetRewards(ctx context.Context, userID uuid.UUID) (*models.
 		DonorStatus:       u.DonorStatus,
 		DonorBonusThreads: r.econ.DonorBonusThreads(u.DonorStatus),
 		XPBonusPct:        r.econ.DonorXPBonusPct(u.DonorStatus),
-		DailyGames:        threads * r.econ.DailyGamesPerThread,
+		RatePerMinute:     threads * r.econ.RPMPerThread,
 		LevelXP:           levelXP,
 		NextLevelXP:       nextLevelXP,
 		ProgressPct:       progress,

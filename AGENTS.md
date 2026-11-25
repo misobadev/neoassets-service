@@ -22,7 +22,7 @@ internal/services           business logic (service.go, user_service.go,
                             developer_service.go)
 internal/handlers           HTTP handlers (scrape_handlers.go, developer_handlers.go)
 internal/httpx              shared HTTP helpers: JSON/Error, Decode, DecodeOptional, PathUUID
-internal/economy            rewards/scrape economy (threads, quotas, XP points) as a value
+internal/economy            rewards/scrape economy (threads, rates, XP points) as a value
 internal/testdb             per-package migrated test databases
 internal/systems            embedded system catalog (+ systems.json)
 pkg/auth                    JWT + password helpers, scrape credentials/middleware
@@ -51,7 +51,8 @@ constraint (migrations `008` + `009`). Array of statuses differs from older docs
 ## Endpoints (relevant)
 
 - `GET /api/v1/config`                       public runtime config (ranks and
-  threads, `daily_games_per_thread`, `rpm_per_thread`, donor tiers, points) so
+  threads, `rpm_per_thread`, `guest_rpm_per_thread`, `daily_unlimited`, donor
+  tiers, points) so
   the UI (guide, API docs) renders the current economy without hardcoded values.
 - `GET /api/v1/metadata/genres`               canonical genre catalog
   (`genres` table, migration `061`) used by the web metadata forms. Submissions
@@ -100,33 +101,41 @@ the user credential is optional and falls back to guest mode.
 
 - Headers: `X-Client-Id` + `X-Client-Secret` (developer app) and
   `Authorization: Bearer <personal API key or user JWT>` (user, optional).
-- `GET /scrape/systems` (free), `GET /scrape/games` (consumes 1 quota unit),
-  `GET /scrape/account` (free).
-- Quota: the daily limit is **threads * `SCRAPE_DAILY_GAMES_PER_THREAD`** (default
-  1000) game lookups per account. A registered user's threads come from their XP
-  level rank (levels 1-10 -> 2, then +2 per rank to 91-100 -> 20; see
+- `GET /scrape/systems`, `GET /scrape/games`, `GET /scrape/account`; the
+  public `GET /scrape/status` (no credentials, `ScrapeService.Status`, cached
+  5 s) reports requests in the last minute, open threads per kind against their
+  caps and scrapers active in the last 5 minutes (`scrape_live.go`, in memory).
+- **No daily limit.** Each game lookup counts in `scrape_usage` (uncapped,
+  `RecordUsage`) only for stats; `/scrape/account` returns `quota` with
+  `unlimited: true`, `daily_limit: null`, `used` and `resets_at`, plus
+  `rate_per_minute`. A registered user's threads come from their XP level rank
+  (levels 1-10 -> 2, then +2 per rank to 91-100 -> 20; see
   `internal/progression`); guests get `SCRAPE_GUEST_THREADS` (1) and admins
-  `SCRAPE_ADMIN_THREADS` (20). Guest
-  quota is keyed by the **developer app owner**, so creating more apps does not
-  multiply the limit. The counter stops at the limit (refused calls don't
-  write).
+  `SCRAPE_ADMIN_THREADS` (20).
 - Threads are **concurrent requests** (`internal/services/scrape_admission.go`):
-  `ScrapeAdmission` holds one of the subject's `threads` slots for every
-  `/scrape/*` request, waiting up to 2 s, then 429 + `Retry-After: 1`;
-  responses carry `X-Concurrency-Limit`. `/scrape/games` also takes a slot of
-  the global cap `SCRAPE_MAX_INFLIGHT` (default 16, -1 off) or gets 503 +
-  `Retry-After: 2` without consuming quota, so the website keeps pool
-  connections. Per-minute rate limit: **threads * `SCRAPE_RPM_PER_THREAD`**
-  (default 100, `economy.RPMPerThread`) with a burst of about 5 s
+  `ScrapeAdmission` first takes one of the open-thread slots shared by all
+  registered users (`SCRAPE_USER_OPEN_THREADS`, 8192) or all guests
+  (`SCRAPE_GUEST_OPEN_THREADS`, 512), 503 + `Retry-After: 2` when full, then
+  one of the subject's `threads` slots for every `/scrape/*` request, waiting
+  up to 2 s, then 429 + `Retry-After: 1`; responses carry
+  `X-Concurrency-Limit`. `/scrape/games` also takes a slot of the global cap
+  `SCRAPE_MAX_INFLIGHT` (default 16, -1 off) or gets 503 + `Retry-After: 2`,
+  so the website keeps pool connections. Guests first take one of `SCRAPE_GUEST_MAX_INFLIGHT` (default
+  4) slots shared by all guests, waiting up to 5 s, so anonymous load never
+  takes the server from users. Per-minute rate limit: **threads *
+  `SCRAPE_RPM_PER_THREAD`** (default 60, `economy.RPMPerThread`) for
+  registered users and threads * `SCRAPE_GUEST_RPM_PER_THREAD` (default 30) for
+  guests (`subjectRPM`); a guest over it is held up to 3 s for its token
+  (`allowSubjectPaced`) instead of refused. Bursts are about 5 s
   (`rateBurst`), never the full minute. A rate refusal carries the exact
   `Retry-After` (`take1` reserves without waiting and cancels when refused, so
   a refusal costs no token); successful responses carry `X-RateLimit-Limit`
   and `X-RateLimit-Remaining`. The user docs live in the web (`/app/docs`,
   `ApiDocsPage.tsx`): keep them in sync with any limit change.
-  Threads, rate and quota are all keyed by the user for registered accounts
+  Threads, rate and usage are all keyed by the user for registered accounts
   and by the caller's network address for guests, stored hashed (a generous per-app, per-address pre-check
   bounds DB lookups from bogus credentials). In-memory limiters (single
-  instance); daily counters live in `scrape_usage`.
+  instance); daily usage counters live in `scrape_usage`.
 - XP & ranks: approved contributions award XP (`POINTS_TEXT_METADATA` 10 /
   `POINTS_IMAGE_METADATA` 50 / `POINTS_VIDEO_METADATA` 100 / `POINTS_SAP_IMAGE` 20).
   Level is derived from total XP with `XPForLevel(L) = round(L^2.5 * 3)` (level 1
@@ -134,8 +143,8 @@ the user credential is optional and falls back to guest mode.
   Awards are idempotent per submission (a re-approval does not double-credit).
 - Donors (parallel to XP): `users.donor_status` (none | supporter | monthly_supporter)
   adds an **additive** thread bonus on top of the level base
-  (`SCRAPE_SUPPORTER_BONUS_THREADS` 2, `SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS`
-  4), hard-capped at `progression.MaxThreads()` (20), plus an XP bonus
+  (`SCRAPE_SUPPORTER_BONUS_THREADS` 8, `SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS`
+  12), hard-capped at `progression.MaxThreads()` (20), plus an XP bonus
   (`XP_SUPPORTER_BONUS_PCT` 25, `XP_MONTHLY_SUPPORTER_BONUS_PCT` 50). Donations
   never grant rank. Set via admin `PUT /api/v1/admin/users/{id}/donor`.
 - Donation integrations (Ko-fi, Patreon): `POST /api/v1/webhooks/kofi` ingests
@@ -154,7 +163,9 @@ the user credential is optional and falls back to guest mode.
   can be requested once a minute, and both routes are rate limited per account. `users.donor_source` (`none|auto|admin`)
   protects admin overrides from recomputation. Ko-fi has no subscription-end
   event, so the background job downgrades auto monthly supporters whose last
-  subscription payment is older than `DONOR_SUBSCRIPTION_GRACE_DAYS` (40);
+  subscription payment is older than `DONOR_SUBSCRIPTION_GRACE_DAYS` (40) to
+  supporter (`RecomputeDonorStatus`: any payment ever made, one-time or a
+  charged subscription, keeps the supporter status);
   Patreon ends arrive as `members:delete` / inactive `patron_status`.
 - Debug mode is gated by `ENABLE_DEBUG_MODE` (off by default) and only accepts
   `X-Debug-Password` (header, never a query param so it is not logged). The
@@ -190,13 +201,14 @@ the user credential is optional and falls back to guest mode.
 - Self-service management uses the user JWT:
   `/api/v1/auth/developer/apps*` and `/api/v1/auth/api-keys*`.
 - Developer dashboard: `developer_apps` holds lifetime counters (`api_calls`,
-  `ko_scraps`, `rate_limited`, `quota_exceeded`, `debug_calls`, `last_scrape_at`)
+  `ko_scraps`, `rate_limited`, `quota_exceeded` (historical: no new ones since
+  the daily limit was removed), `debug_calls`, `last_scrape_at`)
   shown in the web developer page (`GET /api/v1/auth/developer/apps`).
 - Per-version stats live in `app_software_stats` (migration `040`). The client
   may send `softname` (query param or `X-Software-Name` header) to distinguish
-  versions; absent, the app name is used. Quota/rate limits stay per app/user.
+  versions; absent, the app name is used. Rate limits stay per user/guest.
   An app keeps at most 50 software names (later ones count under the app name).
-  Every outcome (ok, not_found, rate_limited, quota_exceeded) is counted in
+  Every outcome (ok, not_found, rate_limited) is counted in
   memory and written every 10 s (`FlushOutcomes`, also on shutdown and before
   the developer pages that show the counters), so a busy app's threads don't
   each write the same `developer_apps`/`app_software_stats` rows.
@@ -212,7 +224,7 @@ the user credential is optional and falls back to guest mode.
   are chosen first and only those rows get the cover/scrape subqueries.
 - Debug mode: each app has an owner-only `debug_password`, stored hashed
   (migration `039` column holds the hash). Passing `X-Debug-Password` enables
-  `forcerequestok` / `forcethreads` / `forceratelimit`, capped at 100/day in
+  `forcethreads` / `forceratelimit`, capped at 100/day in
   `debug_usage`. It never bypasses auth and is only honored when
   `ENABLE_DEBUG_MODE=true`.
 - Accounts must verify their email before using the API: registration issues no
@@ -252,7 +264,7 @@ the user credential is optional and falls back to guest mode.
   keep two 10-minute generations of buckets with a key cap, so memory is
   bounded and nothing scans the map per request.
 - Because R2 is public and `/api/v1/metadata/*` stays open (per-IP rate limited),
-  quota is an anti-abuse contract, not a hard boundary.
+  the rate limits are an anti-abuse contract, not a hard boundary.
 
 ## Rules derived from history
 

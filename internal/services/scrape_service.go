@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"neoassets/internal/apperr"
 	"net/http"
@@ -21,9 +20,6 @@ import (
 	"neoassets/internal/repository"
 	"neoassets/pkg/auth"
 )
-
-// ErrQuotaExceeded is returned when a subject has consumed its daily quota.
-var ErrQuotaExceeded = errors.New("daily scrape quota exceeded")
 
 // Default scrape limits, overridable from the environment.
 const (
@@ -58,10 +54,11 @@ type ScrapeService struct {
 	meta      *Service // catalog reads (systems/games) reused from the web service
 	jwtSecret string
 
-	guestThreads    int
-	rpmPerThread    int
-	debugEnabled    bool
-	requireVerified bool
+	guestThreads      int
+	rpmPerThread      int
+	guestRPMPerThread int
+	debugEnabled      bool
+	requireVerified   bool
 
 	mu       sync.Mutex
 	limiters map[string]*limiterEntry
@@ -71,6 +68,15 @@ type ScrapeService struct {
 	subjectSlots slotPool
 	globalSlots  slotPool
 	maxInFlight  int
+	// guestSlots caps the lookups all guests together hold (guestInFlight).
+	guestSlots    slotPool
+	guestInFlight int
+	// openSlots caps the requests all guests (guestOpenCap) and all users
+	// (userOpenCap) may have open; live counts them for the status panel.
+	openSlots    slotPool
+	guestOpenCap int
+	userOpenCap  int
+	live         liveStats
 
 	// outcomes counts request outcomes per app and software in memory; they
 	// are written in batches, so neither a stream of refused requests nor a
@@ -110,6 +116,12 @@ func NewScrapeService(repo *repository.Repository, meta *Service, jwtSecret stri
 		requireVerified: requireVerified,
 		limiters:        map[string]*limiterEntry{},
 		maxInFlight:     DefaultScrapeMaxInFlight,
+		guestInFlight:   DefaultScrapeGuestMaxInFlight,
+		guestOpenCap:    DefaultGuestOpenThreads,
+		userOpenCap:     DefaultUserOpenThreads,
+	}
+	if repo != nil {
+		s.guestRPMPerThread = repo.Economy().GuestRPMPerThread
 	}
 	return s
 }
@@ -161,7 +173,6 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		ClientKey:     creds.ClientKey,
 		SoftwareName:  resolveSoftwareName(creds.SoftwareName, app.Name),
 		Threads:       s.guestThreads,
-		DailyLimit:    s.guestThreads * s.repo.Economy().DailyGamesPerThread,
 	}
 
 	if creds.UserCredential != "" {
@@ -174,7 +185,6 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		subject.UserID = user.ID
 		subject.Username = user.Username
 		subject.Threads = threads
-		subject.DailyLimit = threads * s.repo.Economy().DailyGamesPerThread
 	}
 
 	// Developer debug mode: a valid debug password unlocks counter/limit
@@ -196,11 +206,9 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		_ = s.repo.IncrementDebugCalls(ctx, app.ID)
 		_ = s.repo.RecordSoftwareOutcome(ctx, app.ID, subject.SoftwareName, app.Name, "debug", 1)
 		subject.Debug = true
-		subject.ForceUsed = creds.ForceUsed
 		subject.ForceRateLimit = creds.ForceRateLimit
 		if creds.ForceThreads != nil && *creds.ForceThreads > 0 {
 			subject.Threads = *creds.ForceThreads
-			subject.DailyLimit = *creds.ForceThreads * s.repo.Economy().DailyGamesPerThread
 		}
 	}
 
@@ -208,7 +216,7 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		s.record(ctx, app.ID, subject.SoftwareName, app.Name, "rate_limited")
 		return nil, &auth.AuthError{Status: http.StatusTooManyRequests, Message: "rate limit exceeded (debug)"}
 	}
-	if ok, wait := s.allowSubject(subject); !ok {
+	if ok, wait := s.allowSubjectPaced(ctx, subject); !ok {
 		s.record(ctx, app.ID, subject.SoftwareName, app.Name, "rate_limited")
 		return nil, &auth.AuthError{
 			Status:     http.StatusTooManyRequests,
@@ -411,13 +419,58 @@ func (s *ScrapeService) preCheckRPM() int {
 	return progression.MaxThreads() * s.rpmPerThread
 }
 
-// allowSubject applies the per-minute rate limit for the resolved subject:
-// threads * rpmPerThread, keyed like the threads themselves (the user, or the
+// subjectRPM is a subject's requests per minute: its threads times the
+// per-thread rate, which is lower for guests than for registered users.
+func (s *ScrapeService) subjectRPM(subject *auth.ScrapeSubject) int {
+	if subject.IsGuest() && s.guestRPMPerThread > 0 {
+		return subject.Threads * s.guestRPMPerThread
+	}
+	return subject.Threads * s.rpmPerThread
+}
+
+// guestPaceWait is the longest a guest request is held to wait for its rate
+// token before it is refused. A guest whose client keeps a steady pace never
+// sees a 429: the server simply answers more slowly.
+const guestPaceWait = 3 * time.Second
+
+// allowSubjectPaced is allowSubject, except that a guest just over its rate
+// (its next token is at most guestPaceWait away) is accepted with a pace
+// delay instead of refused: AcquireSubject holds the request that long, while
+// it counts as an open thread, before it runs.
+func (s *ScrapeService) allowSubjectPaced(_ context.Context, subject *auth.ScrapeSubject) (bool, time.Duration) {
+	if !subject.IsGuest() {
+		return s.allowSubject(subject)
+	}
+	subject.PaceDelay, subject.PaceCancel = 0, nil
+	rpm := s.subjectRPM(subject)
+	lim := s.limiterFor("rpm:"+admissionKey(subject), rpm, subject.Threads)
+	subject.RateLimit = rpm
+	now := time.Now()
+	r := lim.ReserveN(now, 1)
+	if !r.OK() {
+		return false, time.Minute
+	}
+	if d := r.DelayFrom(now); d > 0 {
+		if d > guestPaceWait {
+			r.CancelAt(now)
+			return false, d
+		}
+		subject.PaceDelay = d
+		subject.PaceCancel = r.Cancel
+	}
+	if remaining := int(lim.Tokens()); remaining > 0 {
+		subject.RateRemaining = remaining
+	}
+	return true, 0
+}
+
+// allowSubject applies the per-minute rate limit for the resolved subject
+// (see subjectRPM), keyed like the threads themselves (the user, or the
 // guest's network address). It fills the
 // subject's RateLimit/RateRemaining and, when refused, returns how long until
 // the next request would be allowed.
 func (s *ScrapeService) allowSubject(subject *auth.ScrapeSubject) (bool, time.Duration) {
-	rpm := subject.Threads * s.rpmPerThread
+	rpm := s.subjectRPM(subject)
 	ok, wait, remaining := take1(s.limiterFor("rpm:"+admissionKey(subject), rpm, subject.Threads))
 	subject.RateLimit = rpm
 	subject.RateRemaining = remaining
@@ -846,46 +899,27 @@ func (s *ScrapeService) descriptionsByLang(ctx context.Context, game models.Game
 	return out
 }
 
-// ConsumeQuota increments the daily quota for the subject and returns the
-// resulting quota state. It returns ErrQuotaExceeded when the limit is reached.
-func (s *ScrapeService) ConsumeQuota(ctx context.Context, subject *auth.ScrapeSubject) (*models.ScrapeQuota, error) {
-	day := utcDay()
+// RecordUsage counts one game lookup in today's per-person usage (shown in the
+// account and admin stats; there is no daily limit) and returns today's count.
+func (s *ScrapeService) RecordUsage(ctx context.Context, subject *auth.ScrapeSubject) (int, error) {
 	subjectType, subjectID := usageKey(subject)
-
-	if subject.Debug && subject.ForceUsed != nil {
-		// Debug override: report the forced counter without touching the real one.
-		used := *subject.ForceUsed
-		quota := buildQuota(subject.DailyLimit, used)
-		if used > subject.DailyLimit {
-			return quota, ErrQuotaExceeded
-		}
-		return quota, nil
-	}
-
-	used, ok, err := s.repo.IncrementScrapeUsage(ctx, day, subjectType, subjectID, subject.DailyLimit)
-	if err != nil {
-		return nil, err
-	}
-	quota := buildQuota(subject.DailyLimit, used)
-	if !ok {
-		return quota, ErrQuotaExceeded
-	}
-	return quota, nil
+	return s.repo.IncrementScrapeUsage(ctx, utcDay(), subjectType, subjectID)
 }
 
-// Account returns the current subject and its quota state without consuming it.
+// Account returns the current subject and today's usage. Scraping has no daily
+// limit, so the quota is always reported as unlimited.
 func (s *ScrapeService) Account(ctx context.Context, subject *auth.ScrapeSubject) (*models.ScrapeAccount, error) {
-	day := utcDay()
 	subjectType, subjectID := usageKey(subject)
-	used, err := s.repo.GetScrapeUsage(ctx, day, subjectType, subjectID)
+	used, err := s.repo.GetScrapeUsage(ctx, utcDay(), subjectType, subjectID)
 	if err != nil {
 		return nil, err
 	}
 	acct := &models.ScrapeAccount{
-		Subject: subject.Kind,
-		Client:  models.ScrapeClient{ID: subject.ClientID, Name: subject.ClientName},
-		Threads: subject.Threads,
-		Quota:   *buildQuota(subject.DailyLimit, used),
+		Subject:       subject.Kind,
+		Client:        models.ScrapeClient{ID: subject.ClientID, Name: subject.ClientName},
+		Threads:       subject.Threads,
+		RatePerMinute: s.subjectRPM(subject),
+		Quota:         unlimitedQuota(used),
 	}
 	if !subject.IsGuest() {
 		acct.User = &models.ScrapeUser{Username: subject.Username, Threads: subject.Threads}
@@ -893,10 +927,9 @@ func (s *ScrapeService) Account(ctx context.Context, subject *auth.ScrapeSubject
 	return acct, nil
 }
 
-// usageKey returns the (subject_type, subject_id) pair used by the quota table.
-// Quotas belong to people, not apps: a user is keyed by their account and a
-// guest by their network address, so every guest of an app gets their own
-// daily limit and creating more apps adds nothing.
+// usageKey returns the (subject_type, subject_id) pair of the usage table.
+// Usage belongs to people, not apps: a user is keyed by their account and a
+// guest by their network address.
 func usageKey(subject *auth.ScrapeSubject) (string, string) {
 	if subject.IsGuest() {
 		return "guest", guestKey(subject)
@@ -914,17 +947,13 @@ func guestKey(subject *auth.ScrapeSubject) string {
 	return "owner:" + subject.ClientOwnerID.String()
 }
 
-// buildQuota computes the quota payload, clamping remaining at zero.
-func buildQuota(limit, used int) *models.ScrapeQuota {
-	remaining := limit - used
-	if remaining < 0 {
-		remaining = 0
-	}
-	return &models.ScrapeQuota{
-		DailyLimit: limit,
-		Used:       used,
-		Remaining:  remaining,
-		ResetsAt:   utcDay().Add(24 * time.Hour),
+// unlimitedQuota is the quota payload: no daily limit, today's usage and when
+// the usage counter restarts.
+func unlimitedQuota(used int) models.ScrapeQuota {
+	return models.ScrapeQuota{
+		Unlimited: true,
+		Used:      used,
+		ResetsAt:  utcDay().Add(24 * time.Hour),
 	}
 }
 

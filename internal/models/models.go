@@ -269,8 +269,9 @@ type Rewards struct {
 	DonorStatus       string `json:"donor_status"`
 	DonorBonusThreads int    `json:"donor_bonus_threads"`
 	XPBonusPct        int    `json:"xp_bonus_pct"`
-	// DailyGames is the daily scrape limit (threads * daily games per thread).
-	DailyGames int `json:"daily_games"`
+	// RatePerMinute is the scraping rate: threads * requests per minute per
+	// thread. There is no daily limit.
+	RatePerMinute int `json:"rate_per_minute"`
 	// LevelXP is the XP threshold of the current level; NextLevelXP is the
 	// threshold of the next level (0 at max level).
 	LevelXP     int `json:"level_xp"`
@@ -282,15 +283,18 @@ type Rewards struct {
 // PublicConfig is the runtime rewards/scrape configuration, exposed publicly so
 // the web UI can render the current economy without hardcoded values.
 type PublicConfig struct {
-	GuestThreads        int `json:"guest_threads"`
-	AdminThreads        int `json:"admin_threads"`
-	DailyGamesPerThread int `json:"daily_games_per_thread"`
-	// RPMPerThread is the scraping rate per thread: an account may make
-	// threads * RPMPerThread requests per minute.
-	RPMPerThread int          `json:"rpm_per_thread"`
-	Points       PointsConfig `json:"points"`
-	Ranks        []RankConfig `json:"ranks"`
-	DonorTiers   []DonorTier  `json:"donor_tiers"`
+	GuestThreads int `json:"guest_threads"`
+	AdminThreads int `json:"admin_threads"`
+	// RPMPerThread is the scraping rate per thread: a registered account may
+	// make threads * RPMPerThread requests per minute.
+	RPMPerThread int `json:"rpm_per_thread"`
+	// GuestRPMPerThread is the rate per guest thread (lower than a user's).
+	GuestRPMPerThread int `json:"guest_rpm_per_thread"`
+	// DailyUnlimited is always true: scraping has no daily limit.
+	DailyUnlimited bool         `json:"daily_unlimited"`
+	Points         PointsConfig `json:"points"`
+	Ranks          []RankConfig `json:"ranks"`
+	DonorTiers     []DonorTier  `json:"donor_tiers"`
 }
 
 // DonorTier is a donation status with its additive thread bonus and XP bonus.

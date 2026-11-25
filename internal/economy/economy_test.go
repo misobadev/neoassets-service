@@ -13,16 +13,16 @@ func TestThreadsForUser(t *testing.T) {
 	if got := d.ThreadsForUser(models.RoleUser, models.DonorNone, 0); got != 2 {
 		t.Errorf("free level 1 = %d, want 2", got)
 	}
-	// Additive donor bonus: 4 + 2 / 4 + 4.
-	if got := d.ThreadsForUser(models.RoleUser, models.DonorSupporter, 0); got != 4 {
-		t.Errorf("supporter level 1 = %d, want 4", got)
+	// Additive donor bonus: 2 + 8 / 2 + 12.
+	if got := d.ThreadsForUser(models.RoleUser, models.DonorSupporter, 0); got != 10 {
+		t.Errorf("supporter level 1 = %d, want 10", got)
 	}
-	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, 0); got != 6 {
-		t.Errorf("monthly supporter level 1 = %d, want 6", got)
+	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, 0); got != 14 {
+		t.Errorf("monthly supporter level 1 = %d, want 14", got)
 	}
-	// Level 65 base = 14 threads; monthly +4 -> 18.
-	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, progression.XPForLevel(65)); got != 18 {
-		t.Errorf("monthly supporter level 65 = %d, want 18", got)
+	// Level 25 base = 6 threads; supporter +8 -> 14.
+	if got := d.ThreadsForUser(models.RoleUser, models.DonorSupporter, progression.XPForLevel(25)); got != 14 {
+		t.Errorf("supporter level 25 = %d, want 14", got)
 	}
 	// Hard cap at the top rank (20) even with the donor bonus.
 	if got := d.ThreadsForUser(models.RoleUser, models.DonorMonthlySupporter, progression.XPForLevel(100)); got != 20 {
@@ -52,7 +52,7 @@ func TestApplyXPBonus(t *testing.T) {
 
 func TestDonorBonusAndXP(t *testing.T) {
 	d := Default()
-	if d.DonorBonusThreads(models.DonorSupporter) != 2 || d.DonorBonusThreads(models.DonorMonthlySupporter) != 4 {
+	if d.DonorBonusThreads(models.DonorSupporter) != 8 || d.DonorBonusThreads(models.DonorMonthlySupporter) != 12 {
 		t.Error("unexpected donor bonus threads")
 	}
 	if d.DonorXPBonusPct(models.DonorSupporter) != 25 || d.DonorXPBonusPct(models.DonorMonthlySupporter) != 50 {
@@ -64,11 +64,11 @@ func TestDonorBonusAndXP(t *testing.T) {
 }
 
 func TestOverrideKeepsDefaultsForUnsetValues(t *testing.T) {
-	c := Default().Override(Config{GuestThreads: 3, Points: Points{NewGame: 250}, DailyGamesPerThread: -1})
+	c := Default().Override(Config{GuestThreads: 3, Points: Points{NewGame: 250}, RPMPerThread: -1})
 	if c.GuestThreads != 3 || c.Points.NewGame != 250 {
 		t.Fatalf("overrides not applied: %+v", c)
 	}
-	if c.DailyGamesPerThread != 1000 || c.AdminThreads != 20 || c.Points.TextMetadata != 10 || c.DonorGraceDays != 40 {
+	if c.RPMPerThread != 60 || c.GuestRPMPerThread != 30 || c.AdminThreads != 20 || c.Points.TextMetadata != 10 || c.DonorGraceDays != 40 {
 		t.Fatalf("defaults not kept: %+v", c)
 	}
 }

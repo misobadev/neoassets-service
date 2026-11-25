@@ -69,6 +69,7 @@ func newAPIHarness(t *testing.T) *apiHarness {
 	// (1 thread) is shorter than the scenarios, so give the harness room. The
 	// rate limiter has its own tests.
 	cfg.ScrapeRPMPerThread = 1000
+	cfg.ScrapeGuestRPMPerThread = 1000
 	if err := handlers.ConfigureCDN(cfg.CDNIPRanges, cfg.CDNClientIPHeader); err != nil {
 		t.Fatal(err)
 	}

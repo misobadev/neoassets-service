@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "3f9c1a2e-0b7a-4d1e-9c3a-6b2f8d4a1c07",
     "name": "NeoAssets Scraping API",
-    "description": "Public scraping API of NeoAssets.\n\nSetup:\n1. Import also the environment `neoassets-scraping.postman_environment.json` and select it.\n2. Set `clientId` and `clientSecret` with your developer app credentials.\n3. Set `systemId` (from GET /scrape/systems, e.g. `snes`) and `searchName` (e.g. `mario`).\n4. To test as a registered user, set `userApiKey` with a personal API key (Profile page). Leave it empty for guest mode.\n5. Run the requests in order. `Games - by name` stores `romHash`/`romHashParam` so the by-hash requests work.\n\n`GET /scrape/games` requires `system_id`, `family` or `group` plus a ROM hash or a name, and returns a SINGLE game (`game`, null when nothing matched) with `matched_by` (`hash`|`name`) and the game's `scrapes` counter.\n\nLimits: an account's threads are its simultaneous requests (`X-Concurrency-Limit`), its rate is threads x 100 requests/min with bursts of about 5 s (`X-RateLimit-Limit`, `X-RateLimit-Remaining`), and its daily quota is threads x 1000 game lookups (`X-Quota-*`). A 429 or 503 carries `Retry-After` (seconds): wait that long and retry. Guest requests (no `userApiKey`) share one allowance per developer account.\n\nRate limit tests: the two `Rate Limit - *` requests loop themselves via `pm.execution.setNextRequest`, so they MUST be run with the Collection Runner (not the Send button). They stop as soon as a 429 is observed and check its Retry-After header.\n\nSystem Art Packs: `GET /packs` lists approved packs (sorted by downloads, paginated); `GET /packs/{packId}` returns the full install payload without counting a download, and `GET /packs/{packId}/download` returns the same payload and bumps the download counter; `Contribute - create submission` creates a pending contribution to an approved pack (set `packId`, `packName`, `packAuthor` and `userToken`).\n\nRate limiting: the pack download endpoint (`/packs/{packId}/download`) is limited per (IP, pack) to ~10 req/min per pack, so the download counter reflects real installs and cannot be flooded.",
+    "description": "Public scraping API of NeoAssets.\n\nSetup:\n1. Import also the environment `neoassets-scraping.postman_environment.json` and select it.\n2. Set `clientId` and `clientSecret` with your developer app credentials.\n3. Set `systemId` (from GET /scrape/systems, e.g. `snes`) and `searchName` (e.g. `mario`).\n4. To test as a registered user, set `userApiKey` with a personal API key (Profile page). Leave it empty for guest mode.\n5. Run the requests in order. `Games - by name` stores `romHash`/`romHashParam` so the by-hash requests work.\n\n`GET /scrape/games` requires `system_id`, `family` or `group` plus a ROM hash or a name, and returns a SINGLE game (`game`, null when nothing matched) with `matched_by` (`hash`|`name`) and the game's `scrapes` counter.\n\nLimits: an account's threads are its simultaneous requests (`X-Concurrency-Limit`) and its rate is threads x 60 requests/min (guests threads x 30) with bursts of about 5 s (`X-RateLimit-Limit`, `X-RateLimit-Remaining`). There is no daily limit. A 429 or 503 carries `Retry-After` (seconds): wait that long and retry. Guest requests (no `userApiKey`) are counted per network address.\n\nRate limit tests: the two `Rate Limit - *` requests loop themselves via `pm.execution.setNextRequest`, so they MUST be run with the Collection Runner (not the Send button). They stop as soon as a 429 is observed and check its Retry-After header.\n\nSystem Art Packs: `GET /packs` lists approved packs (sorted by downloads, paginated); `GET /packs/{packId}` returns the full install payload without counting a download, and `GET /packs/{packId}/download` returns the same payload and bumps the download counter; `Contribute - create submission` creates a pending contribution to an approved pack (set `packId`, `packName`, `packAuthor` and `userToken`).\n\nRate limiting: the pack download endpoint (`/packs/{packId}/download`) is limited per (IP, pack) to ~10 req/min per pack, so the download counter reflects real installs and cannot be flooded.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -138,11 +138,6 @@
                   "  const s = j.systems[0];",
                   "  pm.expect(s).to.have.property('id');",
                   "  pm.expect(s).to.have.property('name');",
-                  "});",
-                  "pm.test('quota headers present', () => {",
-                  "  pm.expect(pm.response.headers.has('X-Quota-Limit')).to.be.true;",
-                  "  pm.expect(pm.response.headers.has('X-Quota-Remaining')).to.be.true;",
-                  "  pm.expect(pm.response.headers.has('X-Quota-Reset')).to.be.true;",
                   "});"
                 ]
               }
@@ -152,7 +147,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/systems",
-            "description": "Metadata system catalog. Free (does not consume quota). Pick a `systemId` from here."
+            "description": "Metadata system catalog. Free. Pick a `systemId` from here."
           },
           "response": []
         },
@@ -250,8 +245,7 @@
                   "  pm.test('stored romHash for the by-hash requests', () => pm.expect(pm.collectionVariables.get('romHash')).to.not.be.empty);",
                   "} else {",
                   "  console.log('No game matched \"' + pm.variables.get('searchName') + '\" in ' + pm.variables.get('systemId') + '. Adjust searchName/systemId.');",
-                  "}",
-                  "pm.test('quota remaining is numeric', () => pm.expect(Number(pm.response.headers.get('X-Quota-Remaining'))).to.be.a('number'));"
+                  "}"
                 ]
               }
             }
@@ -260,7 +254,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/games?system_id={{systemId}}&name={{searchName}}&type={{gameType}}&roms=true&softname={{softname}}",
-            "description": "Name search scoped to system_id (name is cleaned server-side). Optional `type` filter: base, homebrew, hack, bootleg or aftermarket. `roms=true` includes the ROM list so a hash can be captured. Returns one game and consumes one quota unit; stores romHash for the by-hash requests."
+            "description": "Name search scoped to system_id (name is cleaned server-side). Optional `type` filter: base, homebrew, hack, bootleg or aftermarket. `roms=true` includes the ROM list so a hash can be captured. Returns one game; stores romHash for the by-hash requests."
           },
           "response": []
         },
@@ -313,8 +307,7 @@
                   "  });",
                   "} else {",
                   "  pm.test('romHash is set (run Games - by name first)', () => pm.expect(hash).to.not.be.empty);",
-                  "}",
-                  "pm.test('quota remaining is numeric', () => pm.expect(Number(pm.response.headers.get('X-Quota-Remaining'))).to.be.a('number'));"
+                  "}"
                 ]
               }
             }
@@ -338,8 +331,7 @@
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "const j = pm.response.json();",
                   "pm.test('matched_by is hash or name', () => pm.expect(['hash', 'name']).to.include(j.matched_by));",
-                  "pm.test('returns a game', () => pm.expect(j.game).to.not.eql(null));",
-                  "pm.test('quota remaining is numeric', () => pm.expect(Number(pm.response.headers.get('X-Quota-Remaining'))).to.be.a('number'));"
+                  "pm.test('returns a game', () => pm.expect(j.game).to.not.eql(null));"
                 ]
               }
             }
@@ -348,7 +340,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/games?system_id={{systemId}}&{{romHashParam}}={{romHash}}&name={{searchName}}&softname={{softname}}",
-            "description": "Hash + name together: the hash wins and the name is the fallback. Consumes one quota unit."
+            "description": "Hash + name together: the hash wins and the name is the fallback."
           },
           "response": []
         },
@@ -390,8 +382,7 @@
                   "      pm.expect(j.games[i - 1].scrapes).to.be.at.least(j.games[i].scrapes);",
                   "    }",
                   "  });",
-                  "}",
-                  "pm.test('quota headers present', () => pm.expect(pm.response.headers.has('X-Quota-Remaining')).to.be.true);"
+                  "}"
                 ]
               }
             }
@@ -419,32 +410,29 @@
                   "  pm.expect(j.client).to.have.property('id');",
                   "  pm.expect(j.client).to.have.property('name');",
                   "});",
-                  "pm.test('quota is complete', () => {",
-                  "  pm.expect(j.quota).to.have.property('daily_limit');",
+                  "pm.test('quota is unlimited', () => {",
+                  "  pm.expect(j.quota.unlimited).to.eql(true);",
+                  "  pm.expect(j.quota.daily_limit).to.eql(null);",
                   "  pm.expect(j.quota).to.have.property('used');",
-                  "  pm.expect(j.quota).to.have.property('remaining');",
                   "  pm.expect(j.quota).to.have.property('resets_at');",
                   "});",
+                  "pm.test('rate_per_minute is threads x the per-thread rate', () => pm.expect(j.rate_per_minute).to.be.above(0));",
                   "if (pm.variables.get('userApiKey')) {",
                   "  pm.test('registered user has a username', () => {",
                   "    pm.expect(j.subject).to.eql('user');",
                   "    pm.expect(j.user).to.have.property('username');",
                   "  });",
                   "} else {",
-                  "  pm.test('guest has no user and the guest daily limit', () => {",
+                  "  pm.test('guest has no user and 1 thread', () => {",
                   "    pm.expect(j.subject).to.eql('guest');",
                   "    pm.expect(j.user).to.eql(null);",
-                  "    pm.expect(j.quota.daily_limit).to.eql(1000);",
+                  "    pm.expect(j.threads).to.eql(1);",
                   "  });",
                   "}",
                   "pm.test('limit headers present', () => {",
                   "  pm.expect(pm.response.headers.has('X-Concurrency-Limit')).to.be.true;",
                   "  pm.expect(pm.response.headers.has('X-RateLimit-Limit')).to.be.true;",
                   "  pm.expect(pm.response.headers.has('X-RateLimit-Remaining')).to.be.true;",
-                  "});",
-                  "pm.test('quota headers present', () => {",
-                  "  pm.expect(pm.response.headers.has('X-Quota-Limit')).to.be.true;",
-                  "  pm.expect(pm.response.headers.has('X-Quota-Remaining')).to.be.true;",
                   "});"
                 ]
               }
@@ -454,7 +442,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/account",
-            "description": "Current subject and quota. Free. Asserts the guest daily limit (1000 = 1 thread x 1000) when no user API key is set, and the limit headers."
+            "description": "Current subject, threads, rate and today's usage (no daily limit). Asserts the guest has 1 thread when no user API key is set, and the limit headers."
           },
           "response": []
         }
@@ -516,7 +504,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/account",
-            "description": "Guest rate limit test. Loops itself until a 429 appears (default guest limit is 100 req/min = 1 thread x 100, with a burst of 8). Checks that the 429 carries Retry-After. MUST be run with the Collection Runner."
+            "description": "Guest rate limit test. Loops itself until a 429 appears (default guest limit is 30 req/min = 1 thread x 30; a guest just over it is held up to 3 s before the 429). Checks that the 429 carries Retry-After. MUST be run with the Collection Runner."
           },
           "response": []
         },
@@ -582,7 +570,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/v1/scrape/account",
-            "description": "Registered-user rate limit test. Loops itself until a 429 appears (the user limit is threads x 100 req/min with a burst of about 5 s, e.g. a 2-thread Novice = 200/min, burst 16). Checks that the 429 carries Retry-After. MUST be run with the Collection Runner."
+            "description": "Registered-user rate limit test. Loops itself until a 429 appears (the user limit is threads x 60 req/min with a burst of about 5 s, e.g. a 2-thread Novice = 120/min, burst 10). Checks that the 429 carries Retry-After. MUST be run with the Collection Runner."
           },
           "response": []
         }
