@@ -166,6 +166,16 @@ type ScrapeMedia struct {
 	URL  string `json:"url"`
 	Mime string `json:"mime"`
 	Size int64  `json:"size"`
+	// Region is set for regional media (cover/logo), so a client can show the
+	// box of the user's own release; empty for the rest.
+	Region string `json:"region,omitempty"`
+}
+
+// ScrapeName is a game's title in one release region (e.g. its Japanese or
+// European name), so a client can show the title its user knows.
+type ScrapeName struct {
+	Region string `json:"region"`
+	Name   string `json:"name"`
 }
 
 // ScrapeRom is a ROM dump used to identify a game by its hashes.
@@ -181,18 +191,21 @@ type ScrapeRom struct {
 
 // ScrapeGame is the full metadata payload for a single game.
 type ScrapeGame struct {
-	ID           uuid.UUID `json:"id"`
-	SystemID     string    `json:"system_id"`
-	SystemName   string    `json:"system_name"`
-	Name         string    `json:"name"`
-	Region       string    `json:"region"`
-	ReleaseYear  *int      `json:"release_year"`
-	ReleaseMonth *int      `json:"release_month"`
-	Publisher    string    `json:"publisher"`
-	Developer    string    `json:"developer"`
-	Genre        string    `json:"genre"`
-	Rating       int       `json:"rating"`
-	Type         string    `json:"type"`
+	ID         uuid.UUID `json:"id"`
+	SystemID   string    `json:"system_id"`
+	SystemName string    `json:"system_name"`
+	Name       string    `json:"name"`
+	// Names lists the title per release region, in the catalog's region
+	// order; Name is the primary one. Omitted when no region has a name.
+	Names        []ScrapeName `json:"names,omitempty"`
+	Region       string       `json:"region"`
+	ReleaseYear  *int         `json:"release_year"`
+	ReleaseMonth *int         `json:"release_month"`
+	Publisher    string       `json:"publisher"`
+	Developer    string       `json:"developer"`
+	Genre        string       `json:"genre"`
+	Rating       int          `json:"rating"`
+	Type         string       `json:"type"`
 	// Scrapes is the lifetime scrape count for this game (bumped on each
 	// successful resolution).
 	Scrapes int64 `json:"scrapes"`
@@ -258,7 +271,10 @@ type ScrapeAccount struct {
 	Subject string       `json:"subject"` // "user" | "guest"
 	Client  ScrapeClient `json:"client"`
 	User    *ScrapeUser  `json:"user"`
-	Quota   ScrapeQuota  `json:"quota"`
+	// Threads is the subject's concurrency, guests included (a guest has no
+	// User to carry it).
+	Threads int         `json:"threads"`
+	Quota   ScrapeQuota `json:"quota"`
 }
 
 // AdminDeveloperApp is a developer app as listed in the admin overview, with

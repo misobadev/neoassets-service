@@ -770,11 +770,19 @@ func (s *ScrapeService) toScrapeGame(ctx context.Context, d *models.GameDetail, 
 			continue
 		}
 		media = append(media, models.ScrapeMedia{
-			Kind: m.Kind,
-			URL:  s.meta.PublicURL(m.ObjectKey),
-			Mime: m.Mime,
-			Size: m.Size,
+			Kind:   m.Kind,
+			URL:    s.meta.PublicURL(m.ObjectKey),
+			Mime:   m.Mime,
+			Size:   m.Size,
+			Region: m.Region,
 		})
+	}
+
+	var names []models.ScrapeName
+	for _, r := range d.Regions {
+		if r.Name != "" {
+			names = append(names, models.ScrapeName{Region: r.Region, Name: r.Name})
+		}
 	}
 
 	out := models.ScrapeGame{
@@ -782,6 +790,7 @@ func (s *ScrapeService) toScrapeGame(ctx context.Context, d *models.GameDetail, 
 		SystemID:     d.SystemID,
 		SystemName:   d.SystemName,
 		Name:         d.Name,
+		Names:        names,
 		Region:       d.Region,
 		ReleaseYear:  d.ReleaseYear,
 		ReleaseMonth: d.ReleaseMonth,
@@ -874,6 +883,7 @@ func (s *ScrapeService) Account(ctx context.Context, subject *auth.ScrapeSubject
 	acct := &models.ScrapeAccount{
 		Subject: subject.Kind,
 		Client:  models.ScrapeClient{ID: subject.ClientID, Name: subject.ClientName},
+		Threads: subject.Threads,
 		Quota:   *buildQuota(subject.DailyLimit, used),
 	}
 	if !subject.IsGuest() {

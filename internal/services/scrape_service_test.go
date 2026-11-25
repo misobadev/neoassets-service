@@ -147,6 +147,44 @@ func TestToScrapeGameBuildsPublicURLs(t *testing.T) {
 	}
 }
 
+func TestToScrapeGameRegionalNamesAndMedia(t *testing.T) {
+	s := &ScrapeService{meta: &Service{publicBase: "https://cdn.example.com"}}
+	detail := &models.GameDetail{
+		Game: models.Game{ID: uuid.New(), SystemID: "snes", Name: "Ninja Gaiden Trilogy"},
+		Media: []models.Media{
+			{Kind: "cover", ObjectKey: "media/games/snes/jp.webp", Mime: "image/webp", Region: "Japan"},
+		},
+		Regions: []models.GameRegion{
+			{Region: "USA", Name: "Ninja Gaiden Trilogy"},
+			{Region: "Europe"}, // release date only: no name to report
+			{Region: "Japan", Name: "Ninja Ryuuken Den Tomoe"},
+		},
+	}
+
+	got := s.toScrapeGame(t.Context(), detail, models.ScrapeGameQuery{})
+	want := []models.ScrapeName{
+		{Region: "USA", Name: "Ninja Gaiden Trilogy"},
+		{Region: "Japan", Name: "Ninja Ryuuken Den Tomoe"},
+	}
+	if len(got.Names) != len(want) {
+		t.Fatalf("names = %+v, want %+v", got.Names, want)
+	}
+	for i := range want {
+		if got.Names[i] != want[i] {
+			t.Errorf("names[%d] = %+v, want %+v", i, got.Names[i], want[i])
+		}
+	}
+	if got.Media[0].Region != "Japan" {
+		t.Errorf("media region = %q, want Japan", got.Media[0].Region)
+	}
+
+	// A game without regional names leaves the field out of the payload.
+	bare := s.toScrapeGame(t.Context(), &models.GameDetail{Game: detail.Game}, models.ScrapeGameQuery{})
+	if bare.Names != nil {
+		t.Errorf("names = %+v, want nil", bare.Names)
+	}
+}
+
 func TestBestMatch(t *testing.T) {
 	games := []models.Game{
 		{Name: "A Super Mario World: And The 8 Lost Worlds", Type: "hack"},
