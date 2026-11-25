@@ -124,7 +124,7 @@ the user credential is optional and falls back to guest mode.
   and `X-RateLimit-Remaining`. The user docs live in the web (`/app/docs`,
   `ApiDocsPage.tsx`): keep them in sync with any limit change.
   Threads, rate and quota are all keyed by the user for registered accounts
-  and by the developer app owner for guests (a generous per-app, per-address pre-check
+  and by the caller's network address for guests, stored hashed (a generous per-app, per-address pre-check
   bounds DB lookups from bogus credentials). In-memory limiters (single
   instance); daily counters live in `scrape_usage`.
 - XP & ranks: approved contributions award XP (`POINTS_TEXT_METADATA` 10 /

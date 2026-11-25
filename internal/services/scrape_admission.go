@@ -112,11 +112,11 @@ func take(ctx context.Context, slots chan struct{}, wait time.Duration) bool {
 }
 
 // admissionKey identifies whose threads a request uses: the user for a
-// registered account, the developer app's owner for a guest (so creating more
-// apps does not add threads, the same rule as the daily quota).
+// registered account, the caller's network address for a guest (the same
+// rule as the daily quota, so creating more apps does not add threads).
 func admissionKey(subject *auth.ScrapeSubject) string {
 	if subject.IsGuest() {
-		return "owner:" + subject.ClientOwnerID.String()
+		return "guest:" + guestKey(subject)
 	}
 	return "user:" + subject.UserID.String()
 }

@@ -104,14 +104,16 @@ func TestSlotPoolFollowsLimitChanges(t *testing.T) {
 	}
 }
 
-// A guest's threads belong to the developer app's owner, so two apps of the
-// same owner share them; a registered user has their own.
-func TestAcquireSubjectSharesGuestThreadsPerOwner(t *testing.T) {
+// A guest's threads belong to the guest (their address), not the app: the same
+// guest on two apps shares them, another guest of the same app has their own,
+// and a registered user has their own.
+func TestAcquireSubjectKeysGuestThreadsByAddress(t *testing.T) {
 	s := &ScrapeService{}
 	ctx := context.Background()
 	owner := uuid.New()
-	app1 := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "a1", ClientOwnerID: owner, Threads: 1}
-	app2 := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "a2", ClientOwnerID: owner, Threads: 1}
+	app1 := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "a1", ClientOwnerID: owner, ClientKey: "203.0.113.7", Threads: 1}
+	app2 := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "a2", ClientOwnerID: owner, ClientKey: "203.0.113.7", Threads: 1}
+	otherGuest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "a1", ClientOwnerID: owner, ClientKey: "198.51.100.9", Threads: 1}
 	user := &auth.ScrapeSubject{Kind: auth.ScrapeKindUser, UserID: owner, Threads: 1}
 
 	release, err := s.AcquireSubject(ctx, app1)
@@ -122,8 +124,13 @@ func TestAcquireSubjectSharesGuestThreadsPerOwner(t *testing.T) {
 	waitCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer cancel()
 	if _, err := s.AcquireSubject(waitCtx, app2); !errors.Is(err, ErrTooManyConcurrent) {
-		t.Fatalf("second app of the same owner: err = %v, want ErrTooManyConcurrent", err)
+		t.Fatalf("same guest on a second app: err = %v, want ErrTooManyConcurrent", err)
 	}
+	r3, err := s.AcquireSubject(ctx, otherGuest)
+	if err != nil {
+		t.Fatalf("another guest must have their own slots: %v", err)
+	}
+	r3()
 	r2, err := s.AcquireSubject(ctx, user)
 	if err != nil {
 		t.Fatalf("a registered user shares the guest slots: %v", err)
