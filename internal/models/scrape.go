@@ -246,11 +246,13 @@ func (g ScrapeGame) MarshalJSON() ([]byte, error) {
 	return json.Marshal(fields)
 }
 
-// ScrapeQuota is the daily quota state for a scrape subject.
+// ScrapeQuota is a scrape subject's daily usage. Scraping has no daily limit:
+// Unlimited is always true and DailyLimit always null; both stay in the
+// payload so existing clients keep parsing it.
 type ScrapeQuota struct {
-	DailyLimit int       `json:"daily_limit"`
+	Unlimited  bool      `json:"unlimited"`
+	DailyLimit *int      `json:"daily_limit"`
 	Used       int       `json:"used"`
-	Remaining  int       `json:"remaining"`
 	ResetsAt   time.Time `json:"resets_at"`
 }
 
@@ -266,15 +268,19 @@ type ScrapeUser struct {
 	Threads  int    `json:"threads"`
 }
 
-// ScrapeAccount describes the authenticated scrape subject and its quota.
+// ScrapeAccount describes the authenticated scrape subject, its limits and
+// today's usage.
 type ScrapeAccount struct {
 	Subject string       `json:"subject"` // "user" | "guest"
 	Client  ScrapeClient `json:"client"`
 	User    *ScrapeUser  `json:"user"`
 	// Threads is the subject's concurrency, guests included (a guest has no
 	// User to carry it).
-	Threads int         `json:"threads"`
-	Quota   ScrapeQuota `json:"quota"`
+	Threads int `json:"threads"`
+	// RatePerMinute is the subject's requests per minute (threads times the
+	// per-thread rate).
+	RatePerMinute int         `json:"rate_per_minute"`
+	Quota         ScrapeQuota `json:"quota"`
 }
 
 // AdminDeveloperApp is a developer app as listed in the admin overview, with
@@ -311,4 +317,22 @@ type DeveloperOverview struct {
 	Totals DeveloperOverviewTotals `json:"totals"`
 	Apps   []AdminDeveloperApp     `json:"apps"`
 	Keys   []AdminAPIKey           `json:"keys"`
+}
+
+// ScrapeStatus is the live, public state of the scraping API: requests in the
+// last minute, open threads (requests in progress or waiting) against their
+// caps, and the scrapers active in the last few minutes.
+type ScrapeStatus struct {
+	RequestsPerMinute int64 `json:"requests_per_minute"`
+	OpenThreads       struct {
+		Users     int64 `json:"users"`
+		UsersMax  int   `json:"users_max"`
+		Guests    int64 `json:"guests"`
+		GuestsMax int   `json:"guests_max"`
+	} `json:"open_threads"`
+	Scrapers struct {
+		Users  int `json:"users"`
+		Guests int `json:"guests"`
+	} `json:"scrapers"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

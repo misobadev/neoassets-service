@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -30,16 +31,13 @@ func TestCleanGameName(t *testing.T) {
 	}
 }
 
-func TestBuildQuotaClampsRemaining(t *testing.T) {
-	q := buildQuota(100, 130)
-	if q.Remaining != 0 {
-		t.Errorf("remaining = %d, want 0", q.Remaining)
+func TestUnlimitedQuota(t *testing.T) {
+	q := unlimitedQuota(130)
+	if !q.Unlimited || q.DailyLimit != nil {
+		t.Errorf("quota = %+v, want unlimited with a null daily_limit", q)
 	}
 	if q.Used != 130 {
 		t.Errorf("used = %d, want 130", q.Used)
-	}
-	if q.DailyLimit != 100 {
-		t.Errorf("daily_limit = %d, want 100", q.DailyLimit)
 	}
 	if !q.ResetsAt.After(time.Now().UTC()) {
 		t.Error("resets_at should be in the future")
@@ -281,5 +279,60 @@ func TestAllowSubjectReportsWaitAndRemaining(t *testing.T) {
 	time.Sleep(wait)
 	if ok, _ := s.allowSubject(user); !ok {
 		t.Fatal("still refused after waiting Retry-After")
+	}
+}
+
+// A guest thread runs at the lower guest rate, and a guest over that rate is
+// held until its next token instead of being refused.
+func TestGuestRateIsSlowerAndPaced(t *testing.T) {
+	s := &ScrapeService{rpmPerThread: 100, guestRPMPerThread: 600, limiters: map[string]*limiterEntry{}}
+	guest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientKey: "203.0.113.7", Threads: 1}
+	if got := s.subjectRPM(guest); got != 600 {
+		t.Fatalf("guest rpm = %d, want threads * the guest rate", got)
+	}
+	user := &auth.ScrapeSubject{Kind: auth.ScrapeKindUser, UserID: uuid.New(), Threads: 2}
+	if got := s.subjectRPM(user); got != 200 {
+		t.Fatalf("user rpm = %d, want threads * rpmPerThread", got)
+	}
+
+	// Drain the burst, then the next request waits (~100 ms at 600 rpm)
+	// instead of failing.
+	ctx := context.Background()
+	for {
+		if ok, _, _ := take1(s.limiterFor("rpm:"+admissionKey(guest), 600, 1)); !ok {
+			break
+		}
+	}
+	if ok, _ := s.allowSubjectPaced(ctx, guest); !ok || guest.PaceDelay <= 0 {
+		t.Fatalf("a guest just over its rate must be paced, not refused (delay %v)", guest.PaceDelay)
+	}
+	// Admission holds the paced request for its delay, counted as an open
+	// thread meanwhile.
+	start := time.Now()
+	done := make(chan func())
+	go func() {
+		release, err := s.AcquireSubject(ctx, guest)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- release
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if n := s.live.openGuests.Load(); n != 1 {
+		t.Errorf("open guests while paced = %d, want 1", n)
+	}
+	release := <-done
+	if time.Since(start) < 50*time.Millisecond {
+		t.Error("expected the paced request to wait for its token")
+	}
+	if release != nil {
+		release()
+	}
+
+	// A guest far over its rate (wait > guestPaceWait) is refused.
+	slow := &ScrapeService{rpmPerThread: 100, guestRPMPerThread: 1, limiters: map[string]*limiterEntry{}}
+	_, _ = slow.allowSubjectPaced(ctx, guest)
+	if ok, wait := slow.allowSubjectPaced(ctx, guest); ok || wait <= guestPaceWait {
+		t.Fatalf("far over the rate: ok=%v wait=%v, want a refusal with Retry-After", ok, wait)
 	}
 }

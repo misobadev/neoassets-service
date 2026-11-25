@@ -39,12 +39,13 @@ type Config struct {
 	SupporterXPBonusPct int
 	// MonthlySupporterXPBonusPct is the XP bonus (percent) of a monthly donation.
 	MonthlySupporterXPBonusPct int
-	// DailyGamesPerThread is the daily game scrape quota granted per thread.
-	// The effective daily limit is threads * DailyGamesPerThread.
-	DailyGamesPerThread int
 	// RPMPerThread is the per-minute request budget granted per thread. The
 	// effective rate limit is threads * RPMPerThread.
 	RPMPerThread int
+	// GuestRPMPerThread is the per-minute request budget of each guest thread,
+	// below a registered user's so anonymous traffic can't load the server: a
+	// guest scrapes more slowly instead.
+	GuestRPMPerThread int
 	// DonorGraceDays is the inactivity window after which an auto-managed
 	// monthly supporter with no fresh subscription payment is downgraded.
 	DonorGraceDays int
@@ -57,12 +58,12 @@ func Default() Config {
 	return Config{
 		AdminThreads:                 20,
 		GuestThreads:                 1,
-		SupporterBonusThreads:        2,
-		MonthlySupporterBonusThreads: 4,
+		SupporterBonusThreads:        8,
+		MonthlySupporterBonusThreads: 12,
 		SupporterXPBonusPct:          25,
 		MonthlySupporterXPBonusPct:   50,
-		DailyGamesPerThread:          1000,
-		RPMPerThread:                 100,
+		RPMPerThread:                 60,
+		GuestRPMPerThread:            30,
 		DonorGraceDays:               40,
 		Points: Points{
 			TextMetadata:  10,
@@ -90,8 +91,8 @@ func (c Config) Override(o Config) Config {
 	c.MonthlySupporterBonusThreads = pick(c.MonthlySupporterBonusThreads, o.MonthlySupporterBonusThreads)
 	c.SupporterXPBonusPct = pick(c.SupporterXPBonusPct, o.SupporterXPBonusPct)
 	c.MonthlySupporterXPBonusPct = pick(c.MonthlySupporterXPBonusPct, o.MonthlySupporterXPBonusPct)
-	c.DailyGamesPerThread = pick(c.DailyGamesPerThread, o.DailyGamesPerThread)
 	c.RPMPerThread = pick(c.RPMPerThread, o.RPMPerThread)
+	c.GuestRPMPerThread = pick(c.GuestRPMPerThread, o.GuestRPMPerThread)
 	c.DonorGraceDays = pick(c.DonorGraceDays, o.DonorGraceDays)
 	c.Points.TextMetadata = pick(c.Points.TextMetadata, o.Points.TextMetadata)
 	c.Points.ImageMetadata = pick(c.Points.ImageMetadata, o.Points.ImageMetadata)

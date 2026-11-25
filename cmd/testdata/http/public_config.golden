@@ -1,19 +1,20 @@
 200
 {
   "admin_threads": 20,
-  "daily_games_per_thread": 1000,
+  "daily_unlimited": true,
   "donor_tiers": [
     {
-      "bonus_threads": 2,
+      "bonus_threads": 8,
       "status": "supporter",
       "xp_bonus_pct": 25
     },
     {
-      "bonus_threads": 4,
+      "bonus_threads": 12,
       "status": "monthly_supporter",
       "xp_bonus_pct": 50
     }
   ],
+  "guest_rpm_per_thread": 1000,
   "guest_threads": 1,
   "points": {
     "image_metadata": 50,

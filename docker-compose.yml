@@ -48,15 +48,22 @@ services:
       SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS: ${SCRAPE_MONTHLY_SUPPORTER_BONUS_THREADS:-0}
       XP_SUPPORTER_BONUS_PCT: ${XP_SUPPORTER_BONUS_PCT:-0}
       XP_MONTHLY_SUPPORTER_BONUS_PCT: ${XP_MONTHLY_SUPPORTER_BONUS_PCT:-0}
-      SCRAPE_DAILY_GAMES_PER_THREAD: ${SCRAPE_DAILY_GAMES_PER_THREAD:-0}
       POINTS_TEXT_METADATA: ${POINTS_TEXT_METADATA:-0}
       POINTS_IMAGE_METADATA: ${POINTS_IMAGE_METADATA:-0}
       POINTS_VIDEO_METADATA: ${POINTS_VIDEO_METADATA:-0}
       POINTS_SAP_IMAGE: ${POINTS_SAP_IMAGE:-0}
       POINTS_NEW_GAME: ${POINTS_NEW_GAME:-0}
+      # Requests per minute per thread (0 = defaults 60 registered, 30 guest).
       SCRAPE_RPM_PER_THREAD: ${SCRAPE_RPM_PER_THREAD:-0}
-      # Concurrent game lookups across every account (0 = default 16, -1 = off).
+      SCRAPE_GUEST_RPM_PER_THREAD: ${SCRAPE_GUEST_RPM_PER_THREAD:-0}
+      # Open requests of all users / all guests together (0 = default 8192 /
+      # 512, -1 = off).
+      SCRAPE_USER_OPEN_THREADS: ${SCRAPE_USER_OPEN_THREADS:-0}
+      SCRAPE_GUEST_OPEN_THREADS: ${SCRAPE_GUEST_OPEN_THREADS:-0}
+      # Concurrent game lookups across every account and the guests' share of
+      # them (0 = default 16 / 4, -1 = off).
       SCRAPE_MAX_INFLIGHT: ${SCRAPE_MAX_INFLIGHT:-0}
+      SCRAPE_GUEST_MAX_INFLIGHT: ${SCRAPE_GUEST_MAX_INFLIGHT:-0}
       # Donations (Ko-fi -> donor status).
       KOFI_VERIFICATION_TOKEN: ${KOFI_VERIFICATION_TOKEN:-}
       PATREON_WEBHOOK_SECRET: ${PATREON_WEBHOOK_SECRET:-}

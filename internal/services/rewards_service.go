@@ -49,10 +49,11 @@ func (s *Service) PublicConfig() models.PublicConfig {
 	}
 	econ := s.repo.Economy()
 	return models.PublicConfig{
-		GuestThreads:        econ.GuestThreads,
-		AdminThreads:        econ.AdminThreads,
-		DailyGamesPerThread: econ.DailyGamesPerThread,
-		RPMPerThread:        econ.RPMPerThread,
+		GuestThreads:      econ.GuestThreads,
+		AdminThreads:      econ.AdminThreads,
+		RPMPerThread:      econ.RPMPerThread,
+		GuestRPMPerThread: econ.GuestRPMPerThread,
+		DailyUnlimited:    true,
 		Points: models.PointsConfig{
 			TextMetadata:  econ.Points.TextMetadata,
 			ImageMetadata: econ.Points.ImageMetadata,
