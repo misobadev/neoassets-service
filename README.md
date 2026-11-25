@@ -64,9 +64,9 @@ best practices) is the web page `/app/docs`.
 
 Every request requires **developer application credentials**. The end user's
 personal API key is optional: with it the request uses that user's rank; without
-it the request runs as a **guest**, and every app of the same developer account
-shares one guest allowance (so software used by many people should ask each user
-for their key).
+it the request runs as a **guest**. Limits belong to people, not apps: a user is
+counted by their account and a guest by their network address (IPv4, or IPv6
+/64), so each guest of an app gets their own allowance.
 
 | layer           | headers                                      | required |
 |-----------------|----------------------------------------------|----------|

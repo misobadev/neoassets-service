@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -53,11 +54,20 @@ func TestUsageKey(t *testing.T) {
 		t.Errorf("usageKey(user) = (%q, %q)", kind, id)
 	}
 
+	// Guests are keyed by their (hashed) address, not by the app's owner: two
+	// people on the same app get separate quotas, one person on two apps one.
 	ownerID := uuid.New()
-	guest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", ClientOwnerID: ownerID}
-	kind, id = usageKey(guest)
-	if kind != "guest" || id != ownerID.String() {
-		t.Errorf("usageKey(guest) = (%q, %q), want guest keyed by owner %q", kind, id, ownerID.String())
+	a := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", ClientOwnerID: ownerID, ClientKey: "203.0.113.7"}
+	b := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", ClientOwnerID: ownerID, ClientKey: "198.51.100.9"}
+	aOtherApp := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_xyz", ClientOwnerID: uuid.New(), ClientKey: "203.0.113.7"}
+	kindA, idA := usageKey(a)
+	_, idB := usageKey(b)
+	_, idA2 := usageKey(aOtherApp)
+	if kindA != "guest" || idA == idB || idA != idA2 {
+		t.Errorf("guest keys: a=%q b=%q a-other-app=%q", idA, idB, idA2)
+	}
+	if strings.Contains(idA, "203.0.113.7") {
+		t.Errorf("guest key %q must not store the raw address", idA)
 	}
 }
 
@@ -82,9 +92,9 @@ func TestAllowSubjectUsesThreadsAndSubjectKey(t *testing.T) {
 
 	// A guest gets the guest thread count (2 threads -> 200 RPM) with a burst
 	// of about five seconds (200/12 = 16), not the whole minute at once. It is
-	// keyed by the app's owner, so a second app of the same owner shares it.
+	// keyed by the guest's address: another guest of the same app has their own.
 	owner := uuid.New()
-	guest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", ClientOwnerID: owner, Threads: 2}
+	guest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", ClientOwnerID: owner, ClientKey: "203.0.113.7", Threads: 2}
 	for i := 0; i < 16; i++ {
 		if ok, _ := s.allowSubject(guest); !ok {
 			t.Fatalf("guest request %d should be allowed within the burst", i)
@@ -93,9 +103,13 @@ func TestAllowSubjectUsesThreadsAndSubjectKey(t *testing.T) {
 	if ok, _ := s.allowSubject(guest); ok {
 		t.Error("expected the guest limiter to block after the burst is exhausted")
 	}
-	otherApp := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_other", ClientOwnerID: owner, Threads: 2}
-	if ok, _ := s.allowSubject(otherApp); ok {
-		t.Error("a second app of the same owner must share the guest bucket")
+	sameGuestOtherApp := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_other", ClientOwnerID: uuid.New(), ClientKey: "203.0.113.7", Threads: 2}
+	if ok, _ := s.allowSubject(sameGuestOtherApp); ok {
+		t.Error("the same guest on another app must share their bucket")
+	}
+	otherGuest := &auth.ScrapeSubject{Kind: auth.ScrapeKindGuest, ClientID: "nsapp_abc", ClientOwnerID: owner, ClientKey: "198.51.100.9", Threads: 2}
+	if ok, _ := s.allowSubject(otherGuest); !ok {
+		t.Error("another guest of the same app must have their own bucket")
 	}
 
 	// A user gets threads * rpmPerThread and its own bucket.
@@ -144,6 +158,44 @@ func TestToScrapeGameBuildsPublicURLs(t *testing.T) {
 	filtered := s.toScrapeGame(t.Context(), detail, models.ScrapeGameQuery{Media: []string{"cover"}})
 	if len(filtered.Media) != 1 || filtered.Media[0].Kind != "cover" {
 		t.Errorf("media filter failed: %+v", filtered.Media)
+	}
+}
+
+func TestToScrapeGameRegionalNamesAndMedia(t *testing.T) {
+	s := &ScrapeService{meta: &Service{publicBase: "https://cdn.example.com"}}
+	detail := &models.GameDetail{
+		Game: models.Game{ID: uuid.New(), SystemID: "snes", Name: "Ninja Gaiden Trilogy"},
+		Media: []models.Media{
+			{Kind: "cover", ObjectKey: "media/games/snes/jp.webp", Mime: "image/webp", Region: "Japan"},
+		},
+		Regions: []models.GameRegion{
+			{Region: "USA", Name: "Ninja Gaiden Trilogy"},
+			{Region: "Europe"}, // release date only: no name to report
+			{Region: "Japan", Name: "Ninja Ryuuken Den Tomoe"},
+		},
+	}
+
+	got := s.toScrapeGame(t.Context(), detail, models.ScrapeGameQuery{})
+	want := []models.ScrapeName{
+		{Region: "USA", Name: "Ninja Gaiden Trilogy"},
+		{Region: "Japan", Name: "Ninja Ryuuken Den Tomoe"},
+	}
+	if len(got.Names) != len(want) {
+		t.Fatalf("names = %+v, want %+v", got.Names, want)
+	}
+	for i := range want {
+		if got.Names[i] != want[i] {
+			t.Errorf("names[%d] = %+v, want %+v", i, got.Names[i], want[i])
+		}
+	}
+	if got.Media[0].Region != "Japan" {
+		t.Errorf("media region = %q, want Japan", got.Media[0].Region)
+	}
+
+	// A game without regional names leaves the field out of the payload.
+	bare := s.toScrapeGame(t.Context(), &models.GameDetail{Game: detail.Game}, models.ScrapeGameQuery{})
+	if bare.Names != nil {
+		t.Errorf("names = %+v, want nil", bare.Names)
 	}
 }
 

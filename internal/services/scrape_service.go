@@ -158,6 +158,7 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 		ClientDBID:    app.ID,
 		ClientName:    app.Name,
 		ClientOwnerID: app.UserID,
+		ClientKey:     creds.ClientKey,
 		SoftwareName:  resolveSoftwareName(creds.SoftwareName, app.Name),
 		Threads:       s.guestThreads,
 		DailyLimit:    s.guestThreads * s.repo.Economy().DailyGamesPerThread,
@@ -411,8 +412,8 @@ func (s *ScrapeService) preCheckRPM() int {
 }
 
 // allowSubject applies the per-minute rate limit for the resolved subject:
-// threads * rpmPerThread, keyed like the threads themselves (the user, or a
-// guest's developer app owner, so more apps don't add rate). It fills the
+// threads * rpmPerThread, keyed like the threads themselves (the user, or the
+// guest's network address). It fills the
 // subject's RateLimit/RateRemaining and, when refused, returns how long until
 // the next request would be allowed.
 func (s *ScrapeService) allowSubject(subject *auth.ScrapeSubject) (bool, time.Duration) {
@@ -770,11 +771,19 @@ func (s *ScrapeService) toScrapeGame(ctx context.Context, d *models.GameDetail, 
 			continue
 		}
 		media = append(media, models.ScrapeMedia{
-			Kind: m.Kind,
-			URL:  s.meta.PublicURL(m.ObjectKey),
-			Mime: m.Mime,
-			Size: m.Size,
+			Kind:   m.Kind,
+			URL:    s.meta.PublicURL(m.ObjectKey),
+			Mime:   m.Mime,
+			Size:   m.Size,
+			Region: m.Region,
 		})
+	}
+
+	var names []models.ScrapeName
+	for _, r := range d.Regions {
+		if r.Name != "" {
+			names = append(names, models.ScrapeName{Region: r.Region, Name: r.Name})
+		}
 	}
 
 	out := models.ScrapeGame{
@@ -782,6 +791,7 @@ func (s *ScrapeService) toScrapeGame(ctx context.Context, d *models.GameDetail, 
 		SystemID:     d.SystemID,
 		SystemName:   d.SystemName,
 		Name:         d.Name,
+		Names:        names,
 		Region:       d.Region,
 		ReleaseYear:  d.ReleaseYear,
 		ReleaseMonth: d.ReleaseMonth,
@@ -874,6 +884,7 @@ func (s *ScrapeService) Account(ctx context.Context, subject *auth.ScrapeSubject
 	acct := &models.ScrapeAccount{
 		Subject: subject.Kind,
 		Client:  models.ScrapeClient{ID: subject.ClientID, Name: subject.ClientName},
+		Threads: subject.Threads,
 		Quota:   *buildQuota(subject.DailyLimit, used),
 	}
 	if !subject.IsGuest() {
@@ -883,13 +894,24 @@ func (s *ScrapeService) Account(ctx context.Context, subject *auth.ScrapeSubject
 }
 
 // usageKey returns the (subject_type, subject_id) pair used by the quota table.
-// Guest quota is keyed by the developer app's owner, so creating more apps does
-// not multiply the universal daily limit.
+// Quotas belong to people, not apps: a user is keyed by their account and a
+// guest by their network address, so every guest of an app gets their own
+// daily limit and creating more apps adds nothing.
 func usageKey(subject *auth.ScrapeSubject) (string, string) {
 	if subject.IsGuest() {
-		return "guest", subject.ClientOwnerID.String()
+		return "guest", guestKey(subject)
 	}
 	return "user", subject.UserID.String()
+}
+
+// guestKey identifies a guest by a hash of their network address (so raw IPs
+// are not stored in scrape_usage), or by the app's owner when the address is
+// unknown (never the case behind the HTTP handlers).
+func guestKey(subject *auth.ScrapeSubject) string {
+	if subject.ClientKey != "" {
+		return "addr:" + auth.HashToken(subject.ClientKey)[:32]
+	}
+	return "owner:" + subject.ClientOwnerID.String()
 }
 
 // buildQuota computes the quota payload, clamping remaining at zero.

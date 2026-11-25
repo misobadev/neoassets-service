@@ -27,12 +27,15 @@ type ScrapeSubject struct {
 	ClientID   string
 	ClientDBID uuid.UUID
 	ClientName string
-	// ClientOwnerID is the registered user that owns the developer app. Guest
-	// quota is keyed by this id so multiple apps share one universal daily limit.
+	// ClientOwnerID is the registered user that owns the developer app.
 	ClientOwnerID uuid.UUID
-	SoftwareName  string
-	Threads       int
-	DailyLimit    int
+	// ClientKey is the caller's network address (IPv4, or IPv6 /64). A guest
+	// has no account, so its threads, rate and daily quota are keyed by it:
+	// each person using a guest-capable app gets their own allowance.
+	ClientKey    string
+	SoftwareName string
+	Threads      int
+	DailyLimit   int
 	// RateLimit is the subject's requests per minute and RateRemaining the
 	// requests it can make right now without waiting (the bucket's tokens).
 	RateLimit     int
