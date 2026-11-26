@@ -1086,13 +1086,26 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 		return nil, err
 	}
 
-	objectKey := fmt.Sprintf("media/submissions/%s/%s/%s", submissionID, req.Kind, filepath.Base(req.FileName))
+	objectKey := fmt.Sprintf("media/submissions/%s/%s/%s", submissionID, req.Kind, mediaKeyName(req.Kind, req.FileName))
 	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign metadata upload URL")
 		return nil, apperr.Unavailable("could not prepare upload")
 	}
-	if err := s.repo.AddMetadataSubmissionFile(ctx, submissionID, req.Kind, objectKey, req.FileName, contentType, req.Region, req.Size, false, false, nil); err != nil {
+	// Registered with the row locked and the status checked again, so a
+	// submit can't slip in between: SubmitMetadataSubmission refuses any
+	// presigned file it didn't freeze, under the same lock.
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		status, err := tx.LockMetadataSubmissionStatus(ctx, submissionID)
+		if err != nil {
+			return err
+		}
+		if status != models.MetadataCreated {
+			return apperr.Conflict("submission is not editable")
+		}
+		return tx.AddMetadataSubmissionFile(ctx, submissionID, req.Kind, objectKey, req.FileName, contentType, req.Region, req.Size, false, false, nil)
+	})
+	if err != nil {
 		return nil, err
 	}
 	return &models.UploadResponse{
@@ -1103,6 +1116,10 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 }
 
 // SubmitMetadataSubmission moves a draft contribution into pending review.
+// Files still at the key the per-submission upload route presigned are first
+// copied to frozen keys, so their URLs can't replace them in review; one whose
+// upload never arrived is dropped. The status check, the repointing and the
+// status change happen with the row locked.
 func (s *Service) SubmitMetadataSubmission(ctx context.Context, submissionID, userID uuid.UUID) (*models.MetadataSubmission, error) {
 	sub, err := s.repo.GetMetadataSubmissionForUser(ctx, submissionID, userID)
 	if err != nil {
@@ -1112,11 +1129,90 @@ func (s *Service) SubmitMetadataSubmission(ctx context.Context, submissionID, us
 	if err != nil {
 		return nil, err
 	}
-	// A submission must carry either an uploaded media file or a text field.
-	if len(files) == 0 && !payloadHasText(sub.Payload) {
-		return nil, apperr.Invalid("submission has no content")
+	type move struct {
+		id       uuid.UUID
+		src, dst string
 	}
-	return s.repo.SubmitMetadataSubmission(ctx, submissionID, userID)
+	var moves []move
+	var copies []string
+	missing := map[uuid.UUID]bool{}
+	handled := map[uuid.UUID]bool{}
+	undo := func() {
+		if len(copies) > 0 {
+			if err := s.r2.DeleteObjects(context.WithoutCancel(ctx), copies); err != nil {
+				log.Warn().Err(err).Msg("failed to delete frozen metadata uploads after an error")
+			}
+		}
+	}
+	for _, f := range files {
+		if f.IsMove || f.IsDelete || !isSubmissionMediaKey(f.ObjectKey, submissionID) {
+			continue
+		}
+		handled[f.ID] = true
+		if _, ok, err := s.r2.ObjectSize(ctx, f.ObjectKey); err == nil && !ok {
+			missing[f.ID] = true
+			continue
+		}
+		dst, err := s.freezeMediaUpload(ctx, sub.UserID, models.MetadataUploadRequest{Kind: f.Kind, ObjectKey: f.ObjectKey, FileName: f.FileName})
+		if err != nil {
+			undo()
+			return nil, err
+		}
+		moves = append(moves, move{f.ID, f.ObjectKey, dst})
+		copies = append(copies, dst)
+	}
+
+	var out *models.MetadataSubmission
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		status, err := tx.LockMetadataSubmissionStatus(ctx, submissionID)
+		if err != nil {
+			return err
+		}
+		if status != models.MetadataCreated {
+			return apperr.Conflict("submission is not editable")
+		}
+		locked, err := tx.ListMetadataSubmissionFiles(ctx, submissionID)
+		if err != nil {
+			return err
+		}
+		kept := 0
+		for _, f := range locked {
+			if !f.IsMove && !f.IsDelete && isSubmissionMediaKey(f.ObjectKey, submissionID) && !handled[f.ID] {
+				// Registered after the list above (an upload request racing
+				// this submit) and not frozen: try again.
+				return apperr.Conflict("files changed while submitting, please try again")
+			}
+			if !missing[f.ID] {
+				kept++
+			}
+		}
+		// A submission must carry either a media file or a text field.
+		if kept == 0 && !payloadHasText(sub.Payload) {
+			return apperr.Invalid("submission has no content")
+		}
+		for id := range missing {
+			if err := tx.DeleteMetadataSubmissionFileByID(ctx, id); err != nil {
+				return err
+			}
+		}
+		for _, m := range moves {
+			if err := tx.UpdateMetadataSubmissionFileObjectKey(ctx, m.id, m.dst); err != nil {
+				return err
+			}
+		}
+		out, err = tx.SubmitMetadataSubmission(ctx, submissionID, userID)
+		return err
+	})
+	if err != nil {
+		undo()
+		return nil, err
+	}
+	for _, m := range moves {
+		if err := s.r2.DeleteObject(context.WithoutCancel(ctx), m.src); err != nil {
+			log.Warn().Err(err).Str("object", m.src).Msg("failed to delete staged metadata upload after freezing it")
+		}
+	}
+	return out, nil
 }
 
 // CancelMetadataSubmission deletes the user's own submission (while it is still
@@ -1134,19 +1230,27 @@ func (s *Service) CancelMetadataSubmission(ctx context.Context, submissionID, us
 		if sub.Status == models.MetadataApproved {
 			return apperr.Conflict("an approved submission cannot be cancelled")
 		}
-		files, err := s.repo.ListMetadataSubmissionFiles(ctx, submissionID)
-		if err != nil {
-			return err
-		}
-		// Only delete objects this submission actually owns (its own staging
-		// or submission namespace). Move/delete entries reference existing
-		// canonical media that must never be removed here.
-		for _, f := range files {
-			if ownedSubmissionUpload(f, sub) {
-				keys = append(keys, f.ObjectKey)
+		// The rows are listed with the submission locked, so a submit that
+		// repoints them to frozen keys can't slip in between (its copies
+		// would be left behind).
+		return s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+			if _, err := tx.LockMetadataSubmissionStatus(ctx, submissionID); err != nil {
+				return err
 			}
-		}
-		return s.repo.DeleteMetadataSubmission(ctx, submissionID)
+			files, err := tx.ListMetadataSubmissionFiles(ctx, submissionID)
+			if err != nil {
+				return err
+			}
+			// Only delete objects this submission actually owns (its own
+			// staging or submission namespace). Move/delete entries reference
+			// existing canonical media that must never be removed here.
+			for _, f := range files {
+				if ownedSubmissionUpload(f, sub) {
+					keys = append(keys, f.ObjectKey)
+				}
+			}
+			return tx.DeleteMetadataSubmission(ctx, submissionID)
+		})
 	})
 	if errors.Is(err, repository.ErrReviewInProgress) {
 		return apperr.Conflict("the submission is being reviewed, try again shortly")

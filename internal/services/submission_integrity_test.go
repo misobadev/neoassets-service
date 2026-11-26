@@ -952,3 +952,123 @@ func TestSubmitCountsARemovedMissingUploadOnce(t *testing.T) {
 		t.Fatalf("files after submit: %v", keys)
 	}
 }
+
+func metadataDraft(t *testing.T, repo *repository.Repository, user uuid.UUID) uuid.UUID {
+	t.Helper()
+	systemID := "sys" + uuid.NewString()[:8]
+	db := testdb.Open(t, "services_upload")
+	if _, err := db.Exec(`INSERT INTO metadata_systems (id, name) VALUES ($1, $1)`, systemID); err != nil {
+		t.Fatal(err)
+	}
+	id, err := repo.CreateMetadataSubmission(t.Context(), nil, &systemID, user, "edit", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE metadata_submissions SET status = 'created' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// Submitting a metadata draft freezes files its per-submission upload route
+// registered, so their URLs can't replace them in review; an upload that never
+// arrived is dropped.
+func TestMetadataSubmitFreezesDraftUploads(t *testing.T) {
+	bucket := r2test.NewMemory()
+	s, repo := contentTestService(t, bucket)
+	u := contentTestUser(t, repo, models.RoleUser)
+	id := metadataDraft(t, repo, u.ID)
+	up, err := s.MetadataUploadURL(context.Background(), id, u.ID, models.MetadataUploadRequest{Kind: models.MediaFanart, FileName: "fan #1.png", MimeType: "image/png", Size: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket.Put(up.ObjectKey, "image/png", []byte("fanart"))
+	if _, err := s.MetadataUploadURL(context.Background(), id, u.ID, models.MetadataUploadRequest{Kind: models.MediaCover, FileName: "cover.png", MimeType: "image/png", Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := s.SubmitMetadataSubmission(context.Background(), id, u.ID)
+	if err != nil || sub.Status != models.MetadataPending {
+		t.Fatalf("submit: %v %+v", err, sub)
+	}
+	files, err := repo.ListMetadataSubmissionFiles(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || isSubmissionMediaKey(files[0].ObjectKey, id) || !isOwnStagingKey(files[0].ObjectKey, u.ID) {
+		t.Fatalf("files after submit: %+v", files)
+	}
+	bucket.Put(up.ObjectKey, "image/png", []byte("swapped"))
+	if data, _ := bucket.DownloadObject(t.Context(), files[0].ObjectKey, 1<<20); string(data) != "fanart" {
+		t.Fatalf("file in review = %q", data)
+	}
+}
+
+// An upload registered on a metadata draft while its submit is copying files
+// makes the submit refuse, with nothing changed.
+func TestMetadataSubmitRacingAnUploadIsRefused(t *testing.T) {
+	bucket := r2test.NewMemory()
+	hooks := &hookBucket{Memory: bucket}
+	s, repo := contentTestService(t, hooks)
+	u := contentTestUser(t, repo, models.RoleUser)
+	id := metadataDraft(t, repo, u.ID)
+	up, err := s.MetadataUploadURL(context.Background(), id, u.ID, models.MetadataUploadRequest{Kind: models.MediaFanart, FileName: "fan.png", MimeType: "image/png", Size: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket.Put(up.ObjectKey, "image/png", []byte("fanart"))
+	before := len(bucket.Keys())
+	hooks.onCopy = func() {
+		if _, err := s.MetadataUploadURL(context.Background(), id, u.ID, models.MetadataUploadRequest{Kind: models.MediaCover, FileName: "cover.png", MimeType: "image/png", Size: 5}); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := s.SubmitMetadataSubmission(context.Background(), id, u.ID); !isKind(err, apperr.KindConflict) {
+		t.Fatalf("submit racing an upload: %v", err)
+	}
+	if got, _ := repo.GetMetadataSubmissionForUser(t.Context(), id, u.ID); got.Status != models.MetadataCreated {
+		t.Fatalf("status %q", got.Status)
+	}
+	if after := len(bucket.Keys()); after != before {
+		t.Fatalf("objects: %d before, %d after the refused submit", before, after)
+	}
+}
+
+// A submit that lands while a metadata upload URL is being signed wins: the
+// upload request is refused.
+func TestMetadataUploadRequestRacingASubmitIsRefused(t *testing.T) {
+	bucket := r2test.NewMemory()
+	hooks := &hookBucket{Memory: bucket}
+	s, repo := contentTestService(t, hooks)
+	u := contentTestUser(t, repo, models.RoleUser)
+	id := metadataDraft(t, repo, u.ID)
+	if _, err := testdb.Open(t, "services_upload").Exec(`UPDATE metadata_submissions SET payload = '{"description":"x"}' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	var submitErr error
+	hooks.onSign = func() { _, submitErr = s.SubmitMetadataSubmission(context.Background(), id, u.ID) }
+	up, err := s.MetadataUploadURL(context.Background(), id, u.ID, models.MetadataUploadRequest{Kind: models.MediaCover, FileName: "cover.png", MimeType: "image/png", Size: 5})
+	if submitErr != nil {
+		t.Fatalf("submit: %v", submitErr)
+	}
+	if !isKind(err, apperr.KindConflict) || up != nil {
+		t.Fatalf("upload request after the submit: %v %+v", err, up)
+	}
+}
+
+// A metadata draft whose only file never arrived, with no text, has nothing to
+// submit.
+func TestMetadataSubmitWithOnlyAMissingUploadIsRefused(t *testing.T) {
+	bucket := r2test.NewMemory()
+	s, repo := contentTestService(t, bucket)
+	u := contentTestUser(t, repo, models.RoleUser)
+	id := metadataDraft(t, repo, u.ID)
+	if _, err := s.MetadataUploadURL(context.Background(), id, u.ID, models.MetadataUploadRequest{Kind: models.MediaCover, FileName: "cover.png", MimeType: "image/png", Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SubmitMetadataSubmission(context.Background(), id, u.ID); !isKind(err, apperr.KindInvalid) {
+		t.Fatalf("submit with only a missing upload: %v", err)
+	}
+	if got, _ := repo.GetMetadataSubmissionForUser(t.Context(), id, u.ID); got.Status != models.MetadataCreated {
+		t.Fatalf("status %q", got.Status)
+	}
+}
