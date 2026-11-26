@@ -112,6 +112,9 @@ the user credential is optional and falls back to guest mode.
   (levels 1-10 -> 2, then +2 per rank to 91-100 -> 20; see
   `internal/progression`); guests get `SCRAPE_GUEST_THREADS` (1) and admins
   `SCRAPE_ADMIN_THREADS` (20).
+- Credential lookups go through `credentialLookupError`: only `sql.ErrNoRows`
+  is a 401 (invalid credential); any other failure is 503 + `Retry-After: 2`,
+  so a client never discards a valid key because a lookup failed.
 - Threads are **concurrent requests** (`internal/services/scrape_admission.go`):
   `ScrapeAdmission` first takes one of the open-thread slots shared by all
   registered users (`SCRAPE_USER_OPEN_THREADS`, 8192) or all guests
