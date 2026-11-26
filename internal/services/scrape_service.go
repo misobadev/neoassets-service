@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"neoassets/internal/apperr"
 	"net/http"
@@ -140,7 +142,7 @@ func (s *ScrapeService) AuthenticateScrape(ctx context.Context, creds auth.Scrap
 
 	app, err := s.repo.GetDeveloperAppByClientID(ctx, creds.ClientID)
 	if err != nil {
-		return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid developer credentials"}
+		return nil, credentialLookupError(ctx, err, "invalid developer credentials")
 	}
 	if app.RevokedAt != nil {
 		return nil, &auth.AuthError{Status: http.StatusForbidden, Message: "developer application revoked"}
@@ -376,7 +378,10 @@ func (s *ScrapeService) resolveUser(ctx context.Context, credential string) (*mo
 			prefix = prefix[:auth.APIKeyPrefixLen]
 		}
 		key, err := s.repo.GetUserAPIKeyByPrefix(ctx, prefix)
-		if err != nil || !auth.CheckTokenHash(credential, key.KeyHash) {
+		if err != nil {
+			return nil, credentialLookupError(ctx, err, "invalid user API key")
+		}
+		if !auth.CheckTokenHash(credential, key.KeyHash) {
 			return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user API key"}
 		}
 		if key.LastUsedAt == nil || time.Since(*key.LastUsedAt) > time.Minute {
@@ -384,7 +389,7 @@ func (s *ScrapeService) resolveUser(ctx context.Context, credential string) (*mo
 		}
 		user, err := s.repo.GetUserByID(ctx, key.UserID)
 		if err != nil {
-			return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user credential"}
+			return nil, credentialLookupError(ctx, err, "invalid user credential")
 		}
 		if s.requireVerified && !user.EmailVerified {
 			return nil, &auth.AuthError{Status: http.StatusForbidden, Message: "email not verified"}
@@ -397,13 +402,39 @@ func (s *ScrapeService) resolveUser(ctx context.Context, credential string) (*mo
 		return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user credential"}
 	}
 	user, err := s.repo.GetUserByID(ctx, claims.UserID)
-	if err != nil || !userTokenCurrent(claims, user) {
+	if err != nil {
+		return nil, credentialLookupError(ctx, err, "invalid user credential")
+	}
+	if !userTokenCurrent(claims, user) {
 		return nil, &auth.AuthError{Status: http.StatusUnauthorized, Message: "invalid user credential"}
 	}
 	if s.requireVerified && !user.EmailVerified {
 		return nil, &auth.AuthError{Status: http.StatusForbidden, Message: "email not verified"}
 	}
 	return user, nil
+}
+
+// credentialRetryAfter is how long a client is told to wait when a
+// credential could not be checked.
+const credentialRetryAfter = 2 * time.Second
+
+// credentialLookupError maps a failed credential lookup to the client's
+// answer. Only a credential that does not exist is refused with 401 and
+// invalid; any other failure (a database error, a timeout, a canceled
+// request) is a 503 with Retry-After, so a client never discards a valid
+// key because the server could not check it.
+func credentialLookupError(ctx context.Context, err error, invalid string) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return &auth.AuthError{Status: http.StatusUnauthorized, Message: invalid}
+	}
+	if ctx.Err() == nil {
+		log.Warn().Err(err).Msg("scrape credential lookup failed")
+	}
+	return &auth.AuthError{
+		Status:     http.StatusServiceUnavailable,
+		Message:    "credentials could not be checked, retry shortly",
+		RetryAfter: credentialRetryAfter,
+	}
 }
 
 // userTokenCurrent reports whether a user token was issued for the account's

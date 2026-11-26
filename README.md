@@ -117,6 +117,11 @@ A monthly supporter whose subscription ends stays a supporter.
 | game lookups in flight, all accounts | `SCRAPE_MAX_INFLIGHT` (16) | `503` + `Retry-After: 2`, not counted in usage |
 | game lookups in flight, all guests together | `SCRAPE_GUEST_MAX_INFLIGHT` (4) of those | waits up to 5 s, then `503` + `Retry-After: 2` |
 
+Credentials: `401` means the app, its secret or the user key does not exist
+or does not match, so the client should stop and ask for new ones. When the
+server cannot check them (a database error or timeout) it answers `503` +
+`Retry-After: 2` instead: retry, and keep the key.
+
 Every scrape response reports the state in `X-RateLimit-Limit`,
 `X-RateLimit-Remaining` and `X-Concurrency-Limit`. A client that uses
 `X-Concurrency-Limit` workers and honors `Retry-After` resolves 1,000 games in
