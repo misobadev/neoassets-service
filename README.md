@@ -47,7 +47,7 @@ scrapers / frontends           -->     |  PostgreSQL (catalog, packs, users, log
 - `PUT /api/v1/submissions/{id}`            update/save a draft
 - `POST /api/v1/submissions/{id}/upload`    request presigned URL (body: file_name, kind, system_id, size, mime_type)
 - `POST /api/v1/submissions/{id}/submit`    submit for review (draft -> pending)
-- `POST /api/v1/submissions/{id}/trash`     move to trash (only while draft/rejected)
+- `POST /api/v1/submissions/{id}/trash`     move to trash (while draft, pending or rejected)
 
 ### Admin (admin session: `ns_admin` cookie or `Authorization: Bearer`)
 - `POST /api/v1/admin/login`                login (email, password); sets the `ns_admin` cookie (12 h)
@@ -158,7 +158,7 @@ hard security boundary.
 | `pending`  | submitted for review, awaiting admin                         |
 | `approved` | published. Only these appear in `GET /api/v1/packs`          |
 | `rejected` | rejected by admin; files removed from R2                     |
-| `trashed`  | trashed by the user (only while draft/rejected); files removed |
+| `trashed`  | trashed by the user (while draft, pending or rejected); its own files removed |
 
 Approved packs are read-only. To change a published pack (new images, updated
 description), any user creates a **contribution**: a pending submission with the

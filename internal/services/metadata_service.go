@@ -17,6 +17,7 @@ import (
 
 	"neoassets/internal/economy"
 	"neoassets/internal/models"
+	"neoassets/internal/repository"
 	"neoassets/pkg/r2"
 	"neoassets/pkg/video"
 )
@@ -634,49 +635,13 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 	if err != nil {
 		return nil, apperr.Invalid("invalid payload")
 	}
-	// Probe uploaded videos before creating the submission so a bad frame rate is
-	// rejected with the accurate ffprobe reading and no partial row is left
-	// behind. The measured metadata is reused when the file rows are inserted.
-	// Probing downloads the video, so the entries are checked first.
+	// Check every entry before anything is copied or written, so a bad one
+	// leaves nothing behind.
 	if err := s.checkVideoEntries(ctx, userID, req.Files); err != nil {
 		return nil, err
 	}
-	videoMeta := map[string]*models.VideoMeta{}
-	for _, f := range req.Files {
-		if f.Delete || f.Move || f.Kind != models.MediaVideo {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(ctx, videoProbeTimeout)
-		vm, err := s.probeVideo(ctx, f.ObjectKey)
-		cancel()
-		if errors.Is(err, errVideoBusy) {
-			return nil, err
-		}
-		if err != nil {
-			return nil, apperr.Invalid("could not read the video, please upload it again")
-		}
-		if vm.FPS > 0 && vm.FPS < minVideoFPS {
-			return nil, fmt.Errorf("video must be at least %d fps, 60 recommended (detected %d fps)", minVideoFPS, vm.FPS)
-		}
-		videoMeta[f.ObjectKey] = vm
-	}
-
-	// An upload is stored with the type it was signed with: refuse a type its
-	// kind can't be before anything is written.
-	for _, f := range req.Files {
-		if f.Delete || f.Move {
-			continue
-		}
-		if _, err := uploadContentType(f.Kind, f.MimeType); err != nil {
-			return nil, err
-		}
-	}
-
-	id, err := s.repo.CreateMetadataSubmission(ctx, req.GameID, req.SystemID, userID, kind, payload)
-	if err != nil {
-		return nil, err
-	}
-	for _, f := range req.Files {
+	contentTypes := make([]string, len(req.Files))
+	for i, f := range req.Files {
 		if !validMediaKind(f.Kind) {
 			return nil, fmt.Errorf("invalid media kind %q", f.Kind)
 		}
@@ -691,8 +656,14 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 			if strings.TrimSpace(f.Region) == "" {
 				return nil, apperr.Invalid("region required")
 			}
-			if err := s.repo.AddMetadataSubmissionFile(ctx, id, f.Kind, f.ObjectKey, f.FileName, "", f.Region, f.Size, true, false, nil); err != nil {
+			// The key is what the reviewer is shown as the media to delete:
+			// it must be one of this game's media, not any object.
+			ok, err := s.repo.MediaExists(ctx, *req.GameID, f.Kind, f.ObjectKey)
+			if err != nil {
 				return nil, err
+			}
+			if !ok {
+				return nil, apperr.NotFound("media not found")
 			}
 			continue
 		}
@@ -715,38 +686,140 @@ func (s *Service) CreateMetadataSubmission(ctx context.Context, userID uuid.UUID
 			if !ok {
 				return nil, apperr.NotFound("media not found")
 			}
+			// A moved media isn't an upload: it keeps the type it is stored with.
+			contentTypes[i] = f.MimeType
 		} else {
 			if f.ObjectKey == "" {
 				return nil, apperr.Invalid("object_key required")
 			}
-			// Only the uploader's own staging objects are accepted. This blocks
-			// referencing canonical/published objects (media/games, media/systems,
-			// packs, history, rejected), which could otherwise be deleted or
+			// Only the exact staging keys a presign handed this user for this
+			// kind and name are accepted. This blocks referencing
+			// canonical/published objects (media/games, media/systems, packs,
+			// history, rejected), which could otherwise be deleted or
 			// overwritten via cancel/reject/approve.
-			if !isOwnStagingKey(f.ObjectKey, userID) {
+			if !isOwnUploadKey(f.ObjectKey, userID, f.Kind, f.FileName) {
 				return nil, apperr.Invalid("invalid upload reference")
 			}
 			if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {
 				return nil, err
 			}
+			// An upload is stored with the type it was signed with: refuse a
+			// type its kind can't be.
+			ct, err := uploadContentType(f.Kind, f.MimeType)
+			if err != nil {
+				return nil, err
+			}
+			contentTypes[i] = ct
 		}
-		// A moved media isn't an upload: it keeps the type it is stored with.
-		contentType := f.MimeType
-		if !f.Move {
-			contentType, _ = uploadContentType(f.Kind, f.MimeType) // checked above
+		if contentTypes[i] == "" {
+			contentTypes[i] = "application/octet-stream"
 		}
-		if contentType == "" {
-			contentType = "application/octet-stream"
+	}
+
+	// Copy each upload to a key no presign targets, so the presigned URL that
+	// uploaded it can't replace it while the submission waits for review. The
+	// staged objects are deleted only once the submission is saved; the
+	// copies are deleted if anything fails.
+	frozen := make([]string, len(req.Files))
+	var copies, sources []string
+	undo := func() {
+		if len(copies) > 0 {
+			if err := s.r2.DeleteObjects(context.WithoutCancel(ctx), copies); err != nil {
+				log.Warn().Err(err).Msg("failed to delete frozen metadata uploads after an error")
+			}
 		}
-		var vmeta *models.VideoMeta
-		if f.Kind == models.MediaVideo {
-			vmeta = videoMeta[f.ObjectKey]
+	}
+	for i, f := range req.Files {
+		if f.Delete || f.Move {
+			continue
 		}
-		if err := s.repo.AddMetadataSubmissionFile(ctx, id, f.Kind, f.ObjectKey, f.FileName, contentType, f.Region, f.Size, false, f.Move, vmeta); err != nil {
+		dst, err := s.freezeMediaUpload(ctx, userID, f)
+		if err != nil {
+			undo()
 			return nil, err
+		}
+		frozen[i] = dst
+		copies = append(copies, dst)
+		sources = append(sources, f.ObjectKey)
+	}
+
+	// Probe videos on the frozen copies (what the reviewer and the approval
+	// will see), so a bad frame rate is rejected with the accurate ffprobe
+	// reading. The measured metadata is stored with the file row.
+	videoMeta := make([]*models.VideoMeta, len(req.Files))
+	for i, f := range req.Files {
+		if f.Delete || f.Move || f.Kind != models.MediaVideo {
+			continue
+		}
+		pctx, cancel := context.WithTimeout(ctx, videoProbeTimeout)
+		vm, err := s.probeVideo(pctx, frozen[i])
+		cancel()
+		if errors.Is(err, errVideoBusy) {
+			undo()
+			return nil, err
+		}
+		if err != nil {
+			undo()
+			return nil, apperr.Invalid("could not read the video, please upload it again")
+		}
+		if vm.FPS > 0 && vm.FPS < minVideoFPS {
+			undo()
+			return nil, fmt.Errorf("video must be at least %d fps, 60 recommended (detected %d fps)", minVideoFPS, vm.FPS)
+		}
+		videoMeta[i] = vm
+	}
+
+	// The submission and its files are written together, so a failure never
+	// leaves a partial submission in the review queue.
+	var id uuid.UUID
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		var err error
+		if id, err = tx.CreateMetadataSubmission(ctx, req.GameID, req.SystemID, userID, kind, payload); err != nil {
+			return err
+		}
+		for i, f := range req.Files {
+			switch {
+			case f.Delete:
+				err = tx.AddMetadataSubmissionFile(ctx, id, f.Kind, f.ObjectKey, f.FileName, "", f.Region, f.Size, true, false, nil)
+			case f.Move:
+				err = tx.AddMetadataSubmissionFile(ctx, id, f.Kind, f.ObjectKey, f.FileName, contentTypes[i], f.Region, f.Size, false, true, nil)
+			default:
+				err = tx.AddMetadataSubmissionFile(ctx, id, f.Kind, frozen[i], f.FileName, contentTypes[i], f.Region, f.Size, false, false, videoMeta[i])
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		undo()
+		return nil, err
+	}
+	if len(sources) > 0 {
+		if err := s.r2.DeleteObjects(context.WithoutCancel(ctx), sources); err != nil {
+			log.Warn().Err(err).Msg("failed to delete staged metadata uploads after freezing them")
 		}
 	}
 	return s.repo.GetMetadataSubmissionForUser(ctx, id, userID)
+}
+
+// freezeMediaUpload copies a staged metadata upload to a new frozen key
+// (frozenMediaKey) and checks its size there, deleting the copy if it's
+// refused. The caller deletes the staged object once the submission is saved.
+func (s *Service) freezeMediaUpload(ctx context.Context, userID uuid.UUID, f models.MetadataUploadRequest) (string, error) {
+	dst := frozenMediaKey(userID, f.Kind, f.FileName)
+	if err := s.r2.CopyObject(ctx, f.ObjectKey, dst); err != nil {
+		log.Error().Err(err).Str("object", f.ObjectKey).Msg("failed to copy metadata upload to its frozen key")
+		return "", fmt.Errorf("could not register upload %q, try again", f.FileName)
+	}
+	if err := s.ensureUploaded(ctx, dst, f.FileName); err != nil {
+		if derr := s.r2.DeleteObject(ctx, dst); derr != nil {
+			log.Warn().Err(derr).Str("object", dst).Msg("failed to delete a refused frozen upload")
+		}
+		return "", err
+	}
+	return dst, nil
 }
 
 // payloadFieldKeys returns the editable payload field keys, normalizing the
@@ -886,19 +959,62 @@ const mediaCacheControl = "public, max-age=31536000, immutable"
 // stagingMediaKey builds a temporary upload key under media/staging/, namespaced
 // by the uploader so a submission can only ever reference its owner's uploads.
 func stagingMediaKey(userID uuid.UUID, kind, fileName string) string {
-	name := filepath.Base(fileName)
-	if name == "" || name == "." {
-		name = kind
+	return fmt.Sprintf("media/staging/%s/%s/%s/%s", userID, uuid.NewString(), kind, mediaKeyName(kind, fileName))
+}
+
+// mediaKeyName is the last key segment for a metadata upload: the file's name
+// with every character validFileName refuses replaced by "_" (the name never
+// reaches the published key, which the service chooses), or the kind plus the
+// extension when the name itself isn't usable.
+func mediaKeyName(kind, fileName string) string {
+	name := []rune(filepath.Base(fileName))
+	for i, r := range name {
+		if !fileNameRuneOK(r) {
+			name[i] = '_'
+		}
 	}
-	return fmt.Sprintf("media/staging/%s/%s/%s/%s", userID, uuid.NewString(), kind, name)
+	out := string(name)
+	if !validFileName(out) {
+		// Over 255 bytes (callers have checked the extension).
+		return kind + strings.ToLower(getExt(fileName))
+	}
+	return out
+}
+
+// isOwnUploadKey reports whether objectKey is exactly a staging key a presign
+// handed userID for this kind and file name (stagingMediaKey):
+// media/staging/{user}/{uuid}/{kind}/{name}. Registration accepts only these,
+// so no other object — another folder, a dot segment, a frozen upload — can be
+// referenced and later moved or deleted.
+func isOwnUploadKey(objectKey string, userID uuid.UUID, kind, fileName string) bool {
+	rest, ok := strings.CutPrefix(objectKey, "media/staging/"+userID.String()+"/")
+	if !ok {
+		return false
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 || parts[1] != kind {
+		return false
+	}
+	if _, err := uuid.Parse(parts[0]); err != nil {
+		return false
+	}
+	return parts[2] == mediaKeyName(kind, fileName)
+}
+
+// frozenMediaKey is the server-chosen key a metadata upload is moved to when it
+// is registered on a submission: under media/frozen/{user}/, a prefix no
+// presign targets and registration doesn't accept.
+func frozenMediaKey(userID uuid.UUID, kind, fileName string) string {
+	return fmt.Sprintf("media/frozen/%s/%s/%s/%s", userID, strings.ReplaceAll(uuid.NewString(), "-", ""), kind, mediaKeyName(kind, fileName))
 }
 
 // isOwnStagingKey reports whether objectKey is a staging upload owned by the
-// given user. Metadata submissions may only reference their uploader's own
+// given user, or a frozen copy of one. Metadata submissions may only reference their uploader's own
 // staging objects; canonical keys (media/games, media/systems, packs, history,
 // rejected) must never be accepted from a client.
 func isOwnStagingKey(objectKey string, userID uuid.UUID) bool {
-	return strings.HasPrefix(objectKey, "media/staging/"+userID.String()+"/")
+	return strings.HasPrefix(objectKey, "media/staging/"+userID.String()+"/") ||
+		strings.HasPrefix(objectKey, "media/frozen/"+userID.String()+"/")
 }
 
 // isSubmissionMediaKey reports whether objectKey belongs to the given metadata
@@ -954,7 +1070,8 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 	if err != nil {
 		return nil, apperr.NotFound("submission not found")
 	}
-	if sub.Status != models.MetadataCreated && sub.Status != models.MetadataPending {
+	// A submission in review is frozen: its files are what the reviewer sees.
+	if sub.Status != models.MetadataCreated {
 		return nil, apperr.Conflict("submission is not editable")
 	}
 	if !validMediaKind(req.Kind) {
@@ -1006,32 +1123,43 @@ func (s *Service) SubmitMetadataSubmission(ctx context.Context, submissionID, us
 // editable, pending review or rejected) together with its uploaded media, so a
 // mistake can be cleared and submitted again without waiting for a review.
 func (s *Service) CancelMetadataSubmission(ctx context.Context, submissionID, userID uuid.UUID) error {
-	sub, err := s.repo.GetMetadataSubmissionForUser(ctx, submissionID, userID)
-	if err != nil {
-		return apperr.NotFound("submission not found")
+	var keys []string
+	// Under the review lock, so a cancel can't run while the submission is
+	// being approved or rejected; the row goes first, then its files.
+	err := s.repo.WithReviewLock(ctx, submissionID, func() error {
+		sub, err := s.repo.GetMetadataSubmissionForUser(ctx, submissionID, userID)
+		if err != nil {
+			return apperr.NotFound("submission not found")
+		}
+		if sub.Status == models.MetadataApproved {
+			return apperr.Conflict("an approved submission cannot be cancelled")
+		}
+		files, err := s.repo.ListMetadataSubmissionFiles(ctx, submissionID)
+		if err != nil {
+			return err
+		}
+		// Only delete objects this submission actually owns (its own staging
+		// or submission namespace). Move/delete entries reference existing
+		// canonical media that must never be removed here.
+		for _, f := range files {
+			if ownedSubmissionUpload(f, sub) {
+				keys = append(keys, f.ObjectKey)
+			}
+		}
+		return s.repo.DeleteMetadataSubmission(ctx, submissionID)
+	})
+	if errors.Is(err, repository.ErrReviewInProgress) {
+		return apperr.Conflict("the submission is being reviewed, try again shortly")
 	}
-	if sub.Status == models.MetadataApproved {
-		return apperr.Conflict("an approved submission cannot be cancelled")
-	}
-	files, err := s.repo.ListMetadataSubmissionFiles(ctx, submissionID)
 	if err != nil {
 		return err
 	}
-	// Only delete objects this submission actually owns (its own staging or
-	// submission namespace). Move/delete entries reference existing canonical
-	// media that must never be removed here.
-	keys := make([]string, 0, len(files))
-	for _, f := range files {
-		if ownedSubmissionUpload(f, sub) {
-			keys = append(keys, f.ObjectKey)
-		}
-	}
 	if len(keys) > 0 {
-		if err := s.r2.DeleteObjects(ctx, keys); err != nil {
-			return fmt.Errorf("delete submission media: %w", err)
+		if err := s.r2.DeleteObjects(context.WithoutCancel(ctx), keys); err != nil {
+			log.Warn().Err(err).Str("submission", submissionID.String()).Msg("failed to delete a cancelled submission's media")
 		}
 	}
-	return s.repo.DeleteMetadataSubmission(ctx, submissionID)
+	return nil
 }
 
 // payloadHasText reports whether a submission payload carries a editable field.
@@ -1973,7 +2101,7 @@ func (s *Service) checkVideoEntries(ctx context.Context, userID uuid.UUID, files
 		if ext := strings.ToLower(getExt(f.FileName)); !validMediaExt(f.Kind, ext) {
 			return fmt.Errorf("unsupported %s extension %q", mediaExtLabel(f.Kind), ext)
 		}
-		if !isOwnStagingKey(f.ObjectKey, userID) {
+		if !isOwnUploadKey(f.ObjectKey, userID, f.Kind, f.FileName) {
 			return apperr.Invalid("invalid upload reference")
 		}
 		if err := s.ensureUploaded(ctx, f.ObjectKey, f.FileName); err != nil {

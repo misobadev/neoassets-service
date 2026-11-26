@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -34,6 +35,50 @@ var packIDRegex = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 // systemIDRegex validates system ids used for background filenames. System ids
 // may contain hyphens and underscores (e.g. "nes-hacks", "gb-hacks").
 var systemIDRegex = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// reviewKeyRegex matches the staged key a presign hands out:
+// packs/{packID}/review/{8 hex}/{file name}. Uploads are moved to a longer,
+// server-chosen key when they are registered (frozenReviewKey), which no
+// presign targets and a client can't register.
+var reviewKeyRegex = regexp.MustCompile(`^packs/([^/]+)/review/[0-9a-f]{8}/([^/]+)$`)
+
+// validFileName reports whether an uploaded file's name is usable as the last
+// segment of an object key: not empty, not "." or "..", within 255 bytes, and
+// free of path separators, URL delimiters, control and invisible characters, so
+// a key built from it can't climb out of its folder or be read differently by
+// a store or browser.
+func validFileName(name string) bool {
+	if name == "" || name == "." || name == ".." || len(name) > 255 {
+		return false
+	}
+	for _, r := range name {
+		if !fileNameRuneOK(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// fileNameRuneOK reports whether r may appear in an uploaded file's name: not
+// a path separator, not %, ? or # (they change what a URL built from the key
+// points at: the reviewer's preview, the public CDN link), and not a control
+// or invisible formatting character (bidirectional overrides, zero-width
+// spaces can disguise a name; none of them is graphic).
+func fileNameRuneOK(r rune) bool {
+	switch {
+	case r == '/' || r == '\\', r == '%' || r == '?' || r == '#':
+		return false
+	default:
+		return unicode.IsGraphic(r)
+	}
+}
+
+// frozenReviewKey is the server-chosen key an upload is moved to when it is
+// registered on a submission. The presigned URL that uploaded it targets
+// another key, so nothing can replace the file the reviewer will see.
+func frozenReviewKey(packID, fileName string) string {
+	return fmt.Sprintf("packs/%s/review/%s/%s", packID, strings.ReplaceAll(uuid.NewString(), "-", ""), fileName)
+}
 
 // Service contains the business logic for system art pack submissions.
 type Service struct {
@@ -358,22 +403,36 @@ func (s *Service) CreateSubmission(ctx context.Context, req models.CreateSubmiss
 		}
 		contentTypes[i] = contentType
 	}
-
-	anonID := userID.String()
-	id, err := s.repo.CreateSubmission(ctx,
-		packID, strings.TrimSpace(req.Name), strings.TrimSpace(req.Author),
-		strings.TrimSpace(req.Description), strings.TrimSpace(req.DonationURL),
-		anonID, req.AI, &userID, req.Contribution,
-	)
+	files := append([]models.SubmissionFileInput(nil), req.Files...)
+	frozen, err := s.freezeUploads(ctx, packID, files)
 	if err != nil {
 		return nil, err
 	}
 
-	for i, f := range req.Files {
-		if err := s.repo.AddFileReason(ctx, id, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentTypes[i], f.Size, f.Reason); err != nil {
-			return nil, err
+	anonID := userID.String()
+	var id uuid.UUID
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		var err error
+		id, err = tx.CreateSubmission(ctx,
+			packID, strings.TrimSpace(req.Name), strings.TrimSpace(req.Author),
+			strings.TrimSpace(req.Description), strings.TrimSpace(req.DonationURL),
+			anonID, req.AI, &userID, req.Contribution,
+		)
+		if err != nil {
+			return err
 		}
+		for i, f := range files {
+			if err := tx.AddFileReason(ctx, id, f.ObjectKey, f.FileName, systemIDFromName(f.Kind, f.FileName), f.Kind, contentTypes[i], f.Size, f.Reason); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		frozen.undo(context.WithoutCancel(ctx))
+		return nil, err
 	}
+	frozen.done(context.WithoutCancel(ctx))
 
 	if err := s.repo.AddLog(ctx, id, models.LogActionSubmitted, anonID, "", "Submission submitted for review"); err != nil {
 		return nil, err
@@ -393,6 +452,9 @@ func (s *Service) validateSubmissionFile(f models.SubmissionFileInput) error {
 	default:
 		return fmt.Errorf("invalid kind %q", f.Kind)
 	}
+	if !validFileName(f.FileName) {
+		return apperr.Invalid("invalid file name")
+	}
 	ext := strings.ToLower(getExt(f.FileName))
 	if f.Kind == models.KindTheme {
 		if ext != ".json" {
@@ -401,8 +463,16 @@ func (s *Service) validateSubmissionFile(f models.SubmissionFileInput) error {
 	} else if !s.imageExts[ext] {
 		return fmt.Errorf("unsupported image extension %q", ext)
 	}
-	if (f.Kind == models.KindBackground || f.Kind == models.KindLogo) && f.SystemID != "" && s.systems != nil && !s.systems.Has(f.SystemID) {
-		return fmt.Errorf("unknown system id %q", f.SystemID)
+	if f.Kind == models.KindBackground || f.Kind == models.KindLogo {
+		// The published key is built from the name's stem (ObjectKey), so it
+		// must be a system id, like the name a presign accepts.
+		systemID := strings.TrimSuffix(f.FileName, getExt(f.FileName))
+		if !systemIDRegex.MatchString(systemID) {
+			return fmt.Errorf("invalid system id %q", systemID)
+		}
+		if s.systems != nil && !s.systems.Has(systemID) {
+			return fmt.Errorf("unknown system id %q", systemID)
+		}
 	}
 	return nil
 }
@@ -411,18 +481,111 @@ func (s *Service) validateSubmissionFile(f models.SubmissionFileInput) error {
 // pack's own staging area or to its exact canonical location, so a submission
 // can never reference (and later delete on approval) objects owned by another
 // pack or by the media catalog.
+//
+// A staged key must be exactly one a presign hands out for this pack and file
+// name; a canonical key (a contribution keeping a file of the live pack) must
+// be exactly the one the service builds for this kind and name. Nothing else —
+// other folders, dot segments, a frozen key of another submission — is
+// accepted.
 func (s *Service) validatePackObjectKey(packID string, f models.SubmissionFileInput) error {
-	if !strings.HasPrefix(f.ObjectKey, "packs/"+packID+"/") {
-		return apperr.Forbidden("object_key does not belong to this submission")
-	}
-	if !isReviewObjectKey(f.ObjectKey) {
-		// A canonical key is only acceptable when it is exactly the one the
-		// service would generate for this (kind, file name).
-		if canonical := s.ObjectKey(packID, f.Kind, f.FileName); f.ObjectKey != canonical {
+	if m := reviewKeyRegex.FindStringSubmatch(f.ObjectKey); m != nil {
+		if m[1] != packID || m[2] != f.FileName || path.Clean(f.ObjectKey) != f.ObjectKey {
 			return apperr.Forbidden("object_key does not belong to this submission")
 		}
+		return nil
+	}
+	if canonical := s.ObjectKey(packID, f.Kind, f.FileName); f.ObjectKey != canonical {
+		return apperr.Forbidden("object_key does not belong to this submission")
 	}
 	return nil
+}
+
+// frozenCopies is the result of copying staged uploads to their frozen keys:
+// the new keys are in use once the database points at them, and only then are
+// the staged sources deleted (done); if the database write fails, the copies
+// are deleted instead (undo).
+type frozenCopies struct {
+	s       *Service
+	sources []string
+	copies  []string
+}
+
+func (f *frozenCopies) done(ctx context.Context) {
+	for _, k := range f.sources {
+		if err := f.s.r2.DeleteObject(ctx, k); err != nil {
+			log.Warn().Err(err).Str("object", k).Msg("failed to delete staged upload after freezing it")
+		}
+	}
+}
+
+func (f *frozenCopies) undo(ctx context.Context) {
+	if len(f.copies) == 0 {
+		return
+	}
+	if err := f.s.r2.DeleteObjects(ctx, f.copies); err != nil {
+		log.Warn().Err(err).Msg("failed to delete frozen copies after an error")
+	}
+}
+
+// freezeUploads copies each staged upload in files to a server-chosen key
+// (frozenReviewKey), checks its size there and points the file at the copy,
+// so the presigned URL that uploaded it can't replace it while the submission
+// waits for review. A staged key another submission row already references is
+// refused (it isn't this upload's to take). Canonical keys (files a
+// contribution keeps from the live pack) are left as they are. The caller
+// calls done after its database write, or undo if that fails; on an error here
+// the copies made so far are already deleted.
+func (s *Service) freezeUploads(ctx context.Context, packID string, files []models.SubmissionFileInput) (*frozenCopies, error) {
+	fc := &frozenCopies{s: s}
+	for i, f := range files {
+		if !reviewKeyRegex.MatchString(f.ObjectKey) {
+			continue
+		}
+		taken, err := s.repo.ObjectKeyReferenced(ctx, f.ObjectKey)
+		if err != nil {
+			fc.undo(context.WithoutCancel(ctx))
+			return nil, err
+		}
+		if taken {
+			fc.undo(context.WithoutCancel(ctx))
+			return nil, apperr.Forbidden("object_key does not belong to this submission")
+		}
+		dst, err := s.copyToFrozen(ctx, packID, f.ObjectKey, f.FileName)
+		if err != nil {
+			fc.undo(context.WithoutCancel(ctx))
+			return nil, err
+		}
+		fc.sources = append(fc.sources, f.ObjectKey)
+		fc.copies = append(fc.copies, dst)
+		files[i].ObjectKey = dst
+	}
+	return fc, nil
+}
+
+// copyToFrozen copies one staged upload to a new frozen key and checks its
+// size there, deleting the copy if it's refused.
+func (s *Service) copyToFrozen(ctx context.Context, packID, src, fileName string) (string, error) {
+	dst := frozenReviewKey(packID, fileName)
+	if err := s.r2.CopyObject(ctx, src, dst); err != nil {
+		log.Error().Err(err).Str("object", src).Msg("failed to copy upload to its frozen key")
+		return "", fmt.Errorf("could not register upload %q, try again", fileName)
+	}
+	if err := s.ensureUploaded(ctx, dst, fileName); err != nil {
+		if derr := s.r2.DeleteObject(ctx, dst); derr != nil {
+			log.Warn().Err(derr).Str("object", dst).Msg("failed to delete a refused frozen upload")
+		}
+		return "", err
+	}
+	return dst, nil
+}
+
+// systemIDFromName returns the system id a background's or logo's file name
+// stands for (its stem); other kinds have none.
+func systemIDFromName(kind, fileName string) string {
+	if kind != models.KindBackground && kind != models.KindLogo {
+		return ""
+	}
+	return strings.TrimSuffix(fileName, getExt(fileName))
 }
 
 // SubmissionUploadURLPre presigns an upload to a temp key under the pack.
@@ -534,6 +697,9 @@ func (s *Service) ValidateUploadRequest(req models.UploadRequest) error {
 		return fmt.Errorf("invalid kind %q", req.Kind)
 	}
 
+	if !validFileName(req.FileName) {
+		return apperr.Invalid("invalid file name")
+	}
 	ext := strings.ToLower(getExt(req.FileName))
 
 	// Images (background, preview, logo) must be WebP/GIF; themes are JSON.
@@ -643,7 +809,11 @@ func (s *Service) ObjectKey(packID, kind, fileName string) string {
 // PublicURL returns the public URL for an object key served via the R2
 // custom domain.
 func (s *Service) PublicURL(objectKey string) string {
-	return fmt.Sprintf("%s/%s", s.publicBase, objectKey)
+	segments := strings.Split(objectKey, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return fmt.Sprintf("%s/%s", s.publicBase, strings.Join(segments, "/"))
 }
 
 // GetUploadURL returns a presigned URL for uploading a single file to R2,
@@ -653,7 +823,10 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 	if err != nil {
 		return nil, apperr.NotFound("submission not found")
 	}
-	if sub.Status != models.StatusPending && sub.Status != models.StatusCreated {
+	// This route registers the presigned key itself, so it only serves drafts:
+	// SubmitForReview freezes the file before review. Other states register
+	// uploads through AddSubmissionFiles, which freezes them at once.
+	if sub.Status != models.StatusCreated {
 		return nil, apperr.Conflict("submission is not editable")
 	}
 	if err := s.ValidateUploadRequest(req); err != nil {
@@ -672,17 +845,28 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 		return nil, apperr.Unavailable("could not prepare upload")
 	}
 
-	systemID := ""
-	if req.Kind == models.KindBackground || req.Kind == models.KindLogo {
-		systemID = strings.TrimSuffix(req.FileName, getExt(req.FileName))
-	}
-
-	if err := s.repo.AddFile(ctx, submissionID, objectKey, req.FileName, systemID, req.Kind, mimeType, req.Size); err != nil {
+	// Registered with the row locked and the status checked again, so a submit
+	// can't slip in between: SubmitForReview freezes every presigned file it
+	// finds under the same lock.
+	var dropped []string
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		status, err := tx.LockSubmissionStatus(ctx, submissionID)
+		if err != nil {
+			return err
+		}
+		if status != models.StatusCreated {
+			return apperr.Conflict("submission is not editable")
+		}
+		if dropped, err = tx.AddFileReplacing(ctx, submissionID, objectKey, req.FileName, systemIDFromName(req.Kind, req.FileName), req.Kind, mimeType, req.Size, ""); err != nil {
+			return err
+		}
+		return tx.AddLog(ctx, submissionID, models.LogActionUploadInitiated, sub.AnonUserID, "", objectKey)
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	if err := s.repo.AddLog(ctx, submissionID, models.LogActionUploadInitiated, sub.AnonUserID, "", objectKey); err != nil {
-		return nil, err
+	if err := s.deleteUnreferencedStaged(context.WithoutCancel(ctx), dropped); err != nil {
+		log.Warn().Err(err).Msg("failed to delete replaced submission files")
 	}
 
 	return &models.UploadResponse{
@@ -738,7 +922,14 @@ func (s *Service) AddSubmissionFiles(ctx context.Context, submissionID uuid.UUID
 	if sub.Status != models.StatusCreated && sub.Status != models.StatusRejected {
 		return nil, apperr.Conflict("submission cannot be edited")
 	}
+	var add []models.SubmissionFileInput
+	var contentTypes []string
 	for _, f := range files {
+		// A file this submission already has (a client re-saving what it got
+		// back, frozen key included) needs nothing.
+		if _, err := s.repo.GetSubmissionFileByObjectKey(ctx, submissionID, f.ObjectKey); err == nil {
+			continue
+		}
 		if err := s.validateSubmissionFile(f); err != nil {
 			return nil, err
 		}
@@ -752,41 +943,146 @@ func (s *Service) AddSubmissionFiles(ctx context.Context, submissionID uuid.UUID
 		if err != nil {
 			return nil, err
 		}
-		if err := s.repo.AddFileReason(ctx, submissionID, f.ObjectKey, f.FileName, f.SystemID, f.Kind, contentType, f.Size, f.Reason); err != nil {
-			return nil, err
+		add = append(add, f)
+		contentTypes = append(contentTypes, contentType)
+	}
+	frozen, err := s.freezeUploads(ctx, sub.PackID, add)
+	if err != nil {
+		return nil, err
+	}
+	var dropped []string
+	// The status is checked again with the row locked, so a submit can't slip
+	// between the check and the new rows (the reviewer would see the old ones).
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		status, err := tx.LockSubmissionStatus(ctx, submissionID)
+		if err != nil {
+			return err
 		}
+		if status != models.StatusCreated && status != models.StatusRejected {
+			return apperr.Conflict("submission cannot be edited")
+		}
+		for i, f := range add {
+			d, err := tx.AddFileReplacing(ctx, submissionID, f.ObjectKey, f.FileName, systemIDFromName(f.Kind, f.FileName), f.Kind, contentTypes[i], f.Size, f.Reason)
+			if err != nil {
+				return err
+			}
+			dropped = append(dropped, d...)
+		}
+		return nil
+	})
+	if err != nil {
+		frozen.undo(context.WithoutCancel(ctx))
+		return nil, err
+	}
+	frozen.done(context.WithoutCancel(ctx))
+	// Staged objects of the rows the new files replaced aren't referenced any
+	// more.
+	if err := s.deleteUnreferencedStaged(context.WithoutCancel(ctx), dropped); err != nil {
+		log.Warn().Err(err).Msg("failed to delete replaced submission files")
 	}
 	return s.repo.GetSubmission(ctx, submissionID)
 }
 
 // RemoveSubmissionFile deletes a file from an editable submission (created or
-// rejected). The staged R2 object is deleted too; a canonical published object
-// is never touched, so removing a reference to live art only drops the row.
+// rejected), checked with the submission row locked. The staged R2 object is
+// deleted too when nothing else references it; a canonical published object is
+// never touched, so removing a reference to live art only drops the row.
 func (s *Service) RemoveSubmissionFile(ctx context.Context, submissionID, userID uuid.UUID, objectKey string) error {
 	sub, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
 		return apperr.NotFound("submission not found")
 	}
-	if sub.Status != models.StatusCreated && sub.Status != models.StatusRejected {
-		return apperr.Conflict("submission cannot be edited")
-	}
 	if strings.TrimSpace(objectKey) == "" {
 		return apperr.Invalid("object_key required")
 	}
-	file, err := s.repo.GetSubmissionFileByObjectKey(ctx, submissionID, objectKey)
-	if err != nil {
-		// Already removed: treat as success so a stale click is harmless.
+	var removed *models.SubmissionFile
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		status, err := tx.LockSubmissionStatus(ctx, submissionID)
+		if err != nil {
+			return err
+		}
+		if status != models.StatusCreated && status != models.StatusRejected {
+			return apperr.Conflict("submission cannot be edited")
+		}
+		file, err := tx.GetSubmissionFileByObjectKey(ctx, submissionID, objectKey)
 		if errors.Is(err, sql.ErrNoRows) {
+			// A client may still hold the presigned key of an upload that was
+			// frozen when it was registered: find that file by its name.
+			file, err = s.frozenFileFor(ctx, tx, sub.PackID, submissionID, objectKey)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			// Already removed: treat as success so a stale click is harmless.
 			return nil
 		}
-		return apperr.NotFound("file not found")
+		var appErr *apperr.Error
+		if errors.As(err, &appErr) {
+			return err
+		}
+		if err != nil {
+			return apperr.NotFound("file not found")
+		}
+		removed = file
+		return tx.DeleteSubmissionFile(ctx, file.ID)
+	})
+	if err != nil {
+		return err
 	}
-	if isStagedObjectKey(file.ObjectKey) {
-		if err := s.r2.DeleteObject(ctx, file.ObjectKey); err != nil {
-			log.Warn().Err(err).Str("object", file.ObjectKey).Msg("failed to delete removed submission object")
+	if removed != nil {
+		if err := s.deleteUnreferencedStaged(context.WithoutCancel(ctx), []string{removed.ObjectKey}); err != nil {
+			log.Warn().Err(err).Str("object", removed.ObjectKey).Msg("failed to delete removed submission object")
 		}
 	}
-	return s.repo.DeleteSubmissionFile(ctx, file.ID)
+	return nil
+}
+
+// frozenFileFor finds the file a presigned key's upload became when it was
+// frozen: the submission's frozen file with the presign's file name.
+func (s *Service) frozenFileFor(ctx context.Context, tx *repository.Repository, packID string, submissionID uuid.UUID, presignedKey string) (*models.SubmissionFile, error) {
+	m := reviewKeyRegex.FindStringSubmatch(presignedKey)
+	if m == nil || m[1] != packID {
+		return nil, sql.ErrNoRows
+	}
+	files, err := tx.ListFiles(ctx, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	var match *models.SubmissionFile
+	for i := range files {
+		if files[i].FileName == m[2] && isReviewObjectKey(files[i].ObjectKey) && !reviewKeyRegex.MatchString(files[i].ObjectKey) {
+			if match != nil {
+				// Two files with that name (a background and a logo): the
+				// presigned key doesn't say which, so remove neither.
+				return nil, apperr.Conflict("more than one file has that name: reload and remove it by its current key")
+			}
+			match = &files[i]
+		}
+	}
+	if match == nil {
+		return nil, sql.ErrNoRows
+	}
+	return match, nil
+}
+
+// deleteUnreferencedStaged deletes the staged objects among keys that no
+// submission row references (canonical files are never deleted here).
+func (s *Service) deleteUnreferencedStaged(ctx context.Context, keys []string) error {
+	var del []string
+	for _, k := range keys {
+		if !isStagedObjectKey(k) {
+			continue
+		}
+		taken, err := s.repo.ObjectKeyReferenced(ctx, k)
+		if err != nil {
+			return err
+		}
+		if !taken {
+			del = append(del, k)
+		}
+	}
+	if len(del) == 0 {
+		return nil
+	}
+	return s.r2.DeleteObjects(ctx, del)
 }
 
 // ensureUploaded verifies a submitted object actually exists in R2 and is within
@@ -899,24 +1195,98 @@ func (s *Service) RemoveAvatar(ctx context.Context, userID uuid.UUID) (*models.U
 // SubmitForReview finalizes a draft owned by the user, moving it from the
 // 'created' state to 'pending' so it shows up in the admin review queue.
 func (s *Service) SubmitForReview(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID) (*models.Submission, error) {
-	sub, err := s.repo.SubmitSubmission(ctx, submissionID, userID)
+	current, err := s.repo.GetSubmissionByIDForUser(ctx, submissionID, userID)
 	if err != nil {
 		return nil, apperr.NotFound("submission not found")
 	}
-
 	files, err := s.repo.ListFiles(ctx, submissionID)
 	if err != nil {
 		return nil, err
 	}
-	// A contribution may carry only a description change (no new images), so
-	// require files only for brand-new packs.
-	if len(files) == 0 && !sub.Contribution {
-		return nil, apperr.Invalid("submission has no files")
+	// Files still at a presigned key (registered by the per-submission upload
+	// route, or before uploads were frozen) are frozen now, so their URLs
+	// can't replace them in review. One whose upload never arrived is dropped,
+	// as approval would.
+	type move struct {
+		id       uuid.UUID
+		src, dst string
+	}
+	var moves []move
+	var missing []uuid.UUID
+	handled := map[uuid.UUID]bool{}
+	fc := &frozenCopies{s: s}
+	for _, f := range files {
+		if !reviewKeyRegex.MatchString(f.ObjectKey) {
+			continue
+		}
+		handled[f.ID] = true
+		if _, ok, err := s.r2.ObjectSize(ctx, f.ObjectKey); err == nil && !ok {
+			missing = append(missing, f.ID)
+			continue
+		}
+		dst, err := s.copyToFrozen(ctx, current.PackID, f.ObjectKey, f.FileName)
+		if err != nil {
+			fc.undo(context.WithoutCancel(ctx))
+			return nil, err
+		}
+		moves = append(moves, move{f.ID, f.ObjectKey, dst})
+		fc.sources = append(fc.sources, f.ObjectKey)
+		fc.copies = append(fc.copies, dst)
 	}
 
-	if err := s.repo.AddLog(ctx, submissionID, models.LogActionSubmitted, sub.AnonUserID, "", "Submitted for review"); err != nil {
+	var sub *models.Submission
+	err = s.repo.WithTx(ctx, func(tx *repository.Repository) error {
+		if _, err := tx.LockSubmissionStatus(ctx, submissionID); err != nil {
+			return err
+		}
+		// A contribution may carry only a description change (no new
+		// images), so require files only for brand-new packs. Checked before
+		// the status changes, so a refused submission doesn't enter the
+		// review queue.
+		locked, err := tx.ListFiles(ctx, submissionID)
+		if err != nil {
+			return err
+		}
+		// A presigned file registered after the list above (an upload request
+		// racing this submit) hasn't been frozen: try again.
+		for _, f := range locked {
+			if reviewKeyRegex.MatchString(f.ObjectKey) && !handled[f.ID] {
+				return apperr.Conflict("files changed while submitting, please try again")
+			}
+		}
+		dropped := map[uuid.UUID]bool{}
+		for _, id := range missing {
+			dropped[id] = true
+		}
+		kept := 0
+		for _, f := range locked {
+			if !dropped[f.ID] {
+				kept++
+			}
+		}
+		if kept == 0 && !current.Contribution {
+			return apperr.Invalid("submission has no files")
+		}
+		for _, id := range missing {
+			if err := tx.DeleteSubmissionFile(ctx, id); err != nil {
+				return err
+			}
+		}
+		for _, m := range moves {
+			if err := tx.SetSubmissionFileObjectKey(ctx, m.id, m.dst); err != nil {
+				return err
+			}
+		}
+		if sub, err = tx.SubmitSubmission(ctx, submissionID, userID); err != nil {
+			return apperr.NotFound("submission not found")
+		}
+		return tx.AddLog(ctx, submissionID, models.LogActionSubmitted, sub.AnonUserID, "", "Submitted for review")
+	})
+	if err != nil {
+		fc.undo(context.WithoutCancel(ctx))
 		return nil, err
 	}
+	fc.done(context.WithoutCancel(ctx))
 	return sub, nil
 }
 
@@ -1206,9 +1576,35 @@ func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID u
 	}
 	version := fmt.Sprintf("1.%d", n)
 
+	// XP counts the files this submission publishes: not one it only keeps
+	// from the live pack (already at its canonical key), nor one dropped
+	// because its upload never arrived. Several files publishing the same
+	// canonical object count once.
+	before, err := s.repo.ListFiles(ctx, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	toPublish := map[uuid.UUID]bool{}
+	for _, f := range before {
+		if f.ObjectKey != s.ObjectKey(sub.PackID, f.Kind, f.FileName) {
+			toPublish[f.ID] = true
+		}
+	}
+
 	if err := s.moveSubmissionFilesToCanonical(ctx, sub.PackID, submissionID); err != nil {
 		return nil, err
 	}
+	after, err := s.repo.ListFiles(ctx, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	publishedKeys := map[string]bool{}
+	for _, f := range after {
+		if toPublish[f.ID] {
+			publishedKeys[s.ObjectKey(sub.PackID, f.Kind, f.FileName)] = true
+		}
+	}
+	published := len(publishedKeys)
 
 	detail := "Approved by admin"
 	if strings.TrimSpace(comment) != "" {
@@ -1236,12 +1632,9 @@ func (s *Service) approve(ctx context.Context, submissionID uuid.UUID, adminID u
 		return nil, err
 	}
 
-	if sub.UserID != nil {
-		files, err := s.repo.ListFiles(ctx, submissionID)
-		if err == nil && len(files) > 0 {
-			if err := s.awardXP(ctx, *sub.UserID, len(files)*s.repo.Economy().Points.SAPImage, "approved_sap_images", &submissionID); err != nil {
-				return nil, err
-			}
+	if sub.UserID != nil && published > 0 {
+		if err := s.awardXP(ctx, *sub.UserID, published*s.repo.Economy().Points.SAPImage, "approved_sap_images", &submissionID); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1488,23 +1881,46 @@ func (s *Service) reject(ctx context.Context, submissionID uuid.UUID, adminID uu
 }
 
 // DeleteSubmission removes a system art pack submission completely: it deletes
-// every R2 object referenced by the submission (both staged review files and any
-// already-promoted canonical files) and then removes the submission row (cascade
-// to its file rows and logs). Admin only.
+// the R2 objects only this submission references (staged review files and
+// canonical files no other live revision of the pack uses) and then removes the
+// submission row (cascade to its file rows and logs). Admin only.
 func (s *Service) DeleteSubmission(ctx context.Context, submissionID uuid.UUID) error {
 	// The catalog aggregates and the dashboard may change.
 	defer s.InvalidateCatalogCache()
-	if _, err := s.repo.GetSubmission(ctx, submissionID); err != nil {
+	// Not while an approval or rejection of it is running.
+	err := s.repo.WithReviewLock(ctx, submissionID, func() error { return s.deleteSubmission(ctx, submissionID) })
+	if errors.Is(err, repository.ErrReviewInProgress) {
+		return apperr.Conflict("the submission is being reviewed, try again shortly")
+	}
+	return err
+}
+
+func (s *Service) deleteSubmission(ctx context.Context, submissionID uuid.UUID) error {
+	sub, err := s.repo.GetSubmission(ctx, submissionID)
+	if err != nil {
 		return apperr.NotFound("submission not found")
 	}
 	files, err := s.repo.ListFiles(ctx, submissionID)
 	if err != nil {
 		return err
 	}
+	// The live pack is the union of its approved revisions, which share
+	// canonical keys: an object another approved revision still serves is
+	// kept. (A pending contribution referencing it doesn't keep it.)
+	live, err := s.repo.ListApprovedPackObjectKeys(ctx, sub.PackID, submissionID)
+	if err != nil {
+		return err
+	}
+	keep := make(map[string]bool, len(live))
+	for _, k := range live {
+		keep[k] = true
+	}
 	if len(files) > 0 {
 		keys := make([]string, 0, len(files))
 		for _, f := range files {
-			keys = append(keys, f.ObjectKey)
+			if !keep[f.ObjectKey] {
+				keys = append(keys, f.ObjectKey)
+			}
 		}
 		if err := s.r2.DeleteObjects(ctx, keys); err != nil {
 			return fmt.Errorf("delete submission media: %w", err)
@@ -1679,41 +2095,11 @@ func (s *Service) StartStorageRefresh(ctx context.Context) {
 	}()
 }
 
-// deletePackOrphans removes every R2 object under packs/{packID}/ that is not
-// referenced by a live (created/pending/approved) submission of that pack, so a
-// trashed or rejected pack leaves no images behind and a recreated pack with the
-// same name never picks up stale objects.
-func (s *Service) deletePackOrphans(ctx context.Context, packID string, excludeID uuid.UUID) error {
-	keep := map[string]bool{}
-	rows, err := s.repo.ListLivePackObjectKeys(ctx, packID, excludeID)
-	if err != nil {
-		return err
-	}
-	for _, k := range rows {
-		keep[k] = true
-	}
-	keys, err := s.r2.ListKeys(ctx, "packs/"+packID+"/")
-	if err != nil {
-		return fmt.Errorf("list pack objects %s: %w", packID, err)
-	}
-	var orphans []string
-	for _, k := range keys {
-		if !keep[k] {
-			orphans = append(orphans, k)
-		}
-	}
-	if len(orphans) == 0 {
-		return nil
-	}
-	if err := s.r2.DeleteObjects(ctx, orphans); err != nil {
-		return fmt.Errorf("delete pack orphans %s: %w", packID, err)
-	}
-	return nil
-}
-
 // Trash moves a submission owned by the user into the 'trashed' state and
-// deletes its files from R2. It only works while the pack is a draft or has
-// been rejected; it cannot be trashed while pending review or once approved.
+// deletes its own staged files from R2. A draft, a submission in review or a
+// rejected one can be trashed; an approved (published) one can't. The status
+// changes first, under the review lock, so a trash that is refused (or races an
+// approval) never deletes anything.
 func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid.UUID) (*models.Submission, error) {
 	// The catalog aggregates and the dashboard may change.
 	defer s.InvalidateCatalogCache()
@@ -1721,23 +2107,33 @@ func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid
 	if err != nil {
 		return nil, apperr.NotFound("submission not found")
 	}
-	// A user can clear their own submission while it is a draft, pending review
-	// or rejected, so a mistake does not have to wait for a review; only an
-	// approved (published) pack is protected.
 	if sub.Status == models.StatusApproved {
 		return nil, apperr.Conflict("an approved submission cannot be cancelled")
 	}
 
-	if err := s.deletePackOrphans(ctx, sub.PackID, submissionID); err != nil {
-		return nil, err
+	var updated *models.Submission
+	err = s.repo.WithReviewLock(ctx, submissionID, func() error {
+		var err error
+		updated, err = s.repo.TrashSubmission(ctx, submissionID, userID)
+		return err
+	})
+	if errors.Is(err, repository.ErrReviewInProgress) {
+		return nil, apperr.Conflict("the submission is being reviewed, try again shortly")
 	}
-	if err := s.repo.DeleteSubmissionFiles(ctx, submissionID); err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, apperr.Conflict("the submission can no longer be cancelled")
+	}
+	if err != nil {
 		return nil, err
 	}
 
-	updated, err := s.repo.TrashSubmission(ctx, submissionID, userID)
-	if err != nil {
-		return nil, apperr.NotFound("submission not found")
+	// Only this submission's own staged files go: never a canonical file of
+	// the live pack, nor one another live submission still references. If
+	// that fails, the rows stay, so the objects keep a reference.
+	if err := s.deleteOwnStagedFiles(ctx, sub.PackID, submissionID); err != nil {
+		log.Warn().Err(err).Str("submission", submissionID.String()).Msg("failed to delete a trashed submission's files")
+	} else if err := s.repo.DeleteSubmissionFiles(ctx, submissionID); err != nil {
+		return nil, err
 	}
 
 	if err := s.repo.AddLog(ctx, submissionID, models.LogActionTrashed, sub.AnonUserID, "", "Moved to trash"); err != nil {
@@ -1745,6 +2141,33 @@ func (s *Service) Trash(ctx context.Context, submissionID uuid.UUID, userID uuid
 	}
 
 	return updated, nil
+}
+
+// deleteOwnStagedFiles deletes the staged objects a submission references that
+// no other live submission of the pack references.
+func (s *Service) deleteOwnStagedFiles(ctx context.Context, packID string, submissionID uuid.UUID) error {
+	files, err := s.repo.ListFiles(ctx, submissionID)
+	if err != nil {
+		return err
+	}
+	live, err := s.repo.ListLivePackObjectKeys(ctx, packID, submissionID)
+	if err != nil {
+		return err
+	}
+	keep := make(map[string]bool, len(live))
+	for _, k := range live {
+		keep[k] = true
+	}
+	var keys []string
+	for _, f := range files {
+		if isStagedObjectKey(f.ObjectKey) && !keep[f.ObjectKey] {
+			keys = append(keys, f.ObjectKey)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return s.r2.DeleteObjects(ctx, keys)
 }
 
 // ListedApprovedPacks returns the approved packs in their public form, with the

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -139,6 +140,27 @@ func (c *clientImpl) UploadFileCached(ctx context.Context, objectName, contentTy
 	return nil
 }
 
+// copySource returns the x-amz-copy-source value for an object: the bucket and
+// the key, with every byte of each path segment except the unreserved ones
+// (letters, digits, "-", ".", "_", "~") percent-encoded. The header must be
+// URL-encoded and the SDK sends it as given, so a key with %, ?, #, + or a
+// space would otherwise name another object or none.
+func copySource(bucket, key string) string {
+	segments := strings.Split(key, "/")
+	for i, segment := range segments {
+		var b strings.Builder
+		for _, c := range []byte(segment) {
+			if 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '-' || c == '.' || c == '_' || c == '~' {
+				b.WriteByte(c)
+			} else {
+				fmt.Fprintf(&b, "%%%02X", c)
+			}
+		}
+		segments[i] = b.String()
+	}
+	return bucket + "/" + strings.Join(segments, "/")
+}
+
 // CopyObject copies an object server-side (used to move approved submission
 // media to its canonical location).
 func (c *clientImpl) CopyObject(ctx context.Context, sourceKey, destKey string) error {
@@ -150,7 +172,7 @@ func (c *clientImpl) CopyObject(ctx context.Context, sourceKey, destKey string) 
 func (c *clientImpl) CopyObjectCached(ctx context.Context, sourceKey, destKey, cacheControl string) error {
 	in := &s3.CopyObjectInput{
 		Bucket:     aws.String(c.bucketName),
-		CopySource: aws.String(c.bucketName + "/" + sourceKey),
+		CopySource: aws.String(copySource(c.bucketName, sourceKey)),
 		Key:        aws.String(destKey),
 	}
 	if cacheControl != "" {

@@ -1,4 +1,19 @@
-400
+200
 {
-  "error": "submission not found"
+  "admin_version": "",
+  "ai": false,
+  "anon_user_id": "<uuid>",
+  "author": "Artist",
+  "contribution": false,
+  "created_at": "<time>",
+  "description": "A test pack.",
+  "donation_url": "https://ko-fi.com/artist",
+  "id": "<uuid>",
+  "name": "Trashed Pack",
+  "pack_id": "trashed-pack",
+  "reviewed_at": null,
+  "reviewed_by": null,
+  "status": "trashed",
+  "user_id": "<uuid>",
+  "version": ""
 }

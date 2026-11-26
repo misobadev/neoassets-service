@@ -88,8 +88,8 @@ constraint (migrations `008` + `009`). Array of statuses differs from older docs
 - `POST /api/v1/submissions/{id}/upload`      presign + `AddFile` + log
 - `POST /api/v1/submissions/{id}/submit`      created/rejected -> pending
   (new packs require files; contributions may be description-only)
-- `POST /api/v1/submissions/{id}/trash`       moves to trashed, deletes files
-  (only while created/rejected; not pending or approved)
+- `POST /api/v1/submissions/{id}/trash`       moves to trashed, then deletes
+  the submission's own staged files (created, pending or rejected; not approved)
 - Admin approve/reject under `/api/v1/admin/...`
 
 There is no `/api/v1/manifest` and no boot-time R2 manifest publish anymore.
@@ -271,15 +271,41 @@ the user credential is optional and falls back to guest mode.
 - `CreateSubmission` inserts `created` (not pending).
 - `ListUserSubmissions` MUST include `files` (the web renders thumbnails from
   `object_key`). Do not strip it.
-- Uploads are allowed while a submission is `created` or `pending`.
-- `submit` requires at least one registered file; otherwise it errors.
-- Editing a submission is only possible while `created` (`UpdateSubmission` and
-  `SubmitSubmission` both guard on it). A rejected pack is read-only and cannot
-  be re-edited/resubmitted (by design, for now).
+- Every upload a reviewer sees is frozen: registering it (create, add files,
+  metadata create) copies it from its presigned key to a server-chosen one
+  (`frozenReviewKey` `packs/{pack}/review/{32 hex}/{name}`, `frozenMediaKey`
+  `media/frozen/{user}/…`), and the staged key is deleted once the database
+  points at the copy, so the presigned URL can't replace it. The per-submission
+  upload routes register the presigned key themselves, so they only sign for a
+  draft (`created`); `SubmitForReview` freezes any such file before the status
+  changes. Adding, removing and submitting check the status with the
+  submission row locked (`LockSubmissionStatus`).
+- Registration accepts only keys a presign hands out for that pack (or user)
+  and file name (`packs/{pack}/review/{8 hex}/{name}`,
+  `media/staging/{user}/{uuid}/{kind}/{name}`) that no other submission row
+  already references, or, for a contribution keeping a live file, the exact
+  canonical key. File names have no `/`, `\`, `%`, `?`, `#`, control or
+  invisible formatting characters, and aren't `.`/`..`; a background's or
+  logo's name is a system id (its `system_id` is derived from it). Copies
+  escape the source key (`copySource`); public URLs escape each key segment.
+- `submit` requires at least one registered file (checked before the status
+  changes); otherwise it errors.
+- A submission's details can be edited while `created` or `rejected`
+  (`UpdateSubmission`); a rejected pack can also take new files
+  (`AddSubmissionFiles`) and be submitted again. Metadata upload names are
+  cleaned (`mediaKeyName`), not refused: they never reach the published key.
 - `ListSubmissionsByUser` filters out `trashed`; a user never sees their own
-  trashed packs in the list. Trashing deletes the pack's files from R2 and only
-  works while the submission is a draft (`created`) or rejected (`rejected`) -
-  not while it is pending review or once approved.
+  trashed packs in the list. Trashing works while the submission is a draft,
+  pending review or rejected (not once approved): the status changes first,
+  under the review lock, then only the submission's own staged files are
+  deleted (never a canonical file or one another live submission references);
+  if that fails the file rows stay. Cancelling a metadata submission also runs
+  under the review lock, deleting the row before its files.
+- `DELETE /api/v1/admin/submissions/{id}` is admin-only, runs under the review
+  lock and keeps objects another approved revision of the pack still serves.
+  Approval XP counts the distinct objects a submission publishes (a kept
+  canonical file, or a row whose upload never arrived, earns none).
+- Metadata delete rows must name one of the game's media (as move rows do).
 - Metadata contributions carry a `kind`: `edit` (change an existing game or
   system) or `new_game` (create a game from scratch; requires system + name +
   type). Approving a `new_game` creates the `games` row and then applies its
