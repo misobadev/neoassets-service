@@ -866,10 +866,9 @@ func (s *Service) MetadataUploadURLPre(ctx context.Context, userID uuid.UUID, re
 		}
 	}
 	objectKey := stagingMediaKey(userID, req.Kind, req.FileName)
-	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
+	uploadURL, err := s.signUpload(ctx, objectKey, contentType, req.Size, maxUploadSize(req.Kind, req.FileName))
 	if err != nil {
-		log.Error().Err(err).Msg("failed to sign metadata upload URL")
-		return nil, apperr.Unavailable("could not prepare upload")
+		return nil, err
 	}
 	return &models.UploadResponse{
 		UploadURL: uploadURL,
@@ -970,10 +969,9 @@ func (s *Service) MetadataUploadURL(ctx context.Context, submissionID, userID uu
 	}
 
 	objectKey := fmt.Sprintf("media/submissions/%s/%s/%s", submissionID, req.Kind, filepath.Base(req.FileName))
-	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
+	uploadURL, err := s.signUpload(ctx, objectKey, contentType, req.Size, maxUploadSize(req.Kind, req.FileName))
 	if err != nil {
-		log.Error().Err(err).Msg("failed to sign metadata upload URL")
-		return nil, apperr.Unavailable("could not prepare upload")
+		return nil, err
 	}
 	if err := s.repo.AddMetadataSubmissionFile(ctx, submissionID, req.Kind, objectKey, req.FileName, contentType, req.Region, req.Size, false, false, nil); err != nil {
 		return nil, err

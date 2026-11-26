@@ -355,12 +355,15 @@ the user credential is optional and falls back to guest mode.
   preflight fails during direct uploads. Configure it on the bucket, not in code.
 - **Upload Content-Type:** a presigned upload is signed with the client's
   `mime_type` only if it fits the kind (`uploadContentType`: images
-  `image/png|jpeg|webp|gif`, videos `video/*`, themes `application/json`, or
-  `application/octet-stream`); anything else (HTML, SVG, text) is refused,
-  because uploads are served from the public bucket as stored. Approval writes
-  every published pack object itself with a server-chosen type (WebP, GIF, or a
-  theme checked with `json.Valid`, max 1 MiB) — never `CopyObject`, which keeps
-  the uploader's metadata.
+  `image/png|jpeg|webp|gif`, videos the types in `videoUploadTypes`, themes
+  `application/json`, or `application/octet-stream`); anything else (HTML, SVG,
+  XML, text) is refused, because uploads are served from the public bucket as
+  stored. The signature covers the `Content-Type` and the exact declared `size`
+  (`ContentLength`, which every presign requires: without it the AWS SDK leaves
+  the type out of the signature), so a PUT with another type or length does not
+  match the signature. Approval writes every published pack object itself with a
+  server-chosen type (WebP, GIF, or a theme checked with `json.Valid`, max 1 MiB)
+  — never `CopyObject`, which keeps the uploader's metadata.
 - Object keys: `packs/{packId}/backgrounds/{system}.webp|gif`,
   `packs/{packId}/theme.json`. A pack has no dedicated preview image; its public
   thumbnail is the background of a popular system (snes, ps1, gba, genesis,

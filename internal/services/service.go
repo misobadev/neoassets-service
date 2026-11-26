@@ -444,10 +444,9 @@ func (s *Service) SubmissionUploadURLPre(ctx context.Context, req models.Submiss
 		return nil, err
 	}
 	objectKey := reviewObjectKey(packID, req.FileName)
-	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, contentType, s.uploadTTL)
+	uploadURL, err := s.signUpload(ctx, objectKey, contentType, req.Size, maxUploadSize(req.Kind, req.FileName))
 	if err != nil {
-		log.Error().Err(err).Msg("failed to sign upload URL")
-		return nil, apperr.Unavailable("could not prepare upload")
+		return nil, err
 	}
 	return &models.UploadResponse{UploadURL: uploadURL, ObjectKey: objectKey, ExpiresAt: time.Now().Add(s.uploadTTL)}, nil
 }
@@ -468,6 +467,32 @@ const maxVideoSize = 200 << 20
 // maxThemeSize caps a pack's theme JSON. Themes are small configuration files;
 // approval downloads and checks them, so they need a cap of their own.
 const maxThemeSize = 1 << 20
+
+// videoUploadTypes are the types browsers report for the accepted video
+// extensions (videoExts), including the variants operating systems use. Only
+// these are signed: other video/ subtypes include XML ones (video/svg+xml) that
+// a browser could render as a document from the public bucket. A file the
+// browser can't type is sent as application/octet-stream, which stays allowed.
+var videoUploadTypes = map[string]bool{
+	"video/webm":              true,
+	"video/mp4":               true,
+	"video/quicktime":         true,
+	"video/x-matroska":        true,
+	"video/matroska":          true,
+	"video/vnd.avi":           true,
+	"video/x-msvideo":         true,
+	"video/avi":               true,
+	"video/msvideo":           true,
+	"video/x-avi":             true,
+	"video/x-m4v":             true,
+	"video/mpeg":              true,
+	"video/mp2t":              true,
+	"video/mp2ts":             true,
+	"video/vnd.dlna.mpeg-tts": true,
+	"video/ogg":               true,
+	"video/x-ms-wmv":          true,
+	"video/x-flv":             true,
+}
 
 // imageUploadTypes are the types an image upload may be signed and stored with.
 var imageUploadTypes = map[string]bool{
@@ -499,7 +524,7 @@ func uploadContentType(kind, declared string) (string, error) {
 				return declared, nil
 			}
 		case kind == models.MediaVideo:
-			if strings.HasPrefix(mediaType, "video/") {
+			if videoUploadTypes[mediaType] {
 				return declared, nil
 			}
 		case imageUploadTypes[mediaType]:
@@ -523,6 +548,33 @@ func maxUploadSize(kind, fileName string) int64 {
 		return maxGIFSize
 	}
 	return maxImageSize
+}
+
+// presignSize checks an upload's declared size before it is signed into the
+// upload URL. The URL then only matches an upload of exactly that many bytes,
+// so the size must be set and within what this kind of file may be.
+func presignSize(size, limit int64) error {
+	if size <= 0 {
+		return apperr.Invalid("the file is empty or its size is missing")
+	}
+	if size > limit {
+		return apperr.Invalid(fmt.Sprintf("file must be at most %d MB", limit>>20))
+	}
+	return nil
+}
+
+// signUpload returns a presigned PUT URL for key whose signature covers
+// contentType and the declared size, after checking the size against limit.
+func (s *Service) signUpload(ctx context.Context, key, contentType string, size, limit int64) (string, error) {
+	if err := presignSize(size, limit); err != nil {
+		return "", err
+	}
+	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, key, contentType, size, s.uploadTTL)
+	if err != nil {
+		log.Error().Err(err).Str("key", key).Msg("failed to sign upload URL")
+		return "", apperr.Unavailable("could not prepare upload")
+	}
+	return uploadURL, nil
 }
 
 // ValidateUploadRequest checks a single file upload request against the
@@ -666,10 +718,9 @@ func (s *Service) GetUploadURL(ctx context.Context, submissionID uuid.UUID, user
 	}
 
 	objectKey := reviewObjectKey(sub.PackID, req.FileName)
-	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, objectKey, mimeType, s.uploadTTL)
+	uploadURL, err := s.signUpload(ctx, objectKey, mimeType, req.Size, maxUploadSize(req.Kind, req.FileName))
 	if err != nil {
-		log.Error().Err(err).Msg("failed to sign upload URL")
-		return nil, apperr.Unavailable("could not prepare upload")
+		return nil, err
 	}
 
 	systemID := ""
@@ -832,23 +883,20 @@ func avatarKey(userID uuid.UUID, ext string) string {
 // AvatarUploadURL presigns an upload for a new avatar (WebP or GIF; GIFs are
 // capped at maxGIFSize and stored as-is to preserve animation).
 func (s *Service) AvatarUploadURL(ctx context.Context, userID uuid.UUID, mimeType string, size int64) (*models.UploadResponse, error) {
-	ext := ".webp"
+	// The declared type is signed as sent (MIME types are case-insensitive), so
+	// the client's upload with that header matches the signature.
+	ext, limit := ".webp", int64(maxImageSize)
 	switch {
 	case strings.EqualFold(mimeType, "image/gif"):
-		ext = ".gif"
+		ext, limit = ".gif", maxGIFSize
 	case strings.EqualFold(mimeType, "image/webp"):
-		ext = ".webp"
 	default:
 		return nil, apperr.Invalid("avatar must be a WebP or GIF image")
 	}
-	if ext == ".gif" && size > maxGIFSize {
-		return nil, fmt.Errorf("GIF must be at most %d MB", maxGIFSize>>20)
-	}
 	key := avatarKey(userID, ext)
-	uploadURL, err := s.r2.GenerateSignedUploadURL(ctx, key, mimeType, s.uploadTTL)
+	uploadURL, err := s.signUpload(ctx, key, mimeType, size, limit)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to sign avatar upload URL")
-		return nil, apperr.Unavailable("could not prepare upload")
+		return nil, err
 	}
 	return &models.UploadResponse{UploadURL: uploadURL, ObjectKey: key, ExpiresAt: time.Now().Add(s.uploadTTL)}, nil
 }

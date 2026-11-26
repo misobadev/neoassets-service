@@ -20,7 +20,7 @@ import (
 // S3-compatible API. The service signs URLs and the client uploads/downloads
 // directly.
 type Client interface {
-	GenerateSignedUploadURL(ctx context.Context, objectName, contentType string, expiration time.Duration) (string, error)
+	GenerateSignedUploadURL(ctx context.Context, objectName, contentType string, size int64, expiration time.Duration) (string, error)
 	DeleteObject(ctx context.Context, objectName string) error
 	UploadFile(ctx context.Context, objectName, contentType string, reader io.Reader) error
 	UploadFileCached(ctx context.Context, objectName, contentType, cacheControl string, reader io.Reader) error
@@ -82,12 +82,19 @@ func NewClient(ctx context.Context, accountID, accessKey, secretKey, bucketName 
 }
 
 // GenerateSignedUploadURL returns a time-limited presigned PUT URL so the
-// client can upload directly to R2 without exposing credentials.
-func (c *clientImpl) GenerateSignedUploadURL(ctx context.Context, objectName, contentType string, expiration time.Duration) (string, error) {
+// client can upload directly to R2 without exposing credentials. The signature
+// covers the Content-Type and the exact size, so an upload with any other type
+// or length does not match it. (Without a length the SDK leaves the
+// Content-Type out of the signature, so a size is required.)
+func (c *clientImpl) GenerateSignedUploadURL(ctx context.Context, objectName, contentType string, size int64, expiration time.Duration) (string, error) {
+	if size <= 0 {
+		return "", fmt.Errorf("signed upload URL needs the object's size")
+	}
 	req, err := c.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(c.bucketName),
-		Key:         aws.String(objectName),
-		ContentType: aws.String(contentType),
+		Bucket:        aws.String(c.bucketName),
+		Key:           aws.String(objectName),
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(size),
 	}, s3.WithPresignExpires(expiration))
 	if err != nil {
 		return "", fmt.Errorf("failed to generate signed upload URL: %w", err)
