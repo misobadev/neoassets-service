@@ -708,15 +708,19 @@ func (r *Repository) SearchGamesLight(ctx context.Context, q string, systemIDs [
 		where = append(where, fmt.Sprintf("g.type = $%d", len(args)))
 	}
 	args = append(args, limit)
-	query := `SELECT g.id, g.system_id, g.name, g.type, g.rating
+	// Each candidate's ROM file names come along (through idx_roms_game, for
+	// the few rows the LIMIT keeps) so a ROM file can be matched exactly.
+	const romNames = `ARRAY(SELECT lower(r.name) FROM roms r WHERE r.game_id = g.id)`
+	query := `SELECT g.id, g.system_id, g.name, g.type, g.rating, COALESCE(g.short_name, ''), ` + romNames + `
 		 FROM games g
 		 WHERE ` + strings.Join(where, " AND ") + `
 		 ORDER BY g.name ASC LIMIT $` + itoa(len(args))
 	if systems > 0 {
-		query = `SELECT c.id, c.system_id, c.name, c.type, c.rating
+		query = `SELECT c.id, c.system_id, c.name, c.type, c.rating, c.short_name, c.rom_names
 		 FROM unnest($` + itoa(systems) + `::text[]) WITH ORDINALITY AS s(id, pos)
 		 CROSS JOIN LATERAL (
-		   SELECT g.id, g.system_id, g.name, g.type, g.rating
+		   SELECT g.id, g.system_id, g.name, g.type, g.rating, COALESCE(g.short_name, '') AS short_name,
+		     ` + romNames + ` AS rom_names
 		   FROM games g
 		   WHERE ` + strings.Join(where, " AND ") + `
 		   ORDER BY g.name ASC LIMIT $` + itoa(len(args)) + `
@@ -731,7 +735,7 @@ func (r *Repository) SearchGamesLight(ctx context.Context, q string, systemIDs [
 	out := []models.Game{}
 	for rows.Next() {
 		var g models.Game
-		if err := rows.Scan(&g.ID, &g.SystemID, &g.Name, &g.Type, &g.Rating); err != nil {
+		if err := rows.Scan(&g.ID, &g.SystemID, &g.Name, &g.Type, &g.Rating, &g.ShortName, pq.Array(&g.RomNames)); err != nil {
 			return nil, fmt.Errorf("failed to scan game: %w", err)
 		}
 		out = append(out, g)
