@@ -166,7 +166,9 @@ func Probe(ctx context.Context, data []byte) (*models.VideoMeta, error) {
 // source frame rate is preserved, except videos above 60 fps which are capped
 // to 60 fps. The output matches the videosnap-converter format/quality (x265
 // CRF 28, preset slow, hvc1 tag, yuv420p, AAC audio kept at the source bitrate
-// capped at 128k). The returned bytes are uploaded directly.
+// capped at 128k). The moov atom is written at the start of the file
+// (faststart), so clients can stream it from the CDN without first fetching
+// its end. The returned bytes are uploaded directly.
 func ConvertToMP4(ctx context.Context, data []byte) ([]byte, error) {
 	in, err := os.CreateTemp("", "video-in-*")
 	if err != nil {
@@ -210,6 +212,8 @@ func ConvertToMP4(ctx context.Context, data []byte) ([]byte, error) {
 		"-pix_fmt", "yuv420p",
 		"-c:a", "aac",
 		"-b:a", strconv.Itoa(audioBitrate(ctx, in.Name())),
+		// moov atom first, so clients can stream the MP4 over HTTP.
+		"-movflags", "+faststart",
 		outPath,
 	}
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)

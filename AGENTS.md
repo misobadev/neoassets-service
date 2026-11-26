@@ -373,6 +373,16 @@ the user credential is optional and falls back to guest mode.
   client uploads the original file, so a bad client conversion can never publish
   a non-WebP asset. Staging and replaced canonical objects are deleted on
   approval.
+- Videos are converted **on approval** by `video.ConvertToMP4` (HEVC/x265 +
+  AAC, same settings as `videosnap-converter`) with `-movflags +faststart`, so
+  the `moov` box comes first and clients can stream them from the CDN without
+  first fetching the end of the file. Keep it on any new MP4 output.
+- `cmd/mp4-faststart` fixes MP4s already in the bucket whose `moov` box comes
+  after `mdat`: by default a dry run that only reads box headers (range
+  requests) and lists them; `-apply` remuxes each in place (`-c copy`, no
+  re-encode), checks codec, size and duration, and only then overwrites it.
+  Needs the `R2_*` variables (read + write) and, for `-apply`, ffmpeg. Media
+  keys are cached as immutable, so purge the CDN cache afterwards.
 
 ## Testing / build
 

@@ -27,6 +27,7 @@ type Client interface {
 	CopyObject(ctx context.Context, sourceKey, destKey string) error
 	CopyObjectCached(ctx context.Context, sourceKey, destKey, cacheControl string) error
 	DownloadObject(ctx context.Context, objectName string, maxSize int64) ([]byte, error)
+	ReadObjectRange(ctx context.Context, objectName string, offset, length int64) ([]byte, error)
 	ListKeys(ctx context.Context, prefix string) ([]string, error)
 	ListKeysWithSize(ctx context.Context, prefix string) ([]ObjectInfo, error)
 	DeleteObjects(ctx context.Context, keys []string) error
@@ -177,6 +178,28 @@ func (c *clientImpl) DownloadObject(ctx context.Context, objectName string, maxS
 	data, err := readBounded(out.Body, out.ContentLength, maxSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read object %s: %w", objectName, err)
+	}
+	return data, nil
+}
+
+// ReadObjectRange reads up to length bytes of an object starting at offset
+// (an HTTP range request). It returns fewer bytes when the object ends first.
+func (c *clientImpl) ReadObjectRange(ctx context.Context, objectName string, offset, length int64) ([]byte, error) {
+	if offset < 0 || length <= 0 {
+		return nil, fmt.Errorf("invalid range %d+%d for %s", offset, length, objectName)
+	}
+	out, err := c.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucketName),
+		Key:    aws.String(objectName),
+		Range:  aws.String(fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to read range of object %s: %w", objectName, err)
+	}
+	defer out.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(out.Body, length))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read range of object %s: %w", objectName, err)
 	}
 	return data, nil
 }
