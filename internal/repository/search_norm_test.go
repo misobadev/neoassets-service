@@ -127,3 +127,30 @@ func TestPagedBrowseKeepsOrderAcrossPages(t *testing.T) {
 		}
 	}
 }
+
+// The scraping resolver matches a ROM file name exactly, so the candidate
+// search carries each game's ROM file names and short name, with or without
+// systems.
+func TestSearchGamesLightCarriesShortName(t *testing.T) {
+	r, db := loadTestRepo(t)
+	ctx := context.Background()
+	tag := strings.ToLower("s" + uuid.NewString()[:6])
+	sys := seedSystem(t, db, "Asteroids "+tag, 1)
+	if _, err := db.Exec(`UPDATE games SET short_name = $2 WHERE system_id = $1`, sys, "asteroid"+tag); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO roms (game_id, name) SELECT id, $2 FROM games WHERE system_id = $1`, sys, "Asteroid"+tag+".zip"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, systems := range [][]string{{sys}, nil} {
+		got, err := r.SearchGamesLight(ctx, "asteroid"+tag, systems, "", 25)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].ShortName != "asteroid"+tag ||
+			len(got[0].RomNames) != 1 || got[0].RomNames[0] != "asteroid"+tag+".zip" {
+			t.Fatalf("systems %v: got %+v, want the game with its short name and lower-case ROM", systems, got)
+		}
+	}
+}

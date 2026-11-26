@@ -737,10 +737,13 @@ func (s *ScrapeService) bumpScrape(ctx context.Context, gameID uuid.UUID) int64 
 	return n
 }
 
-// bestMatch picks the most relevant game. For a name search it scores the name
-// match (exact first, then prefix, then substring); for a hash lookup (empty
-// query) it just prefers base games and higher ratings. It returns nil for an
-// empty list.
+// bestMatch picks the most relevant game. For a name search a game with a ROM
+// file of that name wins outright, then one whose ROM set name is the query
+// (an arcade ROM is named after its set, so "asteroid" is Asteroids, not
+// Asteroids Deluxe, whose title it also prefixes); otherwise it scores the
+// name match (exact first, then prefix, then substring). For a hash lookup
+// (empty query) it just prefers base games and higher ratings. It returns nil
+// for an empty list.
 func bestMatch(games []models.Game, query string) *models.Game {
 	if len(games) == 0 {
 		return nil
@@ -753,6 +756,12 @@ func bestMatch(games []models.Game, query string) *models.Game {
 		score := typeBonus(g.Type) + g.Rating
 		if q != "" {
 			score += nameScore(g.Name, q)
+			switch {
+			case hasRomFile(g.RomNames, q):
+				score += romFileScore
+			case g.ShortName != "" && strings.ToLower(strings.TrimSpace(g.ShortName)) == q:
+				score += romSetScore
+			}
 		}
 		if score > bestScore {
 			bestScore = score
@@ -760,6 +769,25 @@ func bestMatch(games []models.Game, query string) *models.Game {
 		}
 	}
 	return best
+}
+
+// romFileScore and romSetScore outrank any title match, a ROM file above a
+// set name (some games carry a set name that isn't their ROM's): see
+// bestMatch.
+const (
+	romFileScore = 20000
+	romSetScore  = 10000
+)
+
+// hasRomFile reports whether one of romNames (lower case) is q with any file
+// extension, or q itself.
+func hasRomFile(romNames []string, q string) bool {
+	for _, rom := range romNames {
+		if rom == q || cleanGameName(rom) == q {
+			return true
+		}
+	}
+	return false
 }
 
 // nameScore ranks how well a game name matches the query.

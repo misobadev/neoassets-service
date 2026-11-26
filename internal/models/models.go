@@ -747,6 +747,12 @@ type Game struct {
 	// CoverUpdated is the cover media row's created_at, used by the frontend to
 	// bust the browser cache when the cover is replaced.
 	CoverUpdated string `json:"cover_updated,omitempty" db:"-"`
+	// ShortName (the ROM set name, e.g. "astdelux" for MAME's Asteroids
+	// Deluxe) and RomNames (its ROM file names, lower case) are filled only by
+	// the scraping resolver's candidate search, to match a ROM file name
+	// exactly; they are never serialized.
+	ShortName string   `json:"-" db:"-"`
+	RomNames  []string `json:"-" db:"-"`
 	// Scrapes is the lifetime scrape count (from game_scrape_stats), populated
 	// on the list endpoints.
 	Scrapes int64 `json:"scrapes" db:"-"`

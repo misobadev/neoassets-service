@@ -223,6 +223,39 @@ func TestBestMatchPrefersBase(t *testing.T) {
 	}
 }
 
+// An arcade ROM file is named after its set: "asteroid.zip" must resolve to
+// Asteroids even though Asteroids Deluxe rates higher and its title also
+// starts with the query. The catalog's Asteroids carries a wrong set name
+// ("ar_sprg"), so the ROM file decides.
+func TestBestMatchPrefersExactRomFile(t *testing.T) {
+	games := []models.Game{
+		{Name: "Asteroids Deluxe", ShortName: "astdelux", RomNames: []string{"astdelux.zip"}, Type: "base", Rating: 9},
+		{Name: "Asteroids", ShortName: "ar_sprg", RomNames: []string{"asteroid.zip"}, Type: "base", Rating: 7},
+	}
+	for file, want := range map[string]string{
+		"asteroid.zip": "Asteroids",
+		"astdelux.zip": "Asteroids Deluxe",
+		"ASTEROID.ZIP": "Asteroids",
+		"asteroid":     "Asteroids",
+	} {
+		if got := bestMatch(games, strings.ToLower(cleanGameName(file))); got == nil || got.Name != want {
+			t.Errorf("bestMatch(%q) = %+v, want %s", file, got, want)
+		}
+	}
+}
+
+// With no ROM file of that name, a set name equal to the query still beats a
+// title it only prefixes.
+func TestBestMatchFallsBackToRomSet(t *testing.T) {
+	games := []models.Game{
+		{Name: "Asteroids Deluxe", ShortName: "astdelux", Type: "base", Rating: 9},
+		{Name: "Asteroids", ShortName: "asteroid", Type: "base", Rating: 7},
+	}
+	if got := bestMatch(games, "asteroid"); got == nil || got.Name != "Asteroids" {
+		t.Fatalf("bestMatch = %+v, want Asteroids", got)
+	}
+}
+
 func TestBestMatchHashPrefersBase(t *testing.T) {
 	games := []models.Game{
 		{Name: "Grand Poo World", Type: "hack"},
