@@ -111,6 +111,20 @@ func (m *Memory) DownloadObject(_ context.Context, objectName string, maxSize in
 	return append([]byte(nil), data...), nil
 }
 
+func (m *Memory) ReadObjectRange(_ context.Context, objectName string, offset, length int64) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	data, ok := m.objects[objectName]
+	if !ok {
+		return nil, fmt.Errorf("NoSuchKey: %s", objectName)
+	}
+	if offset < 0 || length <= 0 || offset >= int64(len(data)) {
+		return nil, fmt.Errorf("InvalidRange: %s %d+%d", objectName, offset, length)
+	}
+	end := min(offset+length, int64(len(data)))
+	return append([]byte(nil), data[offset:end]...), nil
+}
+
 func (m *Memory) ListKeys(_ context.Context, prefix string) ([]string, error) {
 	var out []string
 	for _, k := range m.Keys() {
