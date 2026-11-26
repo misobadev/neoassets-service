@@ -19,7 +19,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.userSvc.Register(r.Context(), req)
 	if err != nil {
-		writeClientError(w, http.StatusBadRequest, err)
+		writeAccountError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -35,7 +35,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.userSvc.Login(r.Context(), req)
 	if err != nil {
-		writeClientError(w, http.StatusUnauthorized, err)
+		writeAccountError(w, http.StatusUnauthorized, err)
 		return
 	}
 
@@ -60,24 +60,7 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.userSvc.VerifyEmail(r.Context(), req.Token); err != nil {
-		writeClientError(w, http.StatusBadRequest, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"message": "email verified successfully"})
-}
-
-// VerifyEmailByLink verifies an account email using a token from the query
-// string, used when the user clicks the link in the email.
-func (h *Handler) VerifyEmailByLink(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		writeError(w, http.StatusBadRequest, "missing token")
-		return
-	}
-
-	if err := h.userSvc.VerifyEmail(r.Context(), token); err != nil {
-		writeClientError(w, http.StatusBadRequest, err)
+		writeAccountError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -92,7 +75,7 @@ func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.userSvc.ResendVerification(r.Context(), req.Email); err != nil {
-		writeClientError(w, http.StatusBadRequest, err)
+		writeAccountError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -108,7 +91,7 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.userSvc.ForgotPassword(r.Context(), req.Email); err != nil {
-		writeClientError(w, http.StatusInternalServerError, err)
+		writeAccountError(w, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -123,7 +106,7 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.userSvc.ResetPassword(r.Context(), req.Token, req.NewPassword); err != nil {
-		writeClientError(w, http.StatusBadRequest, err)
+		writeAccountError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -140,14 +123,15 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.userSvc.GetUserByID(r.Context(), claims.UserID)
 	if err != nil {
-		writeClientError(w, http.StatusNotFound, err)
+		writeAccountError(w, http.StatusNotFound, err)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, user)
 }
 
-// UpdateProfile updates the authenticated user's username and/or email.
+// UpdateProfile updates the authenticated user's username and/or email. A new
+// email needs current_password and is confirmed from the link mailed to it.
 func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -157,16 +141,42 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Email    string `json:"email"`
+		// CurrentPassword is required when the email changes.
+		CurrentPassword string `json:"current_password"`
 	}
 	if !httpx.Decode(w, r, &req) {
 		return
 	}
-	user, err := h.userSvc.UpdateProfile(r.Context(), claims.UserID, req.Username, req.Email)
+	user, err := h.userSvc.UpdateProfile(r.Context(), claims.UserID, req.Username, req.Email, req.CurrentPassword)
 	if err != nil {
-		writeClientError(w, http.StatusBadRequest, err)
+		writeAccountError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
+}
+
+// ConfirmEmailChange confirms the authenticated user's pending email with the
+// token mailed to the new address.
+func (h *Handler) ConfirmEmailChange(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !httpx.Decode(w, r, &req) {
+		return
+	}
+	if err := h.userSvc.ConfirmEmailChange(r.Context(), claims.UserID, req.Token); err != nil {
+		writeAccountError(w, http.StatusBadRequest, err)
+		return
+	}
+	// Confirming signed the account out everywhere (token_version).
+	clearSessionCookie(w, r, auth.UserCookie)
+	clearSessionCookie(w, r, auth.AdminCookie)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "email changed; please sign in again"})
 }
 
 // ChangePassword updates the authenticated user's password.
@@ -184,7 +194,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.userSvc.ChangePassword(r.Context(), claims.UserID, req.CurrentPassword, req.NewPassword); err != nil {
-		writeClientError(w, http.StatusBadRequest, err)
+		writeAccountError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "password updated"})

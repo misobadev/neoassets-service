@@ -329,6 +329,20 @@ func TestHTTPAuthBoundaries(t *testing.T) {
 	golden(t, "auth_me", alice.do(http.MethodGet, "/api/v1/auth/me", nil))
 	golden(t, "auth_admin_as_user", alice.do(http.MethodGet, "/api/v1/admin/submissions", nil))
 	golden(t, "auth_rewards", alice.do(http.MethodGet, "/api/v1/rewards", nil))
+	// An email change needs the current password; with it, the address waits
+	// for confirmation and the account keeps working on its current one.
+	golden(t, "auth_email_change_no_password", alice.do(http.MethodPut, "/api/v1/auth/me",
+		map[string]string{"email": "alice-new@example.com"}))
+	golden(t, "auth_email_change_pending", alice.do(http.MethodPut, "/api/v1/auth/me",
+		map[string]string{"email": "alice-new@example.com", "current_password": testPassword}))
+	golden(t, "auth_me_with_pending_email", alice.do(http.MethodGet, "/api/v1/auth/me", nil))
+	// Confirming needs the signed-in account and the mailed token.
+	golden(t, "auth_email_confirm_wrong_token", alice.do(http.MethodPost, "/api/v1/auth/me/email/confirm",
+		map[string]string{"token": "not-the-mailed-token"}))
+	golden(t, "auth_email_confirm_anonymous", anon.do(http.MethodPost, "/api/v1/auth/me/email/confirm",
+		map[string]string{"token": "not-the-mailed-token"}))
+	// The unused GET verification route is gone (its token would be logged).
+	golden(t, "auth_verify_email_get", anon.do(http.MethodGet, "/api/v1/verify-email?token=abc", nil))
 	golden(t, "auth_logout", alice.do(http.MethodPost, "/api/v1/logout", nil))
 	golden(t, "auth_me_after_logout", alice.do(http.MethodGet, "/api/v1/auth/me", nil))
 

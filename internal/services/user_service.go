@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"neoassets/internal/apperr"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,7 +26,43 @@ const (
 	verificationTokenTTL = 24 * time.Hour
 	resetTokenTTL        = 1 * time.Hour
 	resetCooldown        = 1 * time.Minute
+	// resendCooldown spaces out verification emails for one account.
+	resendCooldown = 1 * time.Minute
+	// maxPasswordBytes is bcrypt's input limit; longer passwords are refused
+	// rather than silently truncated or failing with bcrypt's own error.
+	maxPasswordBytes = 72
+	// maxEmailBytes is the longest address users.email (VARCHAR(255)) holds,
+	// less one, the RFC 5321 path limit.
+	maxEmailBytes = 254
+	// accountJobWorkers and accountJobQueue size the background queue for the
+	// recovery emails; accountJobTimeout bounds one job (lookup, token, send).
+	accountJobWorkers = 4
+	accountJobQueue   = 256
+	accountJobTimeout = 45 * time.Second
 )
+
+// accountMailer sends the account emails. *email.Sender implements it.
+type accountMailer interface {
+	SendVerificationEmail(to, username, token string) error
+	SendPasswordResetEmail(to, username, token string) error
+	SendEmailChangeConfirmation(to, username, token string) error
+	SendEmailChangedNotice(to, username string) error
+}
+
+// checkPassword is auth.CheckPassword, replaceable in tests to count bcrypt
+// comparisons.
+var checkPassword = auth.CheckPassword
+
+// dummyPasswordHash is a bcrypt hash (at the default cost) compared against
+// when an account doesn't exist, so a login takes as long for an unknown email
+// as for a wrong password.
+var dummyPasswordHash = sync.OnceValue(func() string {
+	hash, err := auth.HashPassword("neoassets-dummy-password-for-timing")
+	if err != nil {
+		panic(err)
+	}
+	return hash
+})
 
 var (
 	usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9]{3,20}$`)
@@ -33,8 +71,11 @@ var (
 
 // UserService handles account registration, authentication and recovery.
 type UserService struct {
-	repo                  *repository.Repository
-	mailer                *email.Sender
+	repo   *repository.Repository
+	mailer accountMailer
+	// sendInBackground runs an account email off the request, so the answer
+	// and its timing don't depend on whether (or how fast) one is sent.
+	sendInBackground      func(send func())
 	jwtSecret             string
 	tokenTTL              time.Duration
 	protectedAdminEmail   string
@@ -43,13 +84,71 @@ type UserService struct {
 
 // NewUserService creates a UserService.
 func NewUserService(repo *repository.Repository, mailer *email.Sender, jwtSecret string, tokenTTL time.Duration, protectedAdminEmail string) *UserService {
-	return &UserService{
+	s := &UserService{
 		repo:                repo,
-		mailer:              mailer,
 		jwtSecret:           jwtSecret,
 		tokenTTL:            tokenTTL,
 		protectedAdminEmail: protectedAdminEmail,
+		sendInBackground:    newJobQueue(accountJobWorkers, accountJobQueue),
 	}
+	// Hash the dummy password now, so the first login for an unknown email
+	// doesn't take longer than the rest.
+	dummyPasswordHash()
+	// A nil *email.Sender stored in the interface would not compare equal to
+	// nil, so only a real sender is kept.
+	if mailer != nil {
+		s.mailer = mailer
+	}
+	return s
+}
+
+// newJobQueue runs jobs on a fixed set of workers. A job is dropped (and
+// logged) only when the queue is full, and a panicking job doesn't stop its
+// worker or the service.
+func newJobQueue(workers, size int) func(func()) {
+	jobs := make(chan func(), size)
+	for i := 0; i < workers; i++ {
+		go func() {
+			for job := range jobs {
+				runJob(job)
+			}
+		}()
+	}
+	return func(job func()) {
+		select {
+		case jobs <- job:
+		default:
+			log.Warn().Msg("account email dropped: the queue is full")
+		}
+	}
+}
+
+func runJob(job func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().Interface("panic", r).Msg("account email job panicked")
+		}
+	}()
+	job()
+}
+
+// validateEmail checks an address's form and length.
+func validateEmail(email string) error {
+	if len(email) > maxEmailBytes || !emailRegex.MatchString(email) {
+		return apperr.Invalid("invalid email address")
+	}
+	return nil
+}
+
+// validatePassword checks a new password's length.
+func validatePassword(password string) error {
+	if len(password) < 8 {
+		return apperr.Invalid("password must be at least 8 characters")
+	}
+	if len(password) > maxPasswordBytes {
+		return apperr.Invalid(fmt.Sprintf("password must be at most %d bytes", maxPasswordBytes))
+	}
+	return nil
 }
 
 // Register validates the payload, creates the user and sends a verification
@@ -62,11 +161,11 @@ func (s *UserService) Register(ctx context.Context, req models.RegisterRequest) 
 	if !usernameRegex.MatchString(req.Username) {
 		return nil, apperr.Invalid("username must be 3-20 alphanumeric characters")
 	}
-	if !emailRegex.MatchString(req.Email) {
-		return nil, apperr.Invalid("invalid email address")
+	if err := validateEmail(req.Email); err != nil {
+		return nil, err
 	}
-	if len(req.Password) < 8 {
-		return nil, apperr.Invalid("password must be at least 8 characters")
+	if err := validatePassword(req.Password); err != nil {
+		return nil, err
 	}
 
 	if _, err := s.repo.GetUserByUsername(ctx, req.Username); err == nil {
@@ -79,10 +178,10 @@ func (s *UserService) Register(ctx context.Context, req models.RegisterRequest) 
 	} else if exists {
 		return nil, apperr.Conflict("username already exists")
 	}
-	if _, err := s.repo.GetUserByEmail(ctx, req.Email); err == nil {
-		return nil, apperr.Conflict("email already exists")
-	} else if err != sql.ErrNoRows {
+	if exists, err := s.repo.EmailExists(ctx, req.Email); err != nil {
 		return nil, err
+	} else if exists {
+		return nil, apperr.Conflict("email already exists")
 	}
 
 	hash, err := auth.HashPassword(req.Password)
@@ -130,18 +229,21 @@ func (s *UserService) Login(ctx context.Context, req models.UserLoginRequest) (*
 
 	user, err := s.repo.GetUserByEmail(ctx, req.Email)
 	if err != nil {
+		// Compare anyway, so an unknown email takes as long as a wrong password.
+		checkPassword(dummyPasswordHash(), req.Password)
 		log.Warn().Str("email", req.Email).Msg("failed login: unknown email")
 		return nil, apperr.Unauthorized("invalid credentials")
 	}
-	// Check verification before the password so the endpoint never reveals
-	// whether the supplied password was correct.
+	// The password is checked first, so without it the answer is the same for
+	// an unknown, an unverified and a verified account. Only someone who has
+	// the password learns that the account still needs verifying.
+	if !checkPassword(user.PasswordHash, req.Password) {
+		log.Warn().Str("email", req.Email).Msg("failed login: wrong password")
+		return nil, apperr.Unauthorized("invalid credentials")
+	}
 	if !s.SkipEmailVerification && !user.EmailVerified {
 		log.Warn().Str("email", req.Email).Msg("failed login: email not verified")
 		return nil, apperr.Forbidden("email not verified")
-	}
-	if !auth.CheckPassword(user.PasswordHash, req.Password) {
-		log.Warn().Str("email", req.Email).Msg("failed login: wrong password")
-		return nil, apperr.Unauthorized("invalid credentials")
 	}
 
 	jwt, err := auth.GenerateUserToken(s.jwtSecret, user.ID, user.Email, user.Role, user.TokenVersion, s.tokenTTL)
@@ -196,6 +298,48 @@ func (s *UserService) VerifyEmail(ctx context.Context, token string) error {
 	return nil
 }
 
+// ConfirmEmailChange switches the signed-in account userID to its pending
+// address, using the token mailed to that address. Only the account that asked
+// can confirm, so a mistyped address's owner (or a mail scanner) opening the
+// link can't take the account over.
+func (s *UserService) ConfirmEmailChange(ctx context.Context, userID uuid.UUID, token string) error {
+	if token == "" {
+		return apperr.Invalid("confirmation token is required")
+	}
+	return s.confirmEmailChange(ctx, userID, auth.HashToken(token))
+}
+
+// confirmEmailChange switches account userID to its pending address if
+// tokenHash is that change's token. Every session is revoked, the previous
+// address is told (with no link), and donations already made with the new
+// address are attached.
+func (s *UserService) confirmEmailChange(ctx context.Context, userID uuid.UUID, tokenHash string) error {
+	change, ok, err := s.repo.ConfirmPendingEmail(ctx, userID, tokenHash)
+	if errors.Is(err, repository.ErrEmailTaken) {
+		return apperr.Conflict("email already exists")
+	}
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return apperr.Invalid("this confirmation link is invalid, has expired or was already used")
+	}
+	log.Warn().Str("user_id", change.UserID.String()).Msg("account email changed")
+	// The change is committed: finish its follow-ups even if the client goes
+	// away meanwhile.
+	ctx = context.WithoutCancel(ctx)
+	s.linkPendingDonations(ctx, change.UserID, change.NewEmail)
+	// Sent before answering, not queued: it's the owner's only warning if the
+	// change wasn't theirs, so it must not be dropped. Only the account that
+	// asked can get here, so its timing reveals nothing.
+	if s.mailer != nil {
+		if err := s.mailer.SendEmailChangedNotice(change.OldEmail, change.Username); err != nil {
+			log.Error().Err(err).Str("email", change.OldEmail).Msg("failed to send email-changed notice")
+		}
+	}
+	return nil
+}
+
 // linkPendingDonations attaches unclaimed donations matching the account email
 // and refreshes the donor status. Safe to call repeatedly: linking is a no-op
 // once every matching event is claimed.
@@ -209,80 +353,84 @@ func (s *UserService) linkPendingDonations(ctx context.Context, userID uuid.UUID
 	}
 }
 
-// ResendVerification issues a fresh verification token and emails it. The
-// response is generic to avoid revealing whether an account exists.
-func (s *UserService) ResendVerification(ctx context.Context, email string) error {
+// ResendVerification issues a fresh verification token and emails it. It
+// answers at once and does the work in the background, so neither the answer
+// nor its timing reveals whether the account exists or is verified.
+func (s *UserService) ResendVerification(_ context.Context, email string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
-	user, err := s.repo.GetUserByEmail(ctx, email)
-	if err != nil {
-		// Do not reveal whether the account exists.
-		return nil
-	}
-	if user.EmailVerified {
-		// Already verified; still return success so the endpoint is not an
-		// oracle for account existence.
-		return nil
-	}
-
-	token, err := newToken()
-	if err != nil {
-		return err
-	}
-	expires := time.Now().Add(verificationTokenTTL)
-	ok, err := s.repo.SetEmailVerificationToken(ctx, user.ID, user.Email, auth.HashToken(token), expires)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		// The email changed or was verified meanwhile: nothing to send here.
-		return nil
-	}
-
-	if s.mailer != nil {
-		if err := s.mailer.SendVerificationEmail(user.Email, user.Username, token); err != nil {
-			return err
-		}
-	}
+	s.sendInBackground(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), accountJobTimeout)
+		defer cancel()
+		s.resendVerification(ctx, email)
+	})
 	return nil
 }
 
-// ForgotPassword issues a reset token and emails it. Unknown emails still get
-// a success response to avoid account enumeration.
-func (s *UserService) ForgotPassword(ctx context.Context, email string) error {
-	email = strings.ToLower(strings.TrimSpace(email))
+func (s *UserService) resendVerification(ctx context.Context, email string) {
 	user, err := s.repo.GetUserByEmail(ctx, email)
-	if err != nil {
-		return nil
+	if err != nil || user.EmailVerified {
+		return
 	}
-
-	// Cooldown: only send one reset email per minute.
-	if user.PasswordResetExpires != nil {
-		timeLeft := time.Until(*user.PasswordResetExpires)
-		if timeLeft > resetTokenTTL-resetCooldown {
-			return nil
-		}
-	}
-
 	token, err := newToken()
 	if err != nil {
-		return err
+		log.Error().Err(err).Msg("resend verification: token")
+		return
+	}
+	expires := time.Now().Add(verificationTokenTTL)
+	// One token a minute at most, checked in the same statement that stores it.
+	ok, err := s.repo.SetEmailVerificationToken(ctx, user.ID, user.Email, auth.HashToken(token), expires, expires.Add(-resendCooldown))
+	if err != nil {
+		log.Error().Err(err).Msg("resend verification: store token")
+		return
+	}
+	// Inside the cooldown, or the email changed or was verified meanwhile:
+	// nothing to send.
+	if !ok || s.mailer == nil {
+		return
+	}
+	if err := s.mailer.SendVerificationEmail(user.Email, user.Username, token); err != nil {
+		log.Error().Err(err).Str("email", user.Email).Msg("failed to send verification email")
+	}
+}
+
+// ForgotPassword issues a reset token and emails it. It answers at once and
+// does the work in the background, so neither the answer nor its timing
+// reveals whether an account exists.
+func (s *UserService) ForgotPassword(_ context.Context, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	s.sendInBackground(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), accountJobTimeout)
+		defer cancel()
+		s.forgotPassword(ctx, email)
+	})
+	return nil
+}
+
+func (s *UserService) forgotPassword(ctx context.Context, email string) {
+	user, err := s.repo.GetUserByEmail(ctx, email)
+	if err != nil {
+		return
+	}
+	token, err := newToken()
+	if err != nil {
+		log.Error().Err(err).Msg("forgot password: token")
+		return
 	}
 	expires := time.Now().Add(resetTokenTTL)
-	ok, err := s.repo.SetPasswordResetToken(ctx, user.ID, user.Email, auth.HashToken(token), expires)
+	// One reset email a minute at most, checked in the same statement that
+	// stores the token, so parallel requests can't each send one.
+	ok, err := s.repo.SetPasswordResetToken(ctx, user.ID, user.Email, auth.HashToken(token), expires, expires.Add(-resetCooldown))
 	if err != nil {
-		return err
+		log.Error().Err(err).Msg("forgot password: store token")
+		return
 	}
-	if !ok {
-		// The email changed meanwhile: don't mail a reset link to the old one.
-		return nil
+	// Inside the cooldown, or the email changed meanwhile: don't mail a link.
+	if !ok || s.mailer == nil {
+		return
 	}
-
-	if s.mailer != nil {
-		if err := s.mailer.SendPasswordResetEmail(user.Email, user.Username, token); err != nil {
-			return err
-		}
+	if err := s.mailer.SendPasswordResetEmail(user.Email, user.Username, token); err != nil {
+		log.Error().Err(err).Str("email", user.Email).Msg("failed to send password reset email")
 	}
-	return nil
 }
 
 // ResetPassword sets a new password using the emailed token.
@@ -290,8 +438,8 @@ func (s *UserService) ResetPassword(ctx context.Context, token, newPassword stri
 	if token == "" {
 		return apperr.Invalid("reset token is required")
 	}
-	if len(newPassword) < 8 {
-		return apperr.Invalid("password must be at least 8 characters")
+	if err := validatePassword(newPassword); err != nil {
+		return err
 	}
 
 	user, err := s.repo.GetUserByPasswordResetToken(ctx, auth.HashToken(token))
@@ -362,7 +510,7 @@ func (s *UserService) ListUsers(ctx context.Context) ([]models.User, error) {
 		return nil, err
 	}
 	for i := range list {
-		if s.protectedAdminEmail != "" && strings.EqualFold(list[i].Email, s.protectedAdminEmail) {
+		if s.isProtectedAccount(&list[i]) {
 			list[i].Protected = true
 		}
 	}
@@ -381,7 +529,7 @@ func (s *UserService) SetUserRole(ctx context.Context, id uuid.UUID, role string
 	if err != nil {
 		return nil, apperr.NotFound("user not found")
 	}
-	if s.protectedAdminEmail != "" && strings.EqualFold(user.Email, s.protectedAdminEmail) {
+	if s.isProtectedAccount(user) {
 		return nil, apperr.Forbidden("this account's role is locked and cannot be changed")
 	}
 	updated, err := s.repo.SetUserRole(ctx, id, role)
@@ -394,12 +542,39 @@ func (s *UserService) SetUserRole(ctx context.Context, id uuid.UUID, role string
 
 // UpdateProfile updates a user's username and/or email. Fields may be empty to
 // leave them unchanged. Usernames are required to be present and unique.
-func (s *UserService) UpdateProfile(ctx context.Context, id uuid.UUID, username, email string) (*models.User, error) {
+//
+// A new email needs the current password and doesn't replace the address in
+// use: it waits as the pending email until the account, signed in, confirms it
+// with the token mailed to the new address (ConfirmEmailChange). So a session
+// alone can't move the account, and a mistyped address's owner can't take it
+// over. The protected admin account's email can't be changed.
+func (s *UserService) UpdateProfile(ctx context.Context, id uuid.UUID, username, email, currentPassword string) (*models.User, error) {
 	user, err := s.repo.GetUserByID(ctx, id)
 	if err != nil {
 		return nil, apperr.NotFound("user not found")
 	}
 	newUsername, newEmail := "", ""
+	if strings.TrimSpace(email) != "" && strings.ToLower(strings.TrimSpace(email)) != strings.ToLower(user.Email) {
+		newEmail = strings.ToLower(strings.TrimSpace(email))
+		if s.isProtectedAccount(user) {
+			return nil, apperr.Forbidden("this account's email is locked and cannot be changed")
+		}
+		// The password is checked before anything about the new address is
+		// looked up, so a session alone can't test which addresses exist.
+		if !checkPassword(user.PasswordHash, currentPassword) {
+			return nil, apperr.Unauthorized("current password is incorrect")
+		}
+		if err := validateEmail(newEmail); err != nil {
+			return nil, err
+		}
+		exists, err := s.repo.EmailExistsExcluding(ctx, newEmail, id)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return nil, apperr.Conflict("email already exists")
+		}
+	}
 	if strings.TrimSpace(username) != "" && strings.TrimSpace(username) != user.Username {
 		uname := strings.TrimSpace(username)
 		if !usernameRegex.MatchString(uname) {
@@ -414,57 +589,60 @@ func (s *UserService) UpdateProfile(ctx context.Context, id uuid.UUID, username,
 		}
 		newUsername = uname
 	}
-	if strings.TrimSpace(email) != "" && strings.ToLower(strings.TrimSpace(email)) != strings.ToLower(user.Email) {
-		newEmail = strings.ToLower(strings.TrimSpace(email))
-		if !emailRegex.MatchString(newEmail) {
-			return nil, apperr.Invalid("invalid email address")
-		}
-		exists, err := s.repo.EmailExistsExcluding(ctx, newEmail, id)
-		if err != nil {
-			return nil, err
-		}
-		if exists {
-			return nil, apperr.Conflict("email already exists")
-		}
-	}
 	if newUsername == "" && newEmail == "" {
 		return user, nil
 	}
-	// One statement writing only the fields that changed, so nothing else on
-	// the account (password, token version, role, XP, verification) is
-	// overwritten with the values read above.
-	update := repository.ProfileUpdate{Username: newUsername, Email: newEmail}
-	// A new email address must be proven: the verified flag is cleared and a
-	// fresh verification token is emailed, and until then the account's tokens
-	// no longer grant access.
-	var verifyToken string
-	if newEmail != "" && !s.SkipEmailVerification {
-		verifyToken, err = newToken()
+	update := repository.ProfileUpdate{Username: newUsername}
+	var token, tokenHash string
+	if newEmail != "" {
+		token, err = newToken()
 		if err != nil {
 			return nil, err
 		}
-		update.Verification = &repository.EmailVerification{
-			TokenHash: auth.HashToken(verifyToken),
-			Expires:   time.Now().Add(verificationTokenTTL),
+		tokenHash = auth.HashToken(token)
+		update.Pending = &repository.PendingEmail{
+			CheckedHash: user.PasswordHash,
+			Email:       newEmail,
+			TokenHash:   tokenHash,
+			Expires:     time.Now().Add(verificationTokenTTL),
 		}
 	}
+	// One statement for both, so a failure leaves neither applied. The pending
+	// email is recorded only if the password is still the one just checked.
 	ok, err := s.repo.UpdateProfile(ctx, id, update)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
+		if newEmail != "" {
+			return nil, apperr.Conflict("the password was changed by another request, please try again")
+		}
 		return nil, apperr.NotFound("user not found")
 	}
-	if update.Verification != nil && s.mailer != nil {
-		name := user.Username
-		if newUsername != "" {
-			name = newUsername
-		}
-		if err := s.mailer.SendVerificationEmail(newEmail, name, verifyToken); err != nil {
-			log.Error().Str("email", newEmail).Err(err).Msg("failed to send verification email after email change")
+	if newEmail != "" {
+		if s.SkipEmailVerification {
+			// Local development: no email to confirm, so switch right away.
+			if err := s.confirmEmailChange(ctx, id, tokenHash); err != nil {
+				return nil, err
+			}
+		} else if s.mailer != nil {
+			name := user.Username
+			if newUsername != "" {
+				name = newUsername
+			}
+			// Sent before answering: the request needs the password, so its
+			// timing reveals nothing, and a failure is logged.
+			if err := s.mailer.SendEmailChangeConfirmation(newEmail, name, token); err != nil {
+				log.Error().Str("email", newEmail).Err(err).Msg("failed to send email change confirmation")
+			}
 		}
 	}
 	return s.repo.GetUserByID(ctx, id)
+}
+
+// isProtectedAccount reports whether user is the protected root account.
+func (s *UserService) isProtectedAccount(user *models.User) bool {
+	return s.protectedAdminEmail != "" && strings.EqualFold(user.Email, s.protectedAdminEmail)
 }
 
 // ChangePassword updates a user's password after verifying the current one.
@@ -473,11 +651,11 @@ func (s *UserService) ChangePassword(ctx context.Context, id uuid.UUID, currentP
 	if err != nil {
 		return apperr.NotFound("user not found")
 	}
-	if !auth.CheckPassword(user.PasswordHash, currentPassword) {
+	if !checkPassword(user.PasswordHash, currentPassword) {
 		return apperr.Unauthorized("current password is incorrect")
 	}
-	if len(newPassword) < 8 {
-		return apperr.Invalid("password must be at least 8 characters")
+	if err := validatePassword(newPassword); err != nil {
+		return err
 	}
 	hash, err := auth.HashPassword(newPassword)
 	if err != nil {

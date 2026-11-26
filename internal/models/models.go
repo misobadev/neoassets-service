@@ -177,6 +177,11 @@ type User struct {
 	EmailVerificationExpires *time.Time `json:"-" db:"email_verification_expires_at"`
 	PasswordResetToken       *string    `json:"-" db:"password_reset_token"`
 	PasswordResetExpires     *time.Time `json:"-" db:"password_reset_expires_at"`
+	// PendingEmail is a new address waiting for its owner to confirm it from the
+	// link mailed to it; Email stays in use until then.
+	PendingEmail        *string    `json:"pending_email,omitempty" db:"pending_email"`
+	PendingEmailToken   *string    `json:"-" db:"pending_email_token"`
+	PendingEmailExpires *time.Time `json:"-" db:"pending_email_expires_at"`
 	// TokenVersion is embedded in issued JWTs; bumping it invalidates every
 	// previously issued token for the user (on password change/reset).
 	TokenVersion int       `json:"-" db:"token_version"`

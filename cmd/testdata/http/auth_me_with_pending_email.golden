@@ -1,0 +1,14 @@
+200
+{
+  "avatar_key": "",
+  "created_at": "<time>",
+  "donor_status": "none",
+  "email": "alice@example.com",
+  "email_verified": true,
+  "id": "<uuid>",
+  "pending_email": "alice-new@example.com",
+  "role": "user",
+  "updated_at": "<time>",
+  "username": "alice",
+  "xp": 0
+}

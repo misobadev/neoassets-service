@@ -2,17 +2,21 @@ package repository
 
 import (
 	"context"
-	"fmt"
+	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"neoassets/internal/models"
 )
 
 const userColumns = `id, username, email, password_hash, role, hidden, xp, donor_status, avatar_key, email_verified,
 	email_verification_token, email_verification_expires_at,
-	password_reset_token, password_reset_expires_at, token_version, created_at, updated_at`
+	password_reset_token, password_reset_expires_at,
+	CASE WHEN pending_email_expires_at > NOW() THEN pending_email END, pending_email_token, pending_email_expires_at,
+	token_version, created_at, updated_at`
 
 func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error) {
 	var u models.User
@@ -20,6 +24,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 		&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.Hidden, &u.XP, &u.DonorStatus, &u.AvatarKey, &u.EmailVerified,
 		&u.EmailVerificationToken, &u.EmailVerificationExpires,
 		&u.PasswordResetToken, &u.PasswordResetExpires,
+		&u.PendingEmail, &u.PendingEmailToken, &u.PendingEmailExpires,
 		&u.TokenVersion, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
@@ -93,6 +98,15 @@ func (r *Repository) UsernameExistsExcluding(ctx context.Context, username strin
 	return exists, err
 }
 
+// EmailExists reports whether any user has the email, in any letter case.
+func (r *Repository) EmailExists(ctx context.Context, email string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(email) = LOWER($1))`, email,
+	).Scan(&exists)
+	return exists, err
+}
+
 // EmailExistsExcluding reports whether any other user has the email, ignoring id.
 func (r *Repository) EmailExistsExcluding(ctx context.Context, email string, excludeID uuid.UUID) (bool, error) {
 	var exists bool
@@ -129,57 +143,119 @@ func (r *Repository) GetUserByPasswordResetToken(ctx context.Context, token stri
 // changes are updated in place (token_version) or only if they still hold
 // what the caller checked (password_hash, one-time tokens).
 
-// ProfileUpdate is a change to a user's username and/or email. Empty fields are
-// left unchanged. A non-nil Verification replaces the email verification state
-// (unverified, with a new token) and is only set together with a new Email.
+// ProfileUpdate is a change to a user's username and/or a new email address
+// waiting for confirmation. Empty or nil fields are left unchanged. The address
+// in use only changes through ConfirmPendingEmail.
 type ProfileUpdate struct {
-	Username     string
-	Email        string
-	Verification *EmailVerification
+	Username string
+	Pending  *PendingEmail
 }
 
-// EmailVerification is a pending email verification token.
-type EmailVerification struct {
-	TokenHash string
-	Expires   time.Time
+// PendingEmail is a requested email change. CheckedHash is the password hash
+// the caller verified the current password against: the change is only
+// recorded while the password is still that one.
+type PendingEmail struct {
+	CheckedHash string
+	Email       string
+	TokenHash   string
+	Expires     time.Time
 }
 
 // UpdateProfile applies a profile change in a single statement, writing only
-// the fields it changes. A new email also cancels any pending password reset,
-// whose link went to the previous address. It reports whether the user exists.
+// the fields it changes, so either all of it applies or none does. A pending
+// email replaces any earlier one. It reports whether it applied (the user
+// exists and, with a pending email, the password is unchanged).
 func (r *Repository) UpdateProfile(ctx context.Context, id uuid.UUID, p ProfileUpdate) (bool, error) {
-	reset := p.Verification != nil
-	if reset && p.Email == "" {
-		return false, fmt.Errorf("an email verification reset needs a new email")
-	}
-	var tokenHash *string
+	pending := p.Pending != nil
+	var checkedHash, email, tokenHash *string
 	var expires *time.Time
-	if reset {
-		tokenHash, expires = &p.Verification.TokenHash, &p.Verification.Expires
+	if pending {
+		checkedHash, email, tokenHash, expires = &p.Pending.CheckedHash, &p.Pending.Email, &p.Pending.TokenHash, &p.Pending.Expires
 	}
 	return r.execOne(ctx,
 		`UPDATE users SET
 			username = COALESCE(NULLIF($1, ''), username),
-			email = COALESCE(NULLIF($2, ''), email),
-			email_verified = CASE WHEN $3 THEN FALSE ELSE email_verified END,
-			email_verification_token = CASE WHEN $3 THEN $4::text ELSE email_verification_token END,
-			email_verification_expires_at = CASE WHEN $3 THEN $5::timestamptz ELSE email_verification_expires_at END,
-			password_reset_token = CASE WHEN $2 <> '' THEN NULL ELSE password_reset_token END,
-			password_reset_expires_at = CASE WHEN $2 <> '' THEN NULL ELSE password_reset_expires_at END,
+			pending_email = CASE WHEN $3 THEN $4::text ELSE pending_email END,
+			pending_email_token = CASE WHEN $3 THEN $5::text ELSE pending_email_token END,
+			pending_email_expires_at = CASE WHEN $3 THEN $6::timestamptz ELSE pending_email_expires_at END,
 			updated_at = NOW()
-		 WHERE id = $6`,
-		p.Username, p.Email, reset, tokenHash, expires, id,
+		 WHERE id = $2 AND (NOT $3 OR password_hash = $7::text)`,
+		p.Username, id, pending, email, tokenHash, expires, checkedHash,
 	)
+}
+
+// ErrEmailTaken reports that another account holds the address.
+var ErrEmailTaken = errors.New("email already exists")
+
+// EmailChange is a confirmed email change.
+type EmailChange struct {
+	UserID   uuid.UUID
+	Username string
+	OldEmail string
+	NewEmail string
+}
+
+// ConfirmPendingEmail switches account userID to its pending address if
+// tokenHash is that change's unexpired token, in one statement: the address
+// becomes the verified email, the pending and reset tokens are consumed and
+// every issued session is revoked (token_version). The row is locked, so a
+// password change or reset committing first (which drops the pending change)
+// wins. It applies only while no other account holds the address (in any
+// letter case); ErrEmailTaken reports that case. ok is false when the account
+// has no unexpired pending change with this token.
+func (r *Repository) ConfirmPendingEmail(ctx context.Context, userID uuid.UUID, tokenHash string) (change EmailChange, ok bool, err error) {
+	var taken bool
+	err = r.db.QueryRowContext(ctx,
+		`WITH target AS (
+			SELECT id, email AS old_email, pending_email FROM users
+			WHERE id = $2 AND pending_email_token = $1 AND pending_email_expires_at > NOW()
+			FOR UPDATE
+		), switched AS (
+			UPDATE users u SET email = t.pending_email, email_verified = TRUE,
+				pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL,
+				email_verification_token = NULL, email_verification_expires_at = NULL,
+				password_reset_token = NULL, password_reset_expires_at = NULL,
+				token_version = u.token_version + 1, updated_at = NOW()
+			FROM target t
+			WHERE u.id = t.id AND u.pending_email_token = $1 AND NOT EXISTS (
+				SELECT 1 FROM users o WHERE LOWER(o.email) = LOWER(t.pending_email) AND o.id <> t.id)
+			RETURNING u.id, u.username, t.old_email, u.email
+		)
+		SELECT s.id, s.username, s.old_email, s.email, FALSE FROM switched s
+		UNION ALL
+		SELECT t.id, '', t.old_email, t.pending_email, TRUE FROM target t
+		WHERE NOT EXISTS (SELECT 1 FROM switched)`,
+		tokenHash, userID,
+	).Scan(&change.UserID, &change.Username, &change.OldEmail, &change.NewEmail, &taken)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EmailChange{}, false, nil
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+		// Another account took the exact address between the check and the write.
+		return EmailChange{}, false, ErrEmailTaken
+	}
+	if err != nil {
+		return EmailChange{}, false, err
+	}
+	if taken {
+		return EmailChange{}, false, ErrEmailTaken
+	}
+	return change, true, nil
 }
 
 // SetEmailVerificationToken stores a new verification token if the account
 // still has the email the caller read and is still unverified, so the token is
-// only ever mailed to the address it can verify. It reports whether it applied.
-func (r *Repository) SetEmailVerificationToken(ctx context.Context, id uuid.UUID, email, tokenHash string, expires time.Time) (bool, error) {
+// only ever mailed to the address it can verify, and if no token newer than the
+// cooldown exists (the previous one expires no later than notAfter), checked in
+// the same statement so concurrent requests can't each mint one. It reports
+// whether it applied.
+func (r *Repository) SetEmailVerificationToken(ctx context.Context, id uuid.UUID, email, tokenHash string, expires, notAfter time.Time) (bool, error) {
 	return r.execOne(ctx,
 		`UPDATE users SET email_verification_token = $3, email_verification_expires_at = $4, updated_at = NOW()
-		 WHERE id = $1 AND email = $2 AND NOT email_verified`,
-		id, email, tokenHash, expires,
+		 WHERE id = $1 AND email = $2 AND NOT email_verified
+		   AND (email_verification_expires_at IS NULL OR email_verification_expires_at <= $5)`,
+		id, email, tokenHash, expires, notAfter,
 	)
 }
 
@@ -195,22 +271,26 @@ func (r *Repository) MarkEmailVerified(ctx context.Context, id uuid.UUID, tokenH
 }
 
 // SetPasswordResetToken stores a new password reset token if the account still
-// has the email the caller read (the one the token is mailed to). It reports
-// whether it applied.
-func (r *Repository) SetPasswordResetToken(ctx context.Context, id uuid.UUID, email, tokenHash string, expires time.Time) (bool, error) {
+// has the email the caller read (the one the token is mailed to) and no reset
+// token newer than the cooldown exists (the previous one expires no later than
+// notAfter), checked in the same statement. It reports whether it applied.
+func (r *Repository) SetPasswordResetToken(ctx context.Context, id uuid.UUID, email, tokenHash string, expires, notAfter time.Time) (bool, error) {
 	return r.execOne(ctx,
 		`UPDATE users SET password_reset_token = $3, password_reset_expires_at = $4, updated_at = NOW()
-		 WHERE id = $1 AND email = $2`,
-		id, email, tokenHash, expires,
+		 WHERE id = $1 AND email = $2
+		   AND (password_reset_expires_at IS NULL OR password_reset_expires_at <= $5)`,
+		id, email, tokenHash, expires, notAfter,
 	)
 }
 
 // ResetPasswordWithToken sets a new password hash if tokenHash is still the
-// account's unexpired reset token, consuming it and revoking every issued
-// token. It reports whether it applied.
+// account's unexpired reset token, consuming it, revoking every issued token
+// and dropping any email change still waiting (it may not be the owner's). It
+// reports whether it applied.
 func (r *Repository) ResetPasswordWithToken(ctx context.Context, id uuid.UUID, tokenHash, newHash string) (bool, error) {
 	return r.execOne(ctx,
 		`UPDATE users SET password_hash = $3, password_reset_token = NULL, password_reset_expires_at = NULL,
+			pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL,
 			token_version = token_version + 1, updated_at = NOW()
 		 WHERE id = $1 AND password_reset_token = $2 AND password_reset_expires_at > NOW()`,
 		id, tokenHash, newHash,
@@ -219,10 +299,12 @@ func (r *Repository) ResetPasswordWithToken(ctx context.Context, id uuid.UUID, t
 
 // ChangePasswordHash replaces the password hash if it is still checkedHash
 // (the one the current password was verified against), revoking every issued
-// token. It reports whether it applied.
+// token and dropping any email change still waiting. It reports whether it
+// applied.
 func (r *Repository) ChangePasswordHash(ctx context.Context, id uuid.UUID, checkedHash, newHash string) (bool, error) {
 	return r.execOne(ctx,
-		`UPDATE users SET password_hash = $3, token_version = token_version + 1, updated_at = NOW()
+		`UPDATE users SET password_hash = $3, token_version = token_version + 1,
+			pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL, updated_at = NOW()
 		 WHERE id = $1 AND password_hash = $2`,
 		id, checkedHash, newHash,
 	)

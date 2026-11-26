@@ -91,6 +91,9 @@ func main() {
 	if cfg.ProtectedAdminEmail == "" {
 		log.Warn().Msg("PROTECTED_ADMIN_EMAIL is not set: no admin account is protected from demotion or deletion")
 	}
+	if cfg.SkipEmailVerification {
+		log.Warn().Msg("SKIP_EMAIL_VERIFICATION is on: accounts work without a verified email, email changes apply without confirmation and donations link to unverified accounts — local development only")
+	}
 	// The CDN whose client-address header the per-IP rate limits trust.
 	if err := handlers.ConfigureCDN(cfg.CDNIPRanges, cfg.CDNClientIPHeader); err != nil {
 		log.Fatal().Err(err).Msg("Invalid CDN configuration")
@@ -422,11 +425,23 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 	// Donor claims are keyed by account: a few code requests and checks a
 	// minute, on top of the per-claim attempt limit and the code cooldown.
 	donorClaimLimiter := handlers.NewIPLimiter(10, 5)
+	// accountLimiter caps profile and password changes per account (both
+	// verify the current password).
+	accountLimiter := handlers.NewIPLimiter(10, 5)
+	// accountCapLimiter caps an account across all its clients (bigger burst,
+	// slower refill), so many addresses can't multiply the account's budget.
+	accountCapLimiter := handlers.NewIPLimiter(1, 20)
 	byUser := func(r *http.Request) string {
 		if claims, ok := auth.UserFromContext(r.Context()); ok && claims != nil {
 			return "user:" + claims.UserID.String()
 		}
 		return "ip:" + handlers.ClientIP(r)
+	}
+
+	// byUserAndClient keys a limiter by account and client network (an IPv6
+	// /64 counts as one client, as in every other per-IP limiter).
+	byUserAndClient := func(r *http.Request) string {
+		return byUser(r) + "|" + handlers.ClientKey(r)
 	}
 
 	r.Get("/health", h.HealthCheck)
@@ -498,7 +513,6 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 			r.Post("/register", h.Register)
 			r.Post("/login", h.Login)
 			r.Post("/verify-email", h.VerifyEmail)
-			r.Get("/verify-email", h.VerifyEmailByLink)
 			r.Post("/resend-verification", h.ResendVerification)
 			r.Post("/forgot-password", h.ForgotPassword)
 			r.Post("/reset-password", h.ResetPassword)
@@ -510,8 +524,14 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 			r.Use(h.RequireVerifiedUser)
 			r.Get("/rewards", h.GetRewards)
 			r.Get("/auth/me", h.GetMe)
-			r.Put("/auth/me", h.UpdateProfile)
-			r.Post("/auth/password", h.ChangePassword)
+			// These check the current password or a mailed token: a limiter
+			// per account and client, under a cap per account. A session can
+			// drain the cap, but a password reset (outside these limits)
+			// revokes it.
+			accountLimits := chi.Chain(accountLimiter.KeyedHandler(byUserAndClient), accountCapLimiter.KeyedHandler(byUser))
+			r.With(accountLimits...).Put("/auth/me", h.UpdateProfile)
+			r.With(accountLimits...).Post("/auth/me/email/confirm", h.ConfirmEmailChange)
+			r.With(accountLimits...).Post("/auth/password", h.ChangePassword)
 			r.Post("/auth/me/avatar/upload", h.AvatarUploadURL)
 			r.Post("/auth/me/avatar", h.SetAvatar)
 			r.Delete("/auth/me/avatar", h.RemoveAvatar)

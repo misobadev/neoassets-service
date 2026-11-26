@@ -1,0 +1,4 @@
+400
+{
+  "error": "this confirmation link is invalid, has expired or was already used"
+}

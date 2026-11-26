@@ -228,18 +228,43 @@ the user credential is optional and falls back to guest mode.
   `debug_usage`. It never bypasses auth and is only honored when
   `ENABLE_DEBUG_MODE=true`.
 - Accounts must verify their email before using the API: registration issues no
-  token, login checks verification before the password, authenticated routes and
-  scrape user credentials enforce it (unless `SKIP_EMAIL_VERIFICATION=true` for
-  local dev). Changing email resets verification.
+  token, authenticated routes and scrape user credentials enforce it (unless
+  `SKIP_EMAIL_VERIFICATION=true` for local dev). Login checks the password
+  first (with a dummy bcrypt comparison for unknown emails, also on
+  `/admin/login`) and says "email not verified" only after a correct password,
+  so without it every account answers the same.
+- **Email change** (`PUT /api/v1/auth/me`) needs `current_password` and doesn't
+  touch the address in use: the new one is stored as `pending_email` (migration
+  078, hashed token, 24 h; shown only until it expires) and mailed a link to
+  `/app/profile?confirm-email=…`. Only the signed-in account that asked can
+  confirm (`POST /api/v1/auth/me/email/confirm` with the token), so a mistyped
+  address's owner or a mail scanner opening the link can't take the account
+  over. Confirming switches the address in one conditional statement (row locked,
+  so a password change or reset committing first wins), which also bumps
+  `token_version` (signing out everywhere), clears pending and reset tokens and
+  refuses an address taken meanwhile; the previous address gets a notice with no
+  link, sent before answering. A password change or reset drops a pending
+  change. The protected admin account's email is locked. `PUT /auth/me`, the
+  confirm route and `POST /auth/password` have a limiter per account and client
+  address. Addresses are at most 254 bytes.
+- Resend-verification and forgot-password answer at once and do their work
+  (lookup, token, email) in a background queue, so neither the answer nor its
+  timing depends on the address; each allows one email a minute per account
+  (checked in the statement that stores the token). Account endpoints return
+  only the service's own messages (`writeAccountError`); other errors are logged
+  and answered with a generic 500. Passwords are 8–72 bytes (bcrypt's limit).
+  Donations link by email only to verified accounts.
 - Browser sessions are **httpOnly cookies** (`ns_user`, `ns_admin`;
   `SameSite=Lax`, `Secure` over HTTPS) so the JWT is never exposed to JavaScript.
   `Authorization: Bearer` is still accepted for non-browser API clients. Login
-  and `/admin/login` set the cookies and no longer return the raw JWT;
-  `POST /api/v1/logout` clears them. JWTs carry a `ver` (`token_version`) claim:
-  changing or resetting the password bumps `users.token_version` and revokes every
-  outstanding token immediately, admin tokens included. Admin tokens (and the
-  `ns_admin` cookie) last 12 h (`auth.AdminTokenTTL`), whichever login issued them. Email-verification and password-reset tokens are
-  stored as SHA-256 hashes, never plaintext.
+  and `/admin/login` set the cookies and also return the tokens in the body for
+  programmatic clients (the web app ignores them); `POST /api/v1/logout` clears
+  the cookies. JWTs carry a `ver` (`token_version`) claim: changing or resetting
+  the password, or confirming a new email, bumps `users.token_version` and
+  revokes every outstanding token immediately, admin tokens included. Admin
+  tokens (and the `ns_admin` cookie) last 12 h (`auth.AdminTokenTTL`), whichever
+  login issued them. Email-verification, email-change and password-reset tokens
+  are stored as SHA-256 hashes, never plaintext.
 - **Client IP** (`handlers.ClientIP`), used by every per-IP limiter: starting at
   the peer, X-Forwarded-For is followed **right to left** past private/loopback
   hops (Traefik, a tunnel) to the first outside address (entries further left
