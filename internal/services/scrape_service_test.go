@@ -369,3 +369,25 @@ func TestGuestRateIsSlowerAndPaced(t *testing.T) {
 		t.Fatalf("far over the rate: ok=%v wait=%v, want a refusal with Retry-After", ok, wait)
 	}
 }
+
+// "arkanoid" must not resolve to "Arkanoid: Revenge of Doh" (arknoid2) just
+// because its title starts with the set name; only a ROM file, set name or
+// exact title counts as a match for a ROM set query.
+func TestStrongMatchRomSetQuery(t *testing.T) {
+	sequel := &models.Game{Name: "Arkanoid: Revenge Of Doh", ShortName: "arknoid2"}
+	if !isRomSetQuery("arkanoid") || isRomSetQuery("Metal Slug") {
+		t.Fatal("isRomSetQuery misclassified a query")
+	}
+	if strongMatch(sequel, "arkanoid") {
+		t.Error("a title prefix must not be a strong match")
+	}
+	for _, g := range []*models.Game{
+		{Name: "Arkanoid", ShortName: "arkanoid"},
+		{Name: "Arkanoid"},
+		{Name: "Arkanoid (bootleg)", RomNames: []string{"arkanoid.zip"}},
+	} {
+		if !strongMatch(g, "arkanoid") {
+			t.Errorf("strongMatch(%+v) = false, want true", g)
+		}
+	}
+}

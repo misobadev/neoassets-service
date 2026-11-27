@@ -715,7 +715,39 @@ func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery)
 	if best == nil {
 		return nil, "name", nil
 	}
+	// An arcade ROM is named after its set ("arkanoid.zip"). When the set isn't
+	// catalogued, a title that merely starts with or contains it is another
+	// game (a sequel, "Arkanoid: Revenge of Doh"), so report not found rather
+	// than return the wrong metadata.
+	if isRomSetQuery(name) && !strongMatch(best, name) && s.isArcadeSystem(ctx, best.SystemID) {
+		return nil, "name", nil
+	}
 	return s.oneGame(ctx, best.ID, q), "name", nil
+}
+
+// isRomSetQuery reports whether a cleaned name looks like a ROM set name: a
+// single word with no spaces (e.g. "arkanoid", "sf2ce").
+func isRomSetQuery(name string) bool {
+	n := strings.TrimSpace(name)
+	return n != "" && !strings.ContainsAny(n, " \t")
+}
+
+// strongMatch reports whether the game matches the query by ROM file, ROM set
+// name or exact title, as opposed to a title prefix or substring.
+func strongMatch(g *models.Game, query string) bool {
+	q := strings.ToLower(strings.TrimSpace(query))
+	return hasRomFile(g.RomNames, q) ||
+		(g.ShortName != "" && strings.ToLower(strings.TrimSpace(g.ShortName)) == q) ||
+		nameScore(g.Name, q) == 1000
+}
+
+// isArcadeSystem reports whether the system belongs to the arcade family.
+func (s *ScrapeService) isArcadeSystem(ctx context.Context, systemID string) bool {
+	if s.repo == nil || systemID == "" {
+		return false
+	}
+	sys, err := s.repo.GetMetadataSystem(ctx, systemID)
+	return err == nil && sys.Family == "arcade"
 }
 
 // cleanGameName normalizes a filename-style game name so a ROM name matches
