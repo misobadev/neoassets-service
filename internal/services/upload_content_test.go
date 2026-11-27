@@ -83,6 +83,13 @@ func (f *storeR2) DeleteObject(_ context.Context, key string) error {
 	return nil
 }
 
+func (f *storeR2) DeleteObjects(ctx context.Context, keys []string) error {
+	for _, key := range keys {
+		_ = f.DeleteObject(ctx, key)
+	}
+	return nil
+}
+
 func (f *storeR2) ObjectSize(_ context.Context, key string) (int64, bool, error) {
 	data, ok := f.objects[key]
 	return int64(len(data)), ok, nil
@@ -657,6 +664,14 @@ func TestEveryUploadPathSignsTheDeclaredSize(t *testing.T) {
 	packID := "pack-" + uuid.NewString()[:8]
 	packSub, err := repo.CreateSubmission(ctx, packID, "Pack "+packID, "A", "", "", owner.ID.String(), false, &owner.ID, false)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Uploads are only signed while a submission is still being edited.
+	db := testdb.Open(t, "services_upload")
+	if _, err := db.Exec(`UPDATE submissions SET status = 'created' WHERE id = $1`, packSub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE metadata_submissions SET status = 'created' WHERE id = $1`, metaID); err != nil {
 		t.Fatal(err)
 	}
 
