@@ -115,6 +115,34 @@ func (s *Sender) SendPasswordResetEmail(to, username, token string) error {
 	return s.send(to, subject, textBody, htmlBody)
 }
 
+// SendEmailChangeConfirmation mails the link that confirms a new address for
+// an existing account. The link opens the profile page, where the signed-in
+// account confirms it; the account keeps its current address until then.
+func (s *Sender) SendEmailChangeConfirmation(to, username, token string) error {
+	link := fmt.Sprintf("%s/app/profile?confirm-email=%s", s.frontendURL, token)
+	subject := "Confirm your new NeoAssets email"
+	htmlBody := renderTemplate(emailChangeHTML, map[string]string{
+		"LogoURL":    s.logoURL,
+		"Username":   username,
+		"VerifyLink": link,
+	})
+	textBody := fmt.Sprintf("Hi %s,\n\nConfirm this address for your NeoAssets account by opening this link while signed in (it expires in 24 hours):\n%s\n\nUntil you do, your account keeps its current email. If you didn't ask for this, you can ignore this email.", username, link)
+	return s.send(to, subject, textBody, htmlBody)
+}
+
+// SendEmailChangedNotice tells the previous address that the account's email
+// was changed. It carries no link, so it can't be used to undo or hijack
+// anything.
+func (s *Sender) SendEmailChangedNotice(to, username string) error {
+	subject := "Your NeoAssets email was changed"
+	htmlBody := renderTemplate(emailChangedHTML, map[string]string{
+		"LogoURL":  s.logoURL,
+		"Username": username,
+	})
+	textBody := fmt.Sprintf("Hi %s,\n\nThe email address on your NeoAssets account was just changed, and you were signed out everywhere. This address will no longer receive account emails.\n\nIf you didn't make this change, contact the NeoAssets team right away.", username)
+	return s.send(to, subject, textBody, htmlBody)
+}
+
 // SendDonorClaimEmail emails a one-time code that proves the user owns the
 // email a donation was made with.
 func (s *Sender) SendDonorClaimEmail(to, username, code string) error {
@@ -196,6 +224,43 @@ const donorClaimHTML = `<!DOCTYPE html>
     <div style="display:inline-block;background:#7c6cff;color:#ffffff;font-weight:700;letter-spacing:6px;font-size:24px;padding:12px 24px;border-radius:10px;">{{.Code}}</div>
     <p style="color:#71717a;font-size:12px;line-height:1.6;margin:24px 0 0;">
       The code expires in 15 minutes. If you did not request this, you can safely ignore this email.
+    </p>
+  </div>
+  <p style="text-align:center;color:#52525b;font-size:12px;margin:24px 0;">&copy; 2026 NeoAssets</p>
+</div>
+</body></html>`
+
+const emailChangeHTML = `<!DOCTYPE html>
+<html lang="en"><body style="margin:0;padding:0;background:#0a0a0c;font-family:Inter,system-ui,sans-serif;">
+<div style="max-width:600px;margin:0 auto;padding:32px 16px;">
+  <div style="text-align:center;padding:24px 0;">
+    <img src="{{.LogoURL}}" alt="NeoAssets" style="height:44px;width:auto;" />
+  </div>
+  <div style="background:#111114;border:1px solid #1d1d24;border-radius:16px;padding:32px;color:#f4f4f5;">
+    <h1 style="font-size:20px;margin:0 0 16px;">Confirm your new email</h1>
+    <p style="color:#a1a1aa;font-size:14px;line-height:1.6;margin:0 0 24px;">
+      Hi {{.Username}},<br/>Click the button below, signed in to your NeoAssets account, to use this address for it. The link expires in 24 hours; until then your account keeps its current email.
+    </p>
+    <a href="{{.VerifyLink}}" style="display:inline-block;background:#7c6cff;color:#ffffff;text-decoration:none;font-weight:600;padding:12px 24px;border-radius:10px;">Confirm email</a>
+    <p style="color:#71717a;font-size:12px;line-height:1.6;margin:24px 0 0;">
+      If you did not ask for this, you can safely ignore this email.<br/>
+      <a href="{{.VerifyLink}}" style="color:#7c6cff;">{{.VerifyLink}}</a>
+    </p>
+  </div>
+  <p style="text-align:center;color:#52525b;font-size:12px;margin:24px 0;">&copy; 2026 NeoAssets</p>
+</div>
+</body></html>`
+
+const emailChangedHTML = `<!DOCTYPE html>
+<html lang="en"><body style="margin:0;padding:0;background:#0a0a0c;font-family:Inter,system-ui,sans-serif;">
+<div style="max-width:600px;margin:0 auto;padding:32px 16px;">
+  <div style="text-align:center;padding:24px 0;">
+    <img src="{{.LogoURL}}" alt="NeoAssets" style="height:44px;width:auto;" />
+  </div>
+  <div style="background:#111114;border:1px solid #1d1d24;border-radius:16px;padding:32px;color:#f4f4f5;">
+    <h1 style="font-size:20px;margin:0 0 16px;">Your email was changed</h1>
+    <p style="color:#a1a1aa;font-size:14px;line-height:1.6;margin:0;">
+      Hi {{.Username}},<br/>The email address on your NeoAssets account was just changed, and you were signed out everywhere. This address will no longer receive account emails.<br/><br/>If you didn't make this change, contact the NeoAssets team right away.
     </p>
   </div>
   <p style="text-align:center;color:#52525b;font-size:12px;margin:24px 0;">&copy; 2026 NeoAssets</p>

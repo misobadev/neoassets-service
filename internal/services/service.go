@@ -127,12 +127,16 @@ func (s *Service) TokenTTL() time.Duration { return s.tokenTTL }
 
 // Login validates admin credentials and returns a signed JWT.
 func (s *Service) Login(ctx context.Context, email, password string) (*models.LoginResult, error) {
+	email = strings.TrimSpace(email)
 	admin, err := s.repo.GetAdminByEmail(ctx, email)
 	if err != nil {
+		// Compare anyway, so an unknown or non-admin email takes as long as a
+		// wrong password and admin accounts can't be told apart by timing.
+		checkPassword(dummyPasswordHash(), password)
 		log.Warn().Str("email", email).Msg("failed admin login: unknown account")
 		return nil, apperr.Unauthorized("invalid credentials")
 	}
-	if !auth.CheckPassword(admin.PasswordHash, password) {
+	if !checkPassword(admin.PasswordHash, password) {
 		log.Warn().Str("email", email).Msg("failed admin login: wrong password")
 		return nil, apperr.Unauthorized("invalid credentials")
 	}

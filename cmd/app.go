@@ -111,6 +111,7 @@ func buildApp(ctx context.Context, cfg *Config, db *sql.DB, bucket r2.Client, ma
 		return nil, fmt.Errorf("developer service: %w", err)
 	}
 	donationSvc := services.NewDonationService(repo, mailer, cfg.KofiVerificationToken, cfg.PatreonWebhookSecret)
+	donationSvc.SkipEmailVerification = cfg.SkipEmailVerification
 	handler := handlers.NewHandler(svc, userSvc, scrapeSvc, devSvc, donationSvc, cfg.JWTSecret, cfg.SkipEmailVerification)
 
 	return &app{

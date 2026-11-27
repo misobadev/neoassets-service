@@ -7,6 +7,8 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/rs/zerolog/log"
+
+	"neoassets/internal/apperr"
 )
 
 // Messages that replace storage errors in responses.
@@ -31,4 +33,19 @@ func writeClientError(w http.ResponseWriter, status int, err error) {
 	default:
 		writeError(w, status, err.Error())
 	}
+}
+
+// writeAccountError reports an error from the account endpoints (sign-up,
+// login, verification, recovery, profile). Only the service's own messages
+// reach the client, with the given status; anything else, such as an SMTP,
+// bcrypt, token-signing or database error, is logged and answered with a
+// generic 500, so no internal detail or account-dependent failure leaks.
+func writeAccountError(w http.ResponseWriter, status int, err error) {
+	var appErr *apperr.Error
+	if errors.As(err, &appErr) {
+		writeError(w, status, appErr.Msg)
+		return
+	}
+	log.Error().Err(err).Msg("account request failed")
+	writeError(w, http.StatusInternalServerError, msgInternalError)
 }

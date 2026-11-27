@@ -43,6 +43,21 @@ type DonationService struct {
 	mailer        *email.Sender
 	kofiToken     string
 	patreonSecret string
+	// SkipEmailVerification (local development) lets donations link to
+	// accounts whose email was never verified.
+	SkipEmailVerification bool
+}
+
+// accountForDonation returns the account a donation made with email belongs
+// to: only one whose address is verified, so registering (or switching to)
+// someone else's address can't claim their donations. An unverified account
+// gets them when it verifies (VerifyEmail links pending donations then).
+func (s *DonationService) accountForDonation(ctx context.Context, email string) (*models.User, bool) {
+	u, err := s.repo.GetUserByEmail(ctx, email)
+	if err != nil || (!u.EmailVerified && !s.SkipEmailVerification) {
+		return nil, false
+	}
+	return u, true
 }
 
 // NewDonationService creates a DonationService.
@@ -109,7 +124,7 @@ func (s *DonationService) HandleKofi(ctx context.Context, raw []byte) error {
 		OccurredAt:  parseKofiTime(p.Timestamp),
 		Raw:         raw,
 	}
-	if u, err := s.repo.GetUserByEmail(ctx, email); err == nil {
+	if u, ok := s.accountForDonation(ctx, email); ok {
 		ev.UserID = &u.ID
 	}
 
@@ -180,7 +195,7 @@ func (s *DonationService) HandlePatreon(ctx context.Context, event, signature st
 		Raw:         raw,
 	}
 	if email != "" {
-		if u, err := s.repo.GetUserByEmail(ctx, email); err == nil {
+		if u, ok := s.accountForDonation(ctx, email); ok {
 			ev.UserID = &u.ID
 		}
 	}
@@ -241,7 +256,7 @@ func (s *DonationService) ImportDonations(ctx context.Context, items []models.Do
 		if ev.Currency == "" {
 			ev.Currency = "USD"
 		}
-		if u, err := s.repo.GetUserByEmail(ctx, email); err == nil {
+		if u, ok := s.accountForDonation(ctx, email); ok {
 			ev.UserID = &u.ID
 		}
 		saved, err := s.repo.UpsertDonationEvent(ctx, ev)
