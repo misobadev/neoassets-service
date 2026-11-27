@@ -30,6 +30,34 @@ type ffprobeOutput struct {
 	} `json:"format"`
 }
 
+// Input format whitelists for every ffprobe/ffmpeg run on uploads. Without
+// one, ffmpeg picks the demuxer from the file's content, and some demuxers
+// open other files or URLs named inside it: an uploaded "video" that is a DASH
+// manifest makes ffprobe and ffmpeg fetch any URL in it (the DASH demuxer
+// ignores the protocol whitelist). Only the formats of the accepted extensions
+// are allowed.
+const (
+	// videoFormats are the demuxers of the accepted video extensions: mp4,
+	// mov, m4v (mov); mkv, webm (matroska); avi; mpg, mpeg (mpeg, or
+	// mpegvideo for a bare MPEG-1/2 stream); m4v as a bare MPEG-4 stream
+	// (m4v); ts (mpegts); ogv (ogg); wmv (asf); flv (flv, or live_flv for
+	// nginx-rtmp recordings). None of them opens other files or URLs.
+	videoFormats = "mov,matroska,avi,mpeg,mpegvideo,m4v,mpegts,ogg,asf,flv,live_flv"
+	// imageFormats are the demuxers of the accepted image extensions: png
+	// (png_pipe, or apng when animated), jpg/jpeg (jpeg_pipe), webp
+	// (webp_pipe), gif.
+	imageFormats = "png_pipe,apng,jpeg_pipe,webp_pipe,gif"
+	// publishedVideoFormats is the format of the videos the service publishes
+	// (MP4), which the faststart remux reads.
+	publishedVideoFormats = "mov"
+)
+
+// ffprobeVideo returns an ffprobe command reading an uploaded video, limited to
+// videoFormats.
+func ffprobeVideo(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "ffprobe", append([]string{"-v", "error", "-format_whitelist", videoFormats}, args...)...)
+}
+
 // ParseFPS converts an "num/den" ffprobe frame rate string into an integer
 // frame rate (rounded down, e.g. 30000/1001 -> 29).
 func ParseFPS(r string) int {
@@ -67,7 +95,7 @@ type ImageInfo struct {
 	Height int
 }
 
-// ProbeImage inspects an image file (any ffmpeg-supported format) and returns
+// ProbeImage inspects an image file (one of imageFormats) and returns
 // its codec name and dimensions. Used to validate approved media.
 func ProbeImage(ctx context.Context, data []byte) (*ImageInfo, error) {
 	tmp, err := os.CreateTemp("", "image-probe-*")
@@ -85,6 +113,7 @@ func ProbeImage(ctx context.Context, data []byte) (*ImageInfo, error) {
 
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
+		"-format_whitelist", imageFormats,
 		"-print_format", "json",
 		"-show_streams",
 		tmp.Name(),
@@ -110,7 +139,7 @@ func ProbeImage(ctx context.Context, data []byte) (*ImageInfo, error) {
 	return info, nil
 }
 
-// Probe inspects a video file (any ffmpeg-supported container/codec) and returns
+// Probe inspects a video file (one of videoFormats, any codec) and returns
 // its format, video codec, resolution, frame rate and duration.
 func Probe(ctx context.Context, data []byte) (*models.VideoMeta, error) {
 	tmp, err := os.CreateTemp("", "video-probe-*")
@@ -126,8 +155,7 @@ func Probe(ctx context.Context, data []byte) (*models.VideoMeta, error) {
 		return nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, "ffprobe",
-		"-v", "error",
+	cmd := ffprobeVideo(ctx,
 		"-print_format", "json",
 		"-show_streams",
 		"-show_format",
@@ -202,6 +230,7 @@ func ConvertToMP4(ctx context.Context, data []byte) ([]byte, error) {
 	// capped at 45 seconds, AAC audio at the source bitrate capped at 128k.
 	args := []string{
 		"-y",
+		"-format_whitelist", videoFormats,
 		"-i", in.Name(),
 		"-vf", vf,
 		"-t", "45",
@@ -246,8 +275,7 @@ func audioBitrate(ctx context.Context, path string) int {
 // and falls back to summing packet sizes over the duration (webm/opus, where
 // ffprobe reports bit_rate as N/A).
 func probeAudioBitrate(ctx context.Context, path string) int {
-	if out, err := exec.CommandContext(ctx, "ffprobe",
-		"-v", "error",
+	if out, err := ffprobeVideo(ctx,
 		"-select_streams", "a:0",
 		"-show_entries", "stream=bit_rate",
 		"-of", "default=noprint_wrappers=1:nokey=1",
@@ -258,8 +286,7 @@ func probeAudioBitrate(ctx context.Context, path string) int {
 		}
 	}
 
-	packets, err := exec.CommandContext(ctx, "ffprobe",
-		"-v", "error",
+	packets, err := ffprobeVideo(ctx,
 		"-select_streams", "a:0",
 		"-show_entries", "packet=size",
 		"-of", "csv=p=0",
@@ -278,8 +305,7 @@ func probeAudioBitrate(ctx context.Context, path string) int {
 		return 0
 	}
 
-	durOut, err := exec.CommandContext(ctx, "ffprobe",
-		"-v", "error",
+	durOut, err := ffprobeVideo(ctx,
 		"-show_entries", "format=duration",
 		"-of", "csv=p=0",
 		path,
@@ -297,8 +323,7 @@ func probeAudioBitrate(ctx context.Context, path string) int {
 // probeVideoFPS returns the source video frame rate as an integer (rounded
 // down, so 59.94 -> 59), or 0 when it cannot be determined.
 func probeVideoFPS(ctx context.Context, path string) int {
-	out, err := exec.CommandContext(ctx, "ffprobe",
-		"-v", "error",
+	out, err := ffprobeVideo(ctx,
 		"-select_streams", "v:0",
 		"-show_entries", "stream=r_frame_rate,avg_frame_rate",
 		"-of", "json",
@@ -330,7 +355,7 @@ type ImageSpec struct {
 	FirstFrameOnly bool
 }
 
-// NormalizeImage decodes any ffmpeg-supported image and re-encodes it as WebP
+// NormalizeImage decodes an image (one of imageFormats) and re-encodes it as WebP
 // with the requested crop/scale, so the backend never trusts client-side
 // conversion. Used to normalize approved art (fanart 1920x1080, covers/logos
 // 1024px, screenshots 1920px, SAP backgrounds 1024x1024).
@@ -361,7 +386,7 @@ func NormalizeImage(ctx context.Context, data []byte, spec ImageSpec) ([]byte, e
 		quality = 90
 	}
 
-	args := []string{"-y", "-i", in.Name()}
+	args := []string{"-y", "-format_whitelist", imageFormats, "-i", in.Name()}
 	if spec.FirstFrameOnly {
 		args = append(args, "-frames:v", "1")
 	}

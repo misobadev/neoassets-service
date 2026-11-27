@@ -96,6 +96,7 @@ func RemuxFaststart(ctx context.Context, data []byte) ([]byte, error) {
 
 	args := []string{
 		"-y",
+		"-format_whitelist", publishedVideoFormats,
 		"-i", in.Name(),
 		"-map", "0",
 		"-map_metadata", "0",
@@ -120,7 +121,7 @@ func RemuxFaststart(ctx context.Context, data []byte) ([]byte, error) {
 // probeVideoTag returns the first video stream's codec tag (e.g. "hvc1",
 // "avc1"), or "" when it can't be read.
 func probeVideoTag(ctx context.Context, path string) string {
-	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error",
+	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-format_whitelist", publishedVideoFormats,
 		"-select_streams", "v:0",
 		"-show_entries", "stream=codec_tag_string",
 		"-of", "default=noprint_wrappers=1:nokey=1",
