@@ -155,6 +155,7 @@ func parseScrapeGameQuery(r *http.Request) (models.ScrapeGameQuery, error) {
 		SHA1:        strings.TrimSpace(q.Get("sha1")),
 		SHA256:      strings.TrimSpace(q.Get("sha256")),
 		Name:        strings.TrimSpace(q.Get("name")),
+		Package:     strings.TrimSpace(q.Get("package")),
 		SystemID:    strings.TrimSpace(q.Get("system_id")),
 		Family:      strings.TrimSpace(q.Get("family")),
 		Group:       strings.TrimSpace(q.Get("group")),
@@ -175,8 +176,11 @@ func parseScrapeGameQuery(r *http.Request) (models.ScrapeGameQuery, error) {
 	if set > 1 {
 		return query, fmt.Errorf("system_id, family and group are mutually exclusive")
 	}
-	if query.CRC == "" && query.MD5 == "" && query.SHA1 == "" && query.SHA256 == "" && query.Name == "" {
-		return query, fmt.Errorf("a selector is required: a ROM hash or name")
+	if query.CRC == "" && query.MD5 == "" && query.SHA1 == "" && query.SHA256 == "" && query.Name == "" && query.Package == "" {
+		return query, fmt.Errorf("a selector is required: a ROM hash, name or package")
+	}
+	if query.Package != "" && !models.ValidAndroidPackage(query.Package) {
+		return query, fmt.Errorf("invalid package %q", query.Package)
 	}
 	if query.Type != "" && !models.ValidGameType(query.Type) {
 		return query, fmt.Errorf("invalid type %q (%s)", query.Type, strings.Join(models.GameTypes, ", "))

@@ -31,6 +31,11 @@ func TestParseScrapeGameQuerySelectors(t *testing.T) {
 		{"/api/v1/scrape/games?system_id=snes&name=mario&type=hack", false},
 		{"/api/v1/scrape/games?system_id=snes&name=mario&type=homebrew", false},
 		{"/api/v1/scrape/games?system_id=snes&name=mario&type=invalid", true},
+		// An Android package, alone or with the app's label as the fallback.
+		{"/api/v1/scrape/games?system_id=android&package=com.innersloth.spacemafia", false},
+		{"/api/v1/scrape/games?system_id=android&package=com.innersloth.spacemafia&name=Among%20Us", false},
+		{"/api/v1/scrape/games?system_id=android&package=not%20a%20package", true},
+		{"/api/v1/scrape/games?system_id=android&package=nodots", true},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest("GET", tc.url, nil)

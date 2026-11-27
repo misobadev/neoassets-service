@@ -437,6 +437,13 @@ func (s *Service) LookupGameInSystems(ctx context.Context, crc, md5, sha1, sha25
 	return s.repo.LookupGameByHashInSystems(ctx, crc, md5, sha1, sha256, systemIDs)
 }
 
+// LookupGameByRomNameInSystems finds games that have a ROM with exactly this
+// name across a set of systems, ordered by the systems' position and then by
+// name. Android games store their package names as ROM names.
+func (s *Service) LookupGameByRomNameInSystems(ctx context.Context, romName string, systemIDs []string) ([]models.Game, error) {
+	return s.repo.LookupGameByRomNameInSystems(ctx, romName, systemIDs)
+}
+
 // ---------------------------------------------------------------------------
 // Metadata contributions
 // ---------------------------------------------------------------------------

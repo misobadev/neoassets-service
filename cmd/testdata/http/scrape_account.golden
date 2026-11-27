@@ -8,7 +8,7 @@
     "daily_limit": null,
     "resets_at": "<time>",
     "unlimited": true,
-    "used": 5
+    "used": 7
   },
   "rate_per_minute": 1000,
   "subject": "guest",
