@@ -36,9 +36,10 @@ var mediaExts = map[string]bool{
 // cost while still covering ~97% of the existing catalog descriptions.
 const MaxDescriptionLength = 1500
 
-// videoExts are the accepted video extensions for gameplay video submissions.
-// Any ffmpeg-supported container is accepted; the file is converted to MP4
-// (HEVC) on approval.
+// videoExts are the accepted video extensions for gameplay video submissions;
+// pkg/video only reads their containers (its videoFormats lists them, so a new
+// extension needs its demuxer there too). The file is converted to MP4 (HEVC)
+// on approval.
 var videoExts = map[string]bool{
 	".webm": true,
 	".mp4":  true,
