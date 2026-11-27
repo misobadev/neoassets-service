@@ -57,7 +57,10 @@ func (m *Memory) Keys() []string {
 	return keys
 }
 
-func (m *Memory) GenerateSignedUploadURL(_ context.Context, objectName, _ string, _ time.Duration) (string, error) {
+func (m *Memory) GenerateSignedUploadURL(_ context.Context, objectName, _ string, size int64, _ time.Duration) (string, error) {
+	if size <= 0 {
+		return "", fmt.Errorf("signed upload URL needs the object's size")
+	}
 	return "https://upload.test/" + objectName, nil
 }
 

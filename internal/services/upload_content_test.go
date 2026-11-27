@@ -33,6 +33,7 @@ type storeR2 struct {
 	objects map[string][]byte
 	types   map[string]string
 	signed  []string
+	sizes   []int64
 	copies  []string
 	deletes []string
 }
@@ -41,8 +42,9 @@ func newStoreR2() *storeR2 {
 	return &storeR2{objects: map[string][]byte{}, types: map[string]string{}}
 }
 
-func (f *storeR2) GenerateSignedUploadURL(_ context.Context, key, contentType string, _ time.Duration) (string, error) {
+func (f *storeR2) GenerateSignedUploadURL(_ context.Context, key, contentType string, size int64, _ time.Duration) (string, error) {
 	f.signed = append(f.signed, contentType)
+	f.sizes = append(f.sizes, size)
 	return "https://upload.test/" + key, nil
 }
 
@@ -114,6 +116,12 @@ func TestUploadContentTypeAllowList(t *testing.T) {
 		{models.MediaVideo, "text/html", "", false},
 		{models.MediaVideo, "image/png", "", false},
 		{models.MediaVideo, "video/", "", false},
+		{models.MediaVideo, "video/svg+xml", "", false},
+		{models.MediaVideo, "video/xhtml+xml", "", false},
+		{models.MediaVideo, "video/x-unknown", "", false},
+		{models.MediaVideo, "video/webm", "video/webm", true},
+		{models.MediaVideo, "video/quicktime", "video/quicktime", true},
+		{models.MediaVideo, "application/octet-stream", "application/octet-stream", true},
 		{models.MediaCover, "application/xhtml+xml", "", false},
 	}
 	for _, c := range cases {
@@ -123,6 +131,31 @@ func TestUploadContentTypeAllowList(t *testing.T) {
 		}
 		if !c.ok && err == nil {
 			t.Errorf("uploadContentType(%q, %q) = %q; want an error", c.kind, c.declared, got)
+		}
+	}
+}
+
+// Every listed video type is signed for a video and for nothing else, and the
+// types operating systems report for each accepted extension are listed.
+func TestVideoUploadTypes(t *testing.T) {
+	for mediaType := range videoUploadTypes {
+		if got, err := uploadContentType(models.MediaVideo, mediaType); err != nil || got != mediaType {
+			t.Errorf("video %q: got %q, %v", mediaType, got, err)
+		}
+		if _, err := uploadContentType(models.MediaCover, mediaType); err == nil {
+			t.Errorf("cover %q was accepted", mediaType)
+		}
+		if strings.Contains(mediaType, "+") {
+			t.Errorf("%q has a structured-syntax suffix (e.g. +xml)", mediaType)
+		}
+	}
+	for _, reported := range []string{
+		"video/webm", "video/mp4", "video/quicktime", "video/x-matroska", "video/matroska",
+		"video/vnd.avi", "video/x-msvideo", "video/avi", "video/msvideo", "video/x-avi", "video/x-m4v", "video/mpeg",
+		"video/mp2t", "video/mp2ts", "video/vnd.dlna.mpeg-tts", "video/ogg", "video/x-ms-wmv", "video/x-flv",
+	} {
+		if !videoUploadTypes[reported] {
+			t.Errorf("%q is not accepted for a video", reported)
 		}
 	}
 }
@@ -594,6 +627,97 @@ func TestEveryUploadPathRefusesPageTypes(t *testing.T) {
 	file.MimeType = "image/png"
 	if _, err := s.AddSubmissionFiles(ctx, packSub, owner.ID, []models.SubmissionFileInput{file}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Every upload path signs the declared size into the URL (so the store accepts
+// exactly that many bytes, with the signed type), and refuses a missing size or
+// one over the cap for that kind of file before signing anything.
+func TestEveryUploadPathSignsTheDeclaredSize(t *testing.T) {
+	bucket := newStoreR2()
+	s, repo := contentTestService(t, bucket)
+	owner := contentTestUser(t, repo, models.RoleUser)
+	ctx := context.Background()
+
+	systemID := "sys" + uuid.NewString()[:8]
+	if _, err := testdb.Open(t, "services_upload").Exec(`INSERT INTO metadata_systems (id, name) VALUES ($1, $1)`, systemID); err != nil {
+		t.Fatal(err)
+	}
+	metaID, err := repo.CreateMetadataSubmission(ctx, nil, &systemID, owner.ID, "edit", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packID := "pack-" + uuid.NewString()[:8]
+	packSub, err := repo.CreateSubmission(ctx, packID, "Pack "+packID, "A", "", "", owner.ID.String(), false, &owner.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	presign := map[string]struct {
+		max  int64
+		sign func(size int64) error
+	}{
+		"pack upload before a submission": {maxImageSize, func(n int64) error {
+			_, err := s.SubmissionUploadURLPre(ctx, models.SubmissionUploadURLRequest{Name: "My Pack", Kind: models.KindBackground, FileName: "snes.png", MimeType: "image/png", Size: n})
+			return err
+		}},
+		"pack upload": {maxImageSize, func(n int64) error {
+			_, err := s.GetUploadURL(ctx, packSub, owner.ID, models.UploadRequest{Kind: models.KindBackground, FileName: "snes.png", MimeType: "image/png", Size: n})
+			return err
+		}},
+		"metadata upload before a submission": {maxVideoSize, func(n int64) error {
+			_, err := s.MetadataUploadURLPre(ctx, owner.ID, models.MetadataUploadURLRequest{SystemID: &systemID, Kind: models.MediaVideo, FileName: "video.mp4", MimeType: "video/mp4", Size: n})
+			return err
+		}},
+		"metadata upload": {maxImageSize, func(n int64) error {
+			_, err := s.MetadataUploadURL(ctx, metaID, owner.ID, models.MetadataUploadRequest{Kind: models.MediaFanart, FileName: "fanart.png", MimeType: "image/png", Size: n})
+			return err
+		}},
+		"metadata GIF before a submission": {maxGIFSize, func(n int64) error {
+			_, err := s.MetadataUploadURLPre(ctx, owner.ID, models.MetadataUploadURLRequest{SystemID: &systemID, Kind: models.MediaFanart, FileName: "fanart.gif", MimeType: "image/gif", Size: n})
+			return err
+		}},
+		"avatar": {maxImageSize, func(n int64) error {
+			_, err := s.AvatarUploadURL(ctx, owner.ID, "image/webp", n)
+			return err
+		}},
+	}
+	for name, p := range presign {
+		before := len(bucket.sizes)
+		for _, bad := range []int64{0, -1, p.max + 1} {
+			if err := p.sign(bad); err == nil {
+				t.Errorf("%s: size %d was signed", name, bad)
+			}
+		}
+		if got := bucket.sizes[before:]; len(got) != 0 {
+			t.Errorf("%s: signed sizes %v for refused uploads", name, got)
+		}
+		for _, n := range []int64{1234, p.max} {
+			if err := p.sign(n); err != nil {
+				t.Errorf("%s: size %d: %v", name, n, err)
+			}
+		}
+		if got := bucket.sizes[before:]; len(got) != 2 || got[0] != 1234 || got[1] != p.max {
+			t.Errorf("%s: signed sizes %v, want [1234 %d]", name, got, p.max)
+		}
+	}
+}
+
+// An avatar is signed with the type as declared (in whatever letter case), so
+// the client's upload with that same header matches the signature.
+func TestAvatarUploadSignsTheDeclaredType(t *testing.T) {
+	bucket := newStoreR2()
+	s := &Service{r2: bucket, uploadTTL: time.Minute}
+	for _, declared := range []string{"image/webp", "IMAGE/WEBP", "Image/Gif"} {
+		if _, err := s.AvatarUploadURL(context.Background(), uuid.New(), declared, 10); err != nil {
+			t.Fatalf("%s: %v", declared, err)
+		}
+		if got := bucket.signed[len(bucket.signed)-1]; got != declared {
+			t.Errorf("%s signed as %q", declared, got)
+		}
+	}
+	if _, err := s.AvatarUploadURL(context.Background(), uuid.New(), "image/gif", maxGIFSize+1); err == nil {
+		t.Error("a GIF avatar over the GIF cap was signed")
 	}
 }
 
