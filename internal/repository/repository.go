@@ -397,18 +397,17 @@ func (r *Repository) SubmitSubmission(ctx context.Context, id uuid.UUID, userID 
 }
 
 // TrashSubmission moves a submission owned by the user into the 'trashed'
-// state. It only works while the pack is still a draft or has been rejected
-// (not while it is pending review or already approved). Returns sql.ErrNoRows
-// otherwise.
+// state. It works while the pack is a draft, pending review or rejected (not
+// once approved). Returns sql.ErrNoRows otherwise.
 func (r *Repository) TrashSubmission(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*models.Submission, error) {
 	var s models.Submission
 	err := r.db.QueryRowContext(ctx,
 		`UPDATE submissions
 		 SET status = $1
-		 WHERE id = $2 AND user_id = $3 AND status IN ($4, $5)
+		 WHERE id = $2 AND user_id = $3 AND status IN ($4, $5, $6)
 		 RETURNING id, pack_id, name, author, description, donation_url, ai, version,
 		           status, anon_user_id, user_id, created_at, reviewed_at, reviewed_by, admin_version, contribution`,
-		models.StatusTrashed, id, userID, models.StatusCreated, models.StatusRejected,
+		models.StatusTrashed, id, userID, models.StatusCreated, models.StatusPending, models.StatusRejected,
 	).Scan(
 		&s.ID, &s.PackID, &s.Name, &s.Author, &s.Description, &s.DonationURL, &s.AI, &s.Version,
 		&s.Status, &s.AnonUserID, &s.UserID, &s.CreatedAt, &s.ReviewedAt, &s.ReviewedBy, &s.AdminVersion, &s.Contribution,
@@ -433,6 +432,14 @@ func (r *Repository) AddFile(ctx context.Context, submissionID uuid.UUID, object
 // is re-saved or a file is replaced (which would otherwise register a new review
 // key while leaving the old row behind).
 func (r *Repository) AddFileReason(ctx context.Context, submissionID uuid.UUID, objectKey, fileName, systemID, kind, mimeType string, size int64, reason string) error {
+	_, err := r.AddFileReplacing(ctx, submissionID, objectKey, fileName, systemID, kind, mimeType, size, reason)
+	return err
+}
+
+// AddFileReplacing registers a file like AddFileReason and returns the object
+// keys of the older rows it replaced (same name/system/kind), so the caller can
+// delete objects nothing references any more.
+func (r *Repository) AddFileReplacing(ctx context.Context, submissionID uuid.UUID, objectKey, fileName, systemID, kind, mimeType string, size int64, reason string) ([]string, error) {
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO submission_files (submission_id, object_key, file_name, system_id, kind, mime_type, size, reason)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -442,19 +449,76 @@ func (r *Repository) AddFileReason(ctx context.Context, submissionID uuid.UUID, 
 		submissionID, objectKey, fileName, systemID, kind, mimeType, size, reason,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to add submission file: %w", err)
+		return nil, fmt.Errorf("failed to add submission file: %w", err)
 	}
 	// Drop older rows for the same logical file (same name/system/kind) so
 	// re-saves or replacements do not accumulate duplicates.
-	_, err = r.db.ExecContext(ctx,
+	rows, err := r.db.QueryContext(ctx,
 		`DELETE FROM submission_files
-		 WHERE submission_id = $1 AND file_name = $2 AND system_id = $3 AND kind = $4 AND object_key <> $5`,
+		 WHERE submission_id = $1 AND file_name = $2 AND system_id = $3 AND kind = $4 AND object_key <> $5
+		 RETURNING object_key`,
 		submissionID, fileName, systemID, kind, objectKey,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to deduplicate submission file: %w", err)
+		return nil, fmt.Errorf("failed to deduplicate submission file: %w", err)
 	}
-	return nil
+	defer rows.Close()
+	var dropped []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		dropped = append(dropped, k)
+	}
+	return dropped, rows.Err()
+}
+
+// LockSubmissionStatus locks a submission's row for the rest of the
+// transaction and returns its status, so a status check and the writes it
+// allows can't interleave with a status change (submit, trash, review).
+func (r *Repository) LockSubmissionStatus(ctx context.Context, id uuid.UUID) (string, error) {
+	var status string
+	err := r.db.QueryRowContext(ctx, `SELECT status FROM submissions WHERE id = $1 FOR UPDATE`, id).Scan(&status)
+	return status, err
+}
+
+// SetSubmissionFileObjectKey points a file row at another object.
+func (r *Repository) SetSubmissionFileObjectKey(ctx context.Context, fileID uuid.UUID, objectKey string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE submission_files SET object_key = $2 WHERE id = $1`, fileID, objectKey)
+	return err
+}
+
+// ObjectKeyReferenced reports whether any submission file row references key.
+func (r *Repository) ObjectKeyReferenced(ctx context.Context, key string) (bool, error) {
+	var ok bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM submission_files WHERE object_key = $1)`, key).Scan(&ok)
+	return ok, err
+}
+
+// ListApprovedPackObjectKeys returns the object keys referenced by approved
+// submissions of a pack (the live pack), excluding one submission.
+func (r *Repository) ListApprovedPackObjectKeys(ctx context.Context, packID string, excludeID uuid.UUID) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT sf.object_key
+		 FROM submission_files sf
+		 JOIN submissions s ON s.id = sf.submission_id
+		 WHERE s.pack_id = $1 AND s.status = 'approved' AND s.id <> $2`,
+		packID, excludeID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
 }
 
 // ListFiles returns all files belonging to a submission.

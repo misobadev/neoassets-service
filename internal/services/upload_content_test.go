@@ -587,6 +587,13 @@ func TestEveryUploadPathRefusesPageTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Uploads are only signed for submissions that aren't in review.
+	if _, err := testdb.Open(t, "services_upload").Exec(`UPDATE submissions SET status = 'created' WHERE id = $1`, packSub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testdb.Open(t, "services_upload").Exec(`UPDATE metadata_submissions SET status = 'created' WHERE id = $1`, metaID); err != nil {
+		t.Fatal(err)
+	}
 	presign := map[string]func(mimeType string) error{
 		"pack upload": func(m string) error {
 			_, err := s.GetUploadURL(ctx, packSub, owner.ID, models.UploadRequest{Kind: models.KindBackground, FileName: "snes.png", MimeType: m, Size: 10})

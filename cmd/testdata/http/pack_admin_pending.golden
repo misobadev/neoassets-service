@@ -11,7 +11,20 @@
       "created_at": "<time>",
       "description": "A test pack.",
       "donation_url": "https://ko-fi.com/artist",
-      "files": null,
+      "files": [
+        {
+          "changed": true,
+          "created_at": "<time>",
+          "file_name": "snes.png",
+          "id": "<uuid>",
+          "kind": "background",
+          "mime_type": "image/png",
+          "object_key": "packs/rejected-pack/review/<rand>/snes.png",
+          "size": 140,
+          "submission_id": "<uuid>",
+          "system_id": "snes"
+        }
+      ],
       "id": "<uuid>",
       "logs": [
         {

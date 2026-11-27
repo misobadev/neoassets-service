@@ -590,7 +590,6 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 			r.Get("/admin/submissions/{id}", h.GetSubmission)
 			r.Post("/admin/submissions/{id}/approve", h.Approve)
 			r.Post("/admin/submissions/{id}/reject", h.Reject)
-			r.Delete("/admin/submissions/{id}", h.DeleteSubmission)
 			r.Get("/admin/storage-usage", h.GetStorageUsage)
 
 			// Metadata review
@@ -612,6 +611,9 @@ func setupRouter(h *handlers.Handler, scrapeSvc *services.ScrapeService, sitemap
 			r.Put("/admin/users/{id}/role", h.SetUserRole)
 			r.Put("/admin/users/{id}/donor", h.SetDonorStatus)
 			r.Post("/admin/donations/import", h.ImportDonations)
+			// Deleting a submission removes its files for good: admin only, as
+			// documented (it used to sit in the reviewer group).
+			r.Delete("/admin/submissions/{id}", h.DeleteSubmission)
 			r.Delete("/admin/packs/{packID}", h.DeletePack)
 			r.Put("/admin/packs/{packID}/donation", h.SetPackDonationURL)
 			r.Get("/admin/developer", h.AdminDeveloperOverview)

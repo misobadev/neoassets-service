@@ -1556,6 +1556,21 @@ func (r *Repository) SubmitMetadataSubmission(ctx context.Context, id, userID uu
 	))
 }
 
+// LockMetadataSubmissionStatus locks a metadata submission's row for the rest
+// of the transaction and returns its status, so a status check and the writes
+// it allows can't interleave with a status change.
+func (r *Repository) LockMetadataSubmissionStatus(ctx context.Context, id uuid.UUID) (string, error) {
+	var status string
+	err := r.db.QueryRowContext(ctx, `SELECT status FROM metadata_submissions WHERE id = $1 FOR UPDATE`, id).Scan(&status)
+	return status, err
+}
+
+// DeleteMetadataSubmissionFileByID removes one metadata file row.
+func (r *Repository) DeleteMetadataSubmissionFileByID(ctx context.Context, fileID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM metadata_submission_files WHERE id = $1`, fileID)
+	return err
+}
+
 // SetMetadataStatusForAdmin sets a submission status on behalf of a reviewer.
 func (r *Repository) SetMetadataStatusForAdmin(ctx context.Context, id uuid.UUID, status string, adminID uuid.UUID, comment string) (*models.MetadataSubmission, error) {
 	return scanMS(r.db.QueryRowContext(ctx,

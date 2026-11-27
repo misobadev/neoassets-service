@@ -85,6 +85,17 @@ func newAPIHarness(t *testing.T) *apiHarness {
 	return &apiHarness{t: t, db: db, bucket: bucket, server: a.router}
 }
 
+// objectKeysUnder lists the bucket's keys with the prefix.
+func (h *apiHarness) objectKeysUnder(prefix string) []string {
+	var out []string
+	for _, k := range h.bucket.Keys() {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // resetData empties the tables the tests write to, so every test starts from
 // the same seed regardless of order.
 func resetData(t *testing.T, db *sql.DB) {
@@ -223,7 +234,9 @@ var (
 	timeRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})`)
 	dateRe = regexp.MustCompile(`"\d{4}-\d{2}-\d{2}"`)
 	// Upload keys carry a random 8-hex segment (e.g. packs/x/review/ab12cd34/).
-	keyRandRe = regexp.MustCompile(`/[0-9a-f]{8}/`)
+	// Staged keys have 8 random hex digits; frozen keys (uploads moved when a
+	// submission registers them) have 32.
+	keyRandRe = regexp.MustCompile(`/[0-9a-f]{8}(?:[0-9a-f]{24})?/`)
 )
 
 // stableIDs are the seeded ids kept verbatim in golden files.
@@ -477,7 +490,6 @@ func TestHTTPPackLifecycle(t *testing.T) {
 	golden(t, "pack_update_pending", artist.do(http.MethodPut, "/api/v1/submissions/"+rejected, map[string]any{
 		"name": "Rejected Pack", "author": "Artist", "description": "Too late.",
 	}))
-	golden(t, "pack_trash_pending", artist.do(http.MethodPost, "/api/v1/submissions/"+rejected+"/trash", nil))
 	golden(t, "pack_admin_pending", admin.do(http.MethodGet, "/api/v1/admin/submissions?status=pending", nil))
 	golden(t, "pack_admin_detail", admin.do(http.MethodGet, "/api/v1/admin/submissions/"+rejected, nil))
 	golden(t, "pack_reject", admin.do(http.MethodPost, "/api/v1/admin/submissions/"+rejected+"/reject",
@@ -486,6 +498,26 @@ func TestHTTPPackLifecycle(t *testing.T) {
 		map[string]string{"comment": "Twice."}))
 	golden(t, "pack_trash_rejected", artist.do(http.MethodPost, "/api/v1/submissions/"+rejected+"/trash", nil))
 	golden(t, "pack_my_list_after_trash", artist.do(http.MethodGet, "/api/v1/auth/submissions", nil))
+
+	// Deleting a submission (its files go for good) is for admins only.
+	h.seedUser("moderator", "reviewer")
+	moderator := h.client()
+	moderator.login("moderator")
+	if res := moderator.do(http.MethodDelete, "/api/v1/admin/submissions/"+rejected, nil); res.status != http.StatusForbidden {
+		t.Fatalf("reviewer deleting a submission: got %d %s, want 403", res.status, res.body)
+	}
+
+	// A pack in review can be trashed: the status changes first, then only
+	// its own (frozen) upload is deleted.
+	pending := newPack("Trashed Pack")
+	frozen := h.objectKeysUnder("packs/trashed-pack/")
+	if len(frozen) != 1 {
+		t.Fatalf("objects of the new pack: %v, want its one frozen upload", frozen)
+	}
+	golden(t, "pack_trash_pending", artist.do(http.MethodPost, "/api/v1/submissions/"+pending+"/trash", nil))
+	if left := h.objectKeysUnder("packs/trashed-pack/"); len(left) != 0 {
+		t.Fatalf("objects left after trashing: %v", left)
+	}
 
 	if !ffmpegHasWebP() {
 		t.Log("ffmpeg with libwebp not installed: skipping the approve path (approval normalizes images to WebP)")
