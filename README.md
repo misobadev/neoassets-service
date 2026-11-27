@@ -75,11 +75,14 @@ counted by their account and a guest by their network address (IPv4, or IPv6
 
 Endpoints:
 
-- `GET /api/v1/scrape/games` resolves **one** game by `crc`/`md5`/`sha1`/`sha256`
-  or `name`, within exactly one of `system_id`, `family` or `group` (+ optional
-  `type`, `media`, `roms`, `softname`). The lookup is hash-first and falls back to
-  the name (cleaned server-side: extension and `(region)`/`[tags]` stripped; the
-  best candidate wins). Returns `{ system_id, matched_by, game }` (`game` is null
+- `GET /api/v1/scrape/games` resolves **one** game by `crc`/`md5`/`sha1`/`sha256`,
+  `package` or `name`, within exactly one of `system_id`, `family` or `group` (+
+  optional `type`, `media`, `roms`, `softname`). `package` is an Android
+  application id (`system_id=android&package=com.innersloth.spacemafia`), matched
+  exactly and tried first. Then the lookup is hash-first and falls back to the
+  name (cleaned server-side: extension and `(region)`/`[tags]` stripped; the best
+  candidate wins), so an app's label can ride along as `name`. `matched_by` is
+  `package`, `hash` or `name`. Returns `{ system_id, matched_by, game }` (`game` is null
   when nothing matched; `system_id` is the game's real system). `rom_count` and
   `rom_name` are always returned, the ROM list only with `roms=true`. There is
   no daily limit; each lookup counts in today's usage stats.

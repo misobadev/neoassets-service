@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -111,11 +112,14 @@ type CreateAPIKeyRequest struct {
 // Name must be provided. Type (base|hack|homebrew) optionally filters a name
 // search.
 type ScrapeGameQuery struct {
-	CRC      string
-	MD5      string
-	SHA1     string
-	SHA256   string
-	Name     string
+	CRC    string
+	MD5    string
+	SHA1   string
+	SHA256 string
+	Name   string
+	// Package is an Android application id (e.g. "com.innersloth.spacemafia"),
+	// matched exactly against the catalog's ROM names before any name search.
+	Package  string
 	SystemID string
 	// Family selects every system of a broad category (e.g. "arcade") instead of
 	// a single SystemID. Mutually exclusive with SystemID and Group.
@@ -130,8 +134,19 @@ type ScrapeGameQuery struct {
 	IncludeRoms bool
 }
 
+// androidPackageRe matches an Android application id: two or more
+// dot-separated segments, each starting with a letter.
+var androidPackageRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$`)
+
+// ValidAndroidPackage reports whether p is a well-formed Android package name
+// of at most 255 characters.
+func ValidAndroidPackage(p string) bool {
+	return len(p) <= 255 && androidPackageRe.MatchString(p)
+}
+
 // ScrapeGamesResponse is the payload returned by GET /api/v1/scrape/games.
-// MatchedBy is "hash" or "name" and tells the client how the game was found.
+// MatchedBy is "package", "hash" or "name" and tells the client how the game
+// was found.
 // Game is null when nothing matched.
 type ScrapeGamesResponse struct {
 	SystemID  string      `json:"system_id"`

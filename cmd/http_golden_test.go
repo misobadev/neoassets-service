@@ -395,6 +395,8 @@ func TestHTTPScrape(t *testing.T) {
 		{"game_by_name", "/api/v1/scrape/games?system_id=snes&name=Legend%20of%20Zelda%2C%20The%20-%20A%20Link%20to%20the%20Past%20(USA).sfc"},
 		{"game_with_roms", "/api/v1/scrape/games?system_id=snes&crc=b19ed489&roms=true"},
 		{"game_no_match", "/api/v1/scrape/games?system_id=snes&name=zzzzqqq"},
+		{"game_package_no_match", "/api/v1/scrape/games?system_id=snes&package=com.example.missing"},
+		{"game_package_falls_back_to_name", "/api/v1/scrape/games?system_id=snes&package=com.example.missing&name=Super%20Mario%20World"},
 		{"game_no_system", "/api/v1/scrape/games?crc=b19ed489"},
 		{"game_family", "/api/v1/scrape/games?family=console&crc=777aac2f"},
 		{"popular", "/api/v1/scrape/popular"},

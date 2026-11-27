@@ -665,11 +665,11 @@ func (s *ScrapeService) resolveSystems(ctx context.Context, q models.ScrapeGameQ
 	}
 }
 
-// FindGames resolves the query into a single game. The lookup is hash-first: a
-// ROM hash (scoped to the selected system or family) is tried first, and when it
-// does not match and a name is present the search falls back to the name. It
-// returns the game (nil when nothing matched) and how it was matched ("hash" or
-// "name").
+// FindGames resolves the query into a single game. An Android package name is
+// tried first (an exact ROM name match), then a ROM hash (scoped to the
+// selected system or family), and when neither matches and a name is present
+// the search falls back to the name. It returns the game (nil when nothing
+// matched) and how it was matched ("package", "hash" or "name").
 func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery) (*models.ScrapeGame, string, error) {
 	systemIDs, err := s.resolveSystems(ctx, q)
 	if err != nil {
@@ -680,6 +680,18 @@ func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery)
 	}
 
 	name := cleanGameName(q.Name)
+
+	// An Android app is identified by its package name, which the catalog keeps
+	// as the game's ROM name. A miss falls through to the hash and name steps.
+	if q.Package != "" {
+		games, err := s.meta.LookupGameByRomNameInSystems(ctx, q.Package, systemIDs)
+		if err != nil {
+			return nil, "", err
+		}
+		if len(games) > 0 {
+			return s.oneGame(ctx, bestMatch(games, "").ID, q), "package", nil
+		}
+	}
 
 	hasHash := q.CRC != "" || q.MD5 != "" || q.SHA1 != "" || q.SHA256 != ""
 	if hasHash {
@@ -701,6 +713,9 @@ func (s *ScrapeService) FindGames(ctx context.Context, q models.ScrapeGameQuery)
 	}
 
 	if name == "" {
+		if q.Package != "" {
+			return nil, "package", nil
+		}
 		return nil, "", apperr.Invalid("name is required")
 	}
 	// One query for every system of the selector (up to maxGamesLimit

@@ -801,6 +801,33 @@ func (r *Repository) LookupGameByHashInSystems(ctx context.Context, crc, md5, sh
 	return scanGameRows(rows)
 }
 
+// LookupGameByRomNameInSystems finds games with a ROM named exactly romName
+// (an Android package name, for example), scoped to systemIDs when non-empty
+// and ordered like LookupGameByHashInSystems.
+func (r *Repository) LookupGameByRomNameInSystems(ctx context.Context, romName string, systemIDs []string) ([]models.Game, error) {
+	if romName == "" {
+		return nil, fmt.Errorf("no rom name provided")
+	}
+	args := []interface{}{romName}
+	where := `g.id IN (SELECT DISTINCT r.game_id FROM roms r WHERE r.name = $1)`
+	order := "g.name"
+	if len(systemIDs) > 0 {
+		args = append(args, pq.Array(systemIDs))
+		where += " AND g.system_id = ANY($2)"
+		order = "array_position($2::text[], g.system_id), g.name"
+	}
+	query := `SELECT ` + gameCols + ` FROM games g
+	          LEFT JOIN metadata_systems s ON s.id = g.system_id
+	          WHERE ` + where + `
+	          ORDER BY ` + order
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup game by rom name: %w", err)
+	}
+	defer rows.Close()
+	return scanGameRows(rows)
+}
+
 // ListRomsByGame returns the ROM dumps for a game.
 func (r *Repository) ListRomsByGame(ctx context.Context, gameID uuid.UUID) ([]models.Rom, error) {
 	rows, err := r.db.QueryContext(ctx,
